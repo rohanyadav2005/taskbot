@@ -10,6 +10,22 @@ pytest
 python -m taskbot.view examples/arm_4dof.json      # opens the MuJoCo viewer
 ```
 
+## Design a robot from a prompt
+
+```bash
+pip install -e ".[anthropic]"
+export ANTHROPIC_API_KEY=sk-ant-...
+taskbot design "water the three plants on my windowsill"
+# -> out/<name>/requirements.json, spec.json, robot.urdf
+
+taskbot design "..." --backend ollama --model qwen2.5:7b-instruct   # local, needs `ollama serve`
+taskbot design "..." --backend fake                                   # offline, canned output
+```
+
+`--backend` defaults to `$TASKBOT_BACKEND` (else `anthropic`); `--model` defaults to
+`$TASKBOT_MODEL` (else the backend's default). If a reply fails validation, the errors
+are sent back to the model and it retries, up to 3 times.
+
 ## Layout
 
 | Path | What |
@@ -18,6 +34,11 @@ python -m taskbot.view examples/arm_4dof.json      # opens the MuJoCo viewer
 | `src/taskbot/data/motors.json` | Motor catalog with a source for every value |
 | `src/taskbot/build_urdf.py` | `RobotSpec` → URDF; all mass and inertia computed here |
 | `src/taskbot/view.py` | Spec JSON → URDF → MuJoCo viewer |
+| `src/taskbot/llm.py` | `LLMClient.complete_json` + Anthropic, Ollama and fake backends |
+| `src/taskbot/requirements.py` | `Requirements` model and the prompt → requirements step |
+| `src/taskbot/design.py` | Requirements → `RobotSpec` step |
+| `src/taskbot/prompts/` | System prompts |
+| `src/taskbot/cli.py` | `taskbot design "<prompt>"` |
 | `src/taskbot/checks.py` | `CheckResult`, returned by every check |
 | `examples/` | 2-, 4- and 6-DOF arms |
 
