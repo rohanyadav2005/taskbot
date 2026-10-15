@@ -1,0 +1,135 @@
+{
+  "_notes": [
+    "SI units. Conversions: 1 kg·cm = 0.0980665 N·m; s/60° -> rad/s = (π/3)/t; rpm -> rad/s = rpm·2π/60.",
+    "'RATED_RULE': most hobby servos and Dynamixels publish only stall torque. Where no continuous rating is published, rated_torque_nm = stall/3, the ratio Feetech publishes for the STS3215 (6.5 / 19.5 kg·cm). Treat these as estimates.",
+    "Prices are single-unit retail and change often; they are for ranking designs, not quoting."
+  ],
+  "motors": [
+    {
+      "id": "sts3215",
+      "name": "Feetech STS3215 (7.4 V, 19 kg·cm)",
+      "stall_torque_nm": 1.912,
+      "rated_torque_nm": 0.637,
+      "max_speed_rad_s": 4.40,
+      "mass_kg": 0.055,
+      "body_size_m": [0.0452, 0.0247, 0.035],
+      "price_usd": 17.0,
+      "sources": {
+        "stall_torque_nm": "Feetech datasheet via Core Electronics/RobotShop: 19.5 kg·cm peak stall @ 6 V",
+        "rated_torque_nm": "Feetech datasheet: 6.5 kg·cm rated @ 6 V",
+        "max_speed_rad_s": "Feetech datasheet: 0.238 s/60° no-load @ 6 V",
+        "mass_kg": "Feetech datasheet: 55 ± 1 g",
+        "body_size_m": "Feetech datasheet: 45.2 × 24.7 × 35 mm",
+        "price_usd": "approx. retail (RobotShop/Seeed listings, ~US$15–20); not verified today"
+      }
+    },
+    {
+      "id": "mg996r",
+      "name": "TowerPro MG996R",
+      "stall_torque_nm": 1.079,
+      "rated_torque_nm": 0.360,
+      "max_speed_rad_s": 7.48,
+      "mass_kg": 0.055,
+      "body_size_m": [0.0407, 0.0197, 0.0429],
+      "price_usd": 10.0,
+      "sources": {
+        "stall_torque_nm": "TowerPro MG996R datasheet: 11 kgf·cm stall @ 6 V",
+        "rated_torque_nm": "RATED_RULE (stall/3), no published rating",
+        "max_speed_rad_s": "TowerPro MG996R datasheet: 0.14 s/60° @ 6 V (retailers list 0.15 s)",
+        "mass_kg": "TowerPro MG996R datasheet: 55 g",
+        "body_size_m": "TowerPro MG996R datasheet: 40.7 × 19.7 × 42.9 mm",
+        "price_usd": "approx. retail (~US$8–12); not verified today"
+      }
+    },
+    {
+      "id": "ax12a",
+      "name": "ROBOTIS Dynamixel AX-12A",
+      "stall_torque_nm": 1.5,
+      "rated_torque_nm": 0.5,
+      "max_speed_rad_s": 6.18,
+      "mass_kg": 0.0546,
+      "body_size_m": [0.032, 0.050, 0.040],
+      "price_usd": 49.9,
+      "sources": {
+        "stall_torque_nm": "ROBOTIS spec (Generation Robots 'Whole Dynamixel Specification' PDF): 1.5 N·m @ 12 V",
+        "rated_torque_nm": "RATED_RULE (stall/3), no published rating",
+        "max_speed_rad_s": "ROBOTIS spec: 59 rpm no-load @ 12 V",
+        "mass_kg": "ROBOTIS spec table: 54.6 g",
+        "body_size_m": "ROBOTIS spec: 32 × 50 × 40 mm",
+        "price_usd": "approx. ROBOTIS list price; not verified today"
+      }
+    },
+    {
+      "id": "xl430_w250",
+      "name": "ROBOTIS Dynamixel XL430-W250-T",
+      "stall_torque_nm": 1.5,
+      "rated_torque_nm": 0.5,
+      "max_speed_rad_s": 6.39,
+      "mass_kg": 0.0572,
+      "body_size_m": [0.0285, 0.0465, 0.034],
+      "price_usd": 23.9,
+      "sources": {
+        "stall_torque_nm": "ROBOTIS spec via mybotshop.de: 1.5 N·m @ 12 V (1.4 N·m @ 11.1 V)",
+        "rated_torque_nm": "RATED_RULE (stall/3), no published rating",
+        "max_speed_rad_s": "ROBOTIS spec via mybotshop.de: 61 rpm no-load @ 12 V",
+        "mass_kg": "RobotShop / mybotshop.de: 57.2 g",
+        "body_size_m": "mybotshop.de: 28.5 × 46.5 × 34 mm",
+        "price_usd": "approx. ROBOTIS US list price; not verified today"
+      }
+    },
+    {
+      "id": "xm430_w350",
+      "name": "ROBOTIS Dynamixel XM430-W350-T",
+      "stall_torque_nm": 4.1,
+      "rated_torque_nm": 1.367,
+      "max_speed_rad_s": 4.82,
+      "mass_kg": 0.082,
+      "body_size_m": [0.0285, 0.0465, 0.034],
+      "price_usd": 310.39,
+      "sources": {
+        "stall_torque_nm": "ROBOTIS e-manual: 4.1 N·m @ 12 V",
+        "rated_torque_nm": "RATED_RULE (stall/3), no published rating",
+        "max_speed_rad_s": "ROBOTIS e-manual: 46 rpm no-load @ 12 V",
+        "mass_kg": "ROBOTIS e-manual / retailers: 82 g",
+        "body_size_m": "same X430 housing as XL430: 28.5 × 46.5 × 34 mm",
+        "price_usd": "RobotShop US listing, Oct 2026: US$310.39"
+      }
+    },
+    {
+      "id": "xm540_w270",
+      "name": "ROBOTIS Dynamixel XM540-W270-T",
+      "stall_torque_nm": 10.6,
+      "rated_torque_nm": 3.533,
+      "max_speed_rad_s": 3.14,
+      "mass_kg": 0.165,
+      "body_size_m": [0.0335, 0.0585, 0.044],
+      "price_usd": 482.89,
+      "sources": {
+        "stall_torque_nm": "ROBOTIS e-manual: 10.6 N·m @ 12 V",
+        "rated_torque_nm": "RATED_RULE (stall/3), no published rating",
+        "max_speed_rad_s": "ROBOTIS e-manual: 30 rpm no-load @ 12 V",
+        "mass_kg": "ROBOTIS e-manual: 165 g",
+        "body_size_m": "ROBOTIS e-manual: 33.5 × 58.5 × 44 mm (W × H × D)",
+        "price_usd": "RobotShop US listing, Oct 2026: US$482.89"
+      }
+    },
+    {
+      "id": "nema17_pg27",
+      "name": "NEMA 17 stepper + 26.85:1 planetary gearbox (17HS15-1684S-PG27)",
+      "stall_torque_nm": 5.0,
+      "rated_torque_nm": 3.0,
+      "max_speed_rad_s": 0.733,
+      "mass_kg": 0.51,
+      "body_size_m": [0.042, 0.042, 0.075],
+      "price_usd": 99.99,
+      "sources": {
+        "stall_torque_nm": "VXB/Sigmanortec listing: 5 N·m momentary permissible (gearbox limit)",
+        "rated_torque_nm": "VXB/Sigmanortec listing: 3 N·m max permissible continuous",
+        "max_speed_rad_s": "VXB listing title: ~7 rpm output",
+        "mass_kg": "VXB gearbox listing: 510 g (stepper listing says 570 g)",
+        "body_size_m": "42 × 42 mm frame; 40 mm motor + 35 mm gearbox (VXB listing)",
+        "price_usd": "VXB regular price US$99.99 (listing pricing inconsistent; StepperOnline is usually cheaper)"
+      }
+    }
+  ]
+}

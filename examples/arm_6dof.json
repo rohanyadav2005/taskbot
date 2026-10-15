@@ -1,0 +1,24 @@
+{
+  "name": "arm_6dof",
+  "description": "6-DOF arm with a spherical-style wrist (roll-pitch-roll) and a suction cup.",
+  "modules": [
+    {"kind": "fixed_base", "name": "base", "footprint_m": [0.2, 0.2], "height_m": 0.04, "material": "steel"},
+    {"kind": "arm_chain", "name": "arm", "segments": [
+      {"joint": {"name": "base_yaw", "type": "revolute", "axis": "z", "lower": -3.14159, "upper": 3.14159, "motor_id": "xm540_w270"},
+       "link": {"name": "turret", "shape": "cylinder", "radius_m": 0.04, "length_m": 0.06, "material": "aluminium"}},
+      {"joint": {"name": "shoulder_pitch", "type": "revolute", "axis": "y", "lower": -1.5708, "upper": 1.5708, "motor_id": "xm540_w270"},
+       "link": {"name": "upper_arm", "shape": "box", "size_m": [0.04, 0.04, 0.2], "material": "aluminium"}},
+      {"joint": {"name": "elbow_pitch", "type": "revolute", "axis": "y", "lower": -2.4, "upper": 2.4, "motor_id": "xm430_w350"},
+       "link": {"name": "forearm", "shape": "box", "size_m": [0.035, 0.035, 0.18], "material": "aluminium"}}
+    ]},
+    {"kind": "arm_chain", "name": "wrist", "segments": [
+      {"joint": {"name": "wrist_roll", "type": "continuous", "axis": "z", "motor_id": "xl430_w250"},
+       "link": {"name": "wrist_1", "shape": "cylinder", "radius_m": 0.02, "length_m": 0.04, "material": "pla"}},
+      {"joint": {"name": "wrist_pitch", "type": "revolute", "axis": "y", "lower": -1.8, "upper": 1.8, "motor_id": "xl430_w250"},
+       "link": {"name": "wrist_2", "shape": "box", "size_m": [0.03, 0.03, 0.04], "material": "pla"}},
+      {"joint": {"name": "tool_roll", "type": "continuous", "axis": "z", "motor_id": "xl430_w250"},
+       "link": {"name": "tool_flange", "shape": "cylinder", "radius_m": 0.02, "length_m": 0.02, "material": "aluminium"}}
+    ]},
+    {"kind": "gripper", "name": "suction", "gripper_type": "suction", "max_opening_m": 0.03, "grip_force_n": 15.0}
+  ]
+}
