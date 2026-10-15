@@ -1,7 +1,7 @@
 """Deterministic engineering checks, and the CheckResult every check returns.
 
 Checks: static_torque, reach (+ workspace_corners), self_collision,
-joint_limits, budget, mass. `run_checks` builds the spec and runs them all.
+joint_limits, joint_speed, budget, mass. `run_checks` builds the spec and runs them all.
 """
 
 from __future__ import annotations
@@ -381,6 +381,50 @@ def joint_limits(
                         limit=need, message=msg)]
 
 
+# --------------------------------------------------------------------------- joint speed
+
+SPEED_CHECK_MOVE_S = 5.0
+
+
+def joint_speed(
+    spec: RobotSpec, req: Requirements, model: mujoco.MjModel,
+    catalog: dict[str, Motor] | None = None,
+) -> list[CheckResult]:
+    """Can every planned move (home -> workspace centre -> corners, the same moves the
+    simulation makes) finish within 5 s with no joint above 80% of its no-load speed?"""
+    from taskbot.sim.model import build_scene
+    from taskbot.sim.plan import SPEED_FRACTION, plan_moves
+
+    robot = build_scene(spec, _catalog(catalog))
+    available = SPEED_FRACTION * robot.no_load_speed
+    worst = None  # (ratio, move, joint index, needed)
+    durations = []
+    for mv in plan_moves(robot, req):
+        durations.append(mv.duration(robot.no_load_speed))
+        needed = mv.peak_speed(SPEED_CHECK_MOVE_S)
+        ratios = needed / available
+        i = int(np.argmax(ratios))
+        if worst is None or ratios[i] > worst[0]:
+            worst = (float(ratios[i]), mv, i, float(needed[i]))
+    ratio, mv, i, needed = worst
+    j = robot.joints[i]
+    unit = "m/s" if j.type == "prismatic" else "rad/s"
+    ok = ratio <= 1.0
+    if ok:
+        msg = (f"every move finishes within {SPEED_CHECK_MOVE_S:.0f} s under {SPEED_FRACTION:.0%} of "
+               f"no-load speed; planned move durations {min(durations):.2f}–{max(durations):.2f} s. "
+               f"Closest: {j.name} ({j.motor_id}) needs {needed:.3g} {unit} of {available[i]:.3g} {unit} "
+               f"moving to {mv.label}.")
+    else:
+        msg = (f"{j.name} needs {needed:.3g} {unit} to finish the move to {mv.label} in "
+               f"{SPEED_CHECK_MOVE_S:.0f} s, but motor {j.motor_id} gives only {available[i]:.3g} {unit} "
+               f"({SPEED_FRACTION:.0%} of its {robot.no_load_speed[i]:.3g} {unit} no-load speed); the "
+               f"move would take {mv.duration(robot.no_load_speed):.2f} s. Use a faster motor on "
+               f"{j.name}, or a joint layout that needs less travel on it.")
+    return [CheckResult(check="joint_speed", passed=ok, value=needed, limit=float(available[i]),
+                        message=msg)]
+
+
 # --------------------------------------------------------------------------- budget
 
 
@@ -436,7 +480,7 @@ def mass(
 
 
 CheckFn = Callable[..., list[CheckResult]]
-ALL_CHECKS: list[CheckFn] = [static_torque, reach, self_collision, joint_limits, budget, mass]
+ALL_CHECKS: list[CheckFn] = [static_torque, reach, self_collision, joint_limits, joint_speed, budget, mass]
 
 
 def run_checks(

@@ -1,3 +1,5 @@
+import re
+
 import mujoco
 import numpy as np
 import pytest
@@ -17,7 +19,6 @@ from taskbot.sim_tests import (
     hold_still,
     min_jerk,
     reach_targets,
-    run_sim_tests,
     workspace_targets,
 )
 
@@ -26,14 +27,6 @@ CATALOG = load_motor_catalog()
 
 def spec_of(d):
     return RobotSpec.model_validate(d)
-
-
-@pytest.fixture(scope="module")
-def strong_runs():
-    from conftest import DESK_REQ
-    from taskbot.requirements import Requirements
-
-    return {r.name: r for r in run_sim_tests(spec_of(strong_arm()), Requirements(**DESK_REQ), CATALOG)}
 
 
 # --------------------------------------------------------------------------- model / IK
@@ -113,7 +106,7 @@ def test_strong_arm_passes_all_three(strong_runs):
     assert strong_runs["reach_targets"].result.value < 0.01
     assert strong_runs["carry_payload"].result.value <= 0.2  # longest saturation, s
     assert strong_runs["hold_still"].result.value < 0.005    # drift, m
-    assert "9/9 targets within 1 cm" in strong_runs["carry_payload"].result.message
+    assert "9/9 targets reached within 1 cm" in strong_runs["carry_payload"].result.message
 
 
 def test_payload_stays_welded_to_gripper(strong_runs):
@@ -128,10 +121,12 @@ def test_payload_stays_welded_to_gripper(strong_runs):
 
 def test_weak_shoulder_fails_carry_payload_naming_the_joint(desk_req):
     spec = spec_of(with_motor(strong_arm(), "shoulder_pitch", "mg996r"))
-    result = carry_payload(spec, desk_req, CATALOG).result
+    result = carry_payload(spec, desk_req, CATALOG, payload_mass_error=0.0).result
     assert not result.passed
     assert result.value > 0.2 and result.limit == 0.2
-    assert "shoulder_pitch saturated at its rated 0.36 Nm (mg996r) for" in result.message
+    assert re.search(r"shoulder_pitch saturated for [\d.]+ s while moving to .*: motor mg996r gives "
+                     r"0\.36 Nm rated at rest, falling linearly to 0 at its 7\.48 rad/s no-load speed",
+                     result.message)
     assert "elbow_pitch saturated" not in result.message
 
 
@@ -144,10 +139,8 @@ def test_unreachable_targets_fail_reach_targets(desk_req):
 # --------------------------------------------------------------------------- repair loop + report
 
 
-def test_sim_tests_run_only_after_static_checks_pass(desk_req):
-    weak_static = with_motor(strong_arm(), "shoulder_pitch", "mg996r")  # fails static_torque
-    fake = FakeClient({"RobotSpec": [weak_static, strong_arm()]})
-    outcome = repair_loop(fake, desk_req, CATALOG)
+def test_sim_tests_run_only_after_static_checks_pass(two_round_outcome):
+    outcome, _ = two_round_outcome
     r1, r2 = outcome.rounds
     assert [f.check for f in r1.failures] == ["static_torque"] and not r1.sim_runs
     assert {r.check for r in r2.results} >= {"reach_targets", "carry_payload", "hold_still"}
@@ -200,16 +193,16 @@ def test_frames_are_recorded_at_20fps(strong_runs):
     assert len(run.frames) == 5 * 20 + 1  # 5 s hold at 20 fps, plus the initial frame
 
 
-def test_write_outputs_saves_gifs_and_links_them(desk_req, tmp_path, monkeypatch):
+def test_write_outputs_saves_gifs_and_links_them(two_round_outcome, tmp_path, monkeypatch):
     import taskbot.report as report
 
     monkeypatch.setattr(report, "render_gif", lambda model, frames, path, **kw: path.parent.mkdir(
         parents=True, exist_ok=True) or path.write_bytes(b"GIF89a") and None)
-    fake = FakeClient({"RobotSpec": [strong_arm()]})
-    outcome = repair_loop(fake, desk_req, CATALOG)
+    outcome, _ = two_round_outcome
     out = write_outputs(outcome, tmp_path, CATALOG)
     for name in ("reach_targets", "carry_payload", "hold_still"):
         assert (out / "sim" / f"{name}.gif").exists()
     text = (out / "report.md").read_text()
-    assert "## Simulation recordings (round 1)" in text
+    assert "## Simulation recordings (round 2)" in text
+    assert (out / "rounds" / "round_2" / "sim_ideal.json").exists()
     assert "![carry_payload](sim/carry_payload.gif)" in text

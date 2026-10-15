@@ -23,13 +23,14 @@ from taskbot.schema import ArmChain, Gripper, Motor, load_motor_catalog
 BACKENDS = ("anthropic", "ollama", "fake")
 
 _TORQUE_FAIL = re.compile(r"^- \[static_torque\] (\w+) needs ([\d.e+-]+) Nm", re.MULTILINE)
-_SATURATED = re.compile(r"(\w+) saturated at its rated ([\d.e+-]+) Nm")
+_SATURATED = re.compile(r"(\w+) saturated for [\d.]+ s while [^:]*: motor (\w+) gives")
 
 
 def fake_client(catalog: dict[str, Motor]) -> FakeClient:
     """Offline demo. Requirements are canned (echoing the prompt), the first design is a
-    canned 4-DOF arm, and 'repair' swaps any motor that fails static_torque, or saturates
-    in simulation, for the cheapest catalog motor strong enough. It fixes nothing else."""
+    canned 4-DOF arm, and 'repair' swaps any motor that fails static_torque for the
+    cheapest catalog motor strong enough, and any motor that saturates in simulation for
+    the cheapest faster one with at least 80% of its torque. It fixes nothing else."""
 
     def requirements(system, messages, schema):
         return {
@@ -55,11 +56,14 @@ def fake_client(catalog: dict[str, Motor]) -> FakeClient:
         if prompt.startswith("Requirements:"):
             return canned
         spec = json.loads(prompt.split("Current spec: ", 1)[1].split("\nRequirements: ", 1)[0])
-        needs = [(j, float(n)) for j, n in _TORQUE_FAIL.findall(prompt)]
-        needs += [(j, 1.5 * float(rated)) for j, rated in _SATURATED.findall(prompt)]
-        for joint_name, need in needs:
+        # (joint, torque needed, motor it must also be faster than)
+        needs = [(j, float(n), None) for j, n in _TORQUE_FAIL.findall(prompt)]
+        needs += [(j, TORQUE_SAFETY_FRACTION * catalog[m].rated_torque_nm, catalog[m])
+                  for j, m in _SATURATED.findall(prompt)]
+        for joint_name, need, slower in needs:
             strong = [m for m in catalog.values()
-                      if TORQUE_SAFETY_FRACTION * m.rated_torque_nm >= need]
+                      if TORQUE_SAFETY_FRACTION * m.rated_torque_nm >= need
+                      and (slower is None or m.no_load_speed_rad_s > slower.no_load_speed_rad_s)]
             if not strong:
                 continue
             best = min(strong, key=lambda m: m.price_usd)

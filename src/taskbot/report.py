@@ -86,11 +86,19 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
     for rnd in outcome.rounds:
         lines += ["", f"### Round {rnd.number}: {'all checks pass' if rnd.passed else f'{len(rnd.failures)} failed'}",
                   "", "| Check | Result | Value | Limit | Message |", "|---|---|---|---|---|"]
+        ideal = {run.name: run.ideal for run in rnd.sim_runs if run.ideal is not None}
         for r in rnd.results:
             status = "pass" if r.passed and not _is_warning(r) else ("warn" if r.passed else "**FAIL**")
             lines.append(f"| {r.check} | {status} | {_num(r.value)} | {_num(r.limit)} | {_cell(r.message)} |")
+            if r.check in ideal:
+                i = ideal[r.check]
+                lines.append(f"| {r.check} (ideal) | {'pass' if i.passed else 'fail'} (info) | "
+                             f"{_num(i.value)} | {_num(i.limit)} | {_cell(i.message)} |")
 
-    lines += ["", "Simulation tests run only in rounds where every static check passed."]
+    lines += ["", "Simulation tests run only in rounds where every static check passed. "
+              "carry_payload and hold_still are judged with the controller believing the payload "
+              "is 20% lighter than it is; the \"(ideal)\" rows repeat them with the true mass, "
+              "for information only."]
 
     if recordings:
         lines += ["", f"## Simulation recordings (round {final.number})", ""]
@@ -147,6 +155,9 @@ def write_outputs(outcome: RepairOutcome, out_root: Path, catalog: dict[str, Mot
         (d / "spec.json").write_text(_spec_json(rnd) + "\n", "utf-8")
         (d / "checks.json").write_text(
             json.dumps([r.model_dump() for r in rnd.results], indent=2) + "\n", "utf-8")
+        ideal = [run.ideal.model_dump() for run in rnd.sim_runs if run.ideal is not None]
+        if ideal:
+            (d / "sim_ideal.json").write_text(json.dumps(ideal, indent=2) + "\n", "utf-8")
     (out / "spec.json").write_text(_spec_json(outcome.final) + "\n", "utf-8")
     (out / "robot.urdf").write_text(build_urdf(outcome.final.spec, catalog), "utf-8")
     recordings = record_sim(outcome.final, out) if record else None

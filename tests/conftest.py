@@ -59,3 +59,28 @@ def strong_arm() -> dict:
     """4-DOF example with XM540s at shoulder and elbow: passes every check and sim test."""
     return with_motor(with_motor(example_dict("arm_4dof"), "shoulder_pitch", "xm540_w270"),
                       "elbow_pitch", "xm540_w270")
+
+
+# Expensive simulation results shared across test modules (each takes ~10 s).
+
+
+@pytest.fixture(scope="session")
+def strong_runs():
+    """run_sim_tests on strong_arm() with the desk requirements, by test name."""
+    from taskbot.requirements import Requirements
+    from taskbot.schema import RobotSpec
+    from taskbot.sim_tests import run_sim_tests
+
+    runs = run_sim_tests(RobotSpec.model_validate(strong_arm()), Requirements(**DESK_REQ))
+    return {r.name: r for r in runs}
+
+
+@pytest.fixture(scope="session")
+def two_round_outcome():
+    """Repair loop: round 1 has an MG996R shoulder (fails static_torque), round 2 is strong_arm()."""
+    from taskbot.llm import FakeClient
+    from taskbot.repair import repair_loop
+    from taskbot.requirements import Requirements
+
+    fake = FakeClient({"RobotSpec": [with_motor(strong_arm(), "shoulder_pitch", "mg996r"), strong_arm()]})
+    return repair_loop(fake, Requirements(**DESK_REQ)), fake

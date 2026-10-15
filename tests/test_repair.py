@@ -1,7 +1,5 @@
 import json
 
-import pytest
-
 from conftest import example_dict, with_motor
 from taskbot.llm import FakeClient
 from taskbot.repair import repair_loop, repair_prompt
@@ -114,7 +112,8 @@ def test_cli_fake_backend_repairs_and_writes_report(tmp_path, capsys):
     assert cli.main(["design", "water my plants", "--backend", "fake", "--out", str(tmp_path),
                      "--no-record"]) == 0
     out = capsys.readouterr().out
-    assert "Rounds: R1 1 fail  R2 pass" in out and "PASSED" in out
+    # R1: static torque; R2: the NEMA17 shoulder saturates on its torque-speed line in sim
+    assert "Rounds: R1 1 fail  R2 1 fail  R3 pass" in out and "PASSED" in out
     assert (tmp_path / "fake_arm_4dof" / "report.md").exists()
 
 

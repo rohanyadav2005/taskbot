@@ -50,7 +50,10 @@ class Motor(_Strict):
     rated_torque_nm: PositiveFloat = Field(
         description="Continuous torque the motor can hold without overheating."
     )
-    max_speed_rad_s: PositiveFloat = Field(description="No-load output speed.")
+    max_speed_rad_s: PositiveFloat = Field(description="Highest output speed the vendor quotes.")
+    no_load_speed_rad_s: PositiveFloat = Field(
+        description="Output speed at zero load; available torque falls linearly to 0 here."
+    )
     mass_kg: PositiveFloat
     body_size_m: Vec3 = Field(description="Housing bounding box (x, y, z).")
     price_usd: Annotated[float, Field(ge=0)]
@@ -58,6 +61,15 @@ class Motor(_Strict):
         default_factory=dict,
         description="Where each value came from, keyed by field name.",
     )
+
+    @model_validator(mode="after")
+    def _speeds_consistent(self) -> Motor:
+        if self.max_speed_rad_s > self.no_load_speed_rad_s:
+            raise ValueError(
+                f"motor {self.id}: max_speed_rad_s ({self.max_speed_rad_s}) exceeds "
+                f"no_load_speed_rad_s ({self.no_load_speed_rad_s})"
+            )
+        return self
 
     @model_validator(mode="after")
     def _rated_not_above_stall(self) -> Motor:

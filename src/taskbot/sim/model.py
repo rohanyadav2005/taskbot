@@ -32,6 +32,7 @@ class SimRobot:
     lower: np.ndarray              # joint limits; ±inf for continuous
     upper: np.ndarray
     torque_limit: np.ndarray       # rated torque (N·m) or force (N) per arm joint
+    no_load_speed: np.ndarray      # rad/s (or m/s for prismatic) per arm joint
     site: int                      # end-effector site id
     tool_body: int
     payload_kg: float
@@ -39,6 +40,7 @@ class SimRobot:
     aux_qadr: np.ndarray = field(default_factory=lambda: np.zeros(0, int))  # finger joints
     aux_dadr: np.ndarray = field(default_factory=lambda: np.zeros(0, int))
     aux_limit: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    aux_no_load_speed: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
     @property
     def n(self) -> int:
@@ -118,16 +120,20 @@ def build_scene(
     segments = [s for m in spec.modules if isinstance(m, ArmChain) for s in m.segments]
     jids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, s.joint.name) for s in segments]
     joints = [s.joint for s in segments]
-    limits = []
+    limits, speeds = [], []
     for j in joints:
-        rated = catalog[j.motor_id].rated_torque_nm
-        limits.append(rated / LINEAR_DRIVE_RADIUS_M if j.type == "prismatic" else rated)
+        motor = catalog[j.motor_id]
+        linear = j.type == "prismatic"
+        limits.append(motor.rated_torque_nm / LINEAR_DRIVE_RADIUS_M if linear else motor.rated_torque_nm)
+        speeds.append(motor.no_load_speed_rad_s * LINEAR_DRIVE_RADIUS_M if linear
+                      else motor.no_load_speed_rad_s)
 
     gripper = next((m for m in spec.modules if isinstance(m, Gripper)), None)
     aux = [jid for jid in range(model.njnt)
            if jid not in jids and model.jnt_type[jid] != mujoco.mjtJoint.mjJNT_FREE]
-    aux_force = (catalog[gripper.motor_id].rated_torque_nm / LINEAR_DRIVE_RADIUS_M
-                 if gripper is not None and gripper.motor_id else 0.0)
+    gmotor = catalog[gripper.motor_id] if gripper is not None and gripper.motor_id else None
+    aux_force = gmotor.rated_torque_nm / LINEAR_DRIVE_RADIUS_M if gmotor else 0.0
+    aux_speed = gmotor.no_load_speed_rad_s * LINEAR_DRIVE_RADIUS_M if gmotor else 1.0
 
     return SimRobot(
         model=model,
@@ -137,6 +143,7 @@ def build_scene(
         lower=np.array([-np.inf if j.type == "continuous" else j.lower for j in joints]),
         upper=np.array([np.inf if j.type == "continuous" else j.upper for j in joints]),
         torque_limit=np.array(limits),
+        no_load_speed=np.array(speeds),
         site=mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, EE_SITE),
         tool_body=mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, tool),
         payload_kg=payload_kg,
@@ -144,4 +151,5 @@ def build_scene(
         aux_qadr=np.array([model.jnt_qposadr[j] for j in aux], int),
         aux_dadr=np.array([model.jnt_dofadr[j] for j in aux], int),
         aux_limit=np.full(len(aux), aux_force),
+        aux_no_load_speed=np.full(len(aux), aux_speed),
     )

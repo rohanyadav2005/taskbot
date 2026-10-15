@@ -76,6 +76,7 @@ are sent back to the model and it retries, up to 3 times.
 | `workspace_corners` | All 8 workspace corners are reachable within 1 cm |
 | `self_collision` | ≤ 5% of random in-limit poses (tool inside the workspace) have non-adjacent links interpenetrating |
 | `joint_limits` | Every revolute joint spans ≥ `min_joint_range_rad` (default 90°) and stays within ±2π |
+| `joint_speed` | Every planned move can finish within 5 s with no joint above 80% of its no-load speed |
 | `budget` | Motor prices + rough material cost ≤ `max_budget_usd` |
 | `mass` | Always passes; warns if a desk-scale robot (reach ≤ 1 m) is over 5 kg |
 
@@ -88,11 +89,22 @@ Generated from the requirements; run only after every static check passes.
 
 | Test | What happens | Passes when |
 |---|---|---|
-| `reach_targets` | IK to the workspace centre and 8 corners; 2 s minimum-jerk move to each, then 1 s settle | Every final tool error < 1 cm |
-| `carry_payload` | Same moves with a `payload_kg` cube welded to the tool | As above, and no joint saturates its rated torque for > 0.2 s |
-| `hold_still` | Hold the target pose with the highest torque load, with payload, for 5 s | Tool drift < 5 mm |
+| `reach_targets` | IK to the workspace centre and 8 corners; a minimum-jerk move to each | Every target: error < 1 cm by move end + 1 s and staying there, overshoot ≤ 2 cm |
+| `carry_payload` | Same moves with a `payload_kg` cube welded to the tool | As above, and no joint saturates for > 0.2 s |
+| `hold_still` | Hold the target pose with the highest torque load, with payload, for 5 s | Tool drift < 5 mm (reported in µm) |
 
-Control is joint-space PD (gains from each joint's effective inertia, 4 Hz bandwidth,
-critically damped) plus gravity compensation (`qfrc_bias` plus the payload's weight).
-Torques are clipped at each motor's **rated** torque, never stall. Motor speed limits
-are not modelled yet. Physics runs at 1 ms.
+**Motors.** Available torque follows a linear torque-speed line: `rated * max(0, 1 - |w| / no_load_speed)`
+when driving the joint the way it is turning; braking is limited to rated torque. Never stall torque.
+
+**Move durations** are planned per move: `max(2 s, time so no joint exceeds 80% of its no-load speed)`.
+The `joint_speed` check (static, IK only) fails if any move would need more than 80% of a motor's
+no-load speed to finish within 5 s, naming the joint, motor and speeds.
+
+**Model error.** `carry_payload` and `hold_still` are judged with the controller believing the
+payload is 20% lighter than it is (`payload_mass_error=0.2`). The same tests with the true mass are
+shown in the report as "(ideal)" rows, for information. A `hold_still` drift of exactly 0 raises
+`SimMeasurementError`: it would mean the test measured nothing.
+
+**Control** is joint-space PID: gains from each joint's effective inertia (plus payload),
+8 Hz bandwidth, critically damped, 0.3 s integral time with anti-windup; gravity compensation
+from `qfrc_bias` plus the believed payload weight. Physics runs at 1 ms.
