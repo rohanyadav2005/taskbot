@@ -316,13 +316,57 @@ def build_urdf(spec: RobotSpec, catalog: dict[str, Motor] | None = None) -> str:
     drafts, joints = _assemble(spec, catalog if catalog is not None else load_motor_catalog())
     robot = etree.Element("robot", name=spec.name)
     # MuJoCo-only hint (other URDF tools ignore it): keep the fixed base and the
-    # palm as their own bodies, so their mass stays in the model and contacts
-    # between them and their neighbours are filtered as parent/child pairs.
+    # palm as their own bodies so their mass stays in the model, and keep visual
+    # info so geoms get the URDF colours (and non-colliding scene geoms added
+    # later, like the floor, aren't discarded).
     mj = etree.SubElement(robot, "mujoco")
-    etree.SubElement(mj, "compiler", fusestatic="false", discardvisual="true")
+    etree.SubElement(mj, "compiler", fusestatic="false", discardvisual="false")
     for d in drafts:
         _emit_link(robot, d)
     for j in joints:
         _emit_joint(robot, **j)
     return etree.tostring(robot, pretty_print=True, xml_declaration=True,
                           encoding="utf-8").decode("utf-8")
+
+
+# --------------------------------------------------------------------------- MuJoCo model
+
+EE_SITE = "end_effector"
+
+
+def tool_link_name(spec: RobotSpec) -> str:
+    """The last arm link; the gripper is welded to it."""
+    return [s for m in spec.modules if isinstance(m, ArmChain) for s in m.segments][-1].link.name
+
+
+def tool_offset_m(spec: RobotSpec) -> float:
+    """Tool point (fingertips / cup face) along z in the last arm link's frame."""
+    segments = [s for m in spec.modules if isinstance(m, ArmChain) for s in m.segments]
+    gripper = next((m for m in spec.modules if isinstance(m, Gripper)), None)
+    return segments[-1].link.length + tool_length_m(gripper)
+
+
+def build_mjspec(spec: RobotSpec, catalog: dict[str, Motor] | None = None):
+    """URDF loaded as an editable mujoco.MjSpec, with an `end_effector` site at the tool
+    point and contacts between adjacent links excluded."""
+    import mujoco
+
+    mjspec = mujoco.MjSpec.from_string(build_urdf(spec, catalog))
+    # Adjacent links meet at their joint by construction. MuJoCo skips parent/child
+    # contacts itself, except for bodies welded to the world (the fixed base), whose
+    # contacts with the first link would otherwise jam the base joint.
+    probe = mjspec.compile()
+    for b in range(1, probe.nbody):
+        parent = probe.body_parentid[b]
+        if parent > 0:
+            mjspec.add_exclude(bodyname1=probe.body(parent).name, bodyname2=probe.body(b).name)
+    mjspec.body(tool_link_name(spec)).add_site(
+        name=EE_SITE, pos=[0.0, 0.0, tool_offset_m(spec)], size=[0.006, 0, 0],
+        rgba=[1, 0.2, 0.2, 1],
+    )
+    return mjspec
+
+
+def build_model(spec: RobotSpec, catalog: dict[str, Motor] | None = None):
+    """Compiled mujoco.MjModel of the robot, with the end-effector site."""
+    return build_mjspec(spec, catalog).compile()

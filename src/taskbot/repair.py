@@ -1,4 +1,8 @@
-"""design -> build -> check -> repair, until every check passes or rounds run out."""
+"""design -> build -> check -> simulate -> repair, until everything passes or rounds run out.
+
+Each round runs the static checks first; the (slower) simulation tests run only
+once every static check passes.
+"""
 
 from __future__ import annotations
 
@@ -10,15 +14,20 @@ from taskbot.llm import LLMClient, LLMError
 from taskbot.prompts import load_prompt
 from taskbot.requirements import Requirements
 from taskbot.schema import Motor, RobotSpec, load_motor_catalog
+from taskbot.sim_tests import SIM_TESTS, SimRun, run_sim_tests
 
 DEFAULT_MAX_ROUNDS = 5
+
+
+SIM_TEST_NAMES = [t.__name__ for t in SIM_TESTS]
 
 
 @dataclass(frozen=True)
 class Round:
     number: int
     spec: RobotSpec
-    results: list[CheckResult]
+    results: list[CheckResult]          # static checks, then sim tests if they ran
+    sim_runs: list[SimRun] = field(default_factory=list)
 
     @property
     def failures(self) -> list[CheckResult]:
@@ -64,16 +73,22 @@ def repair_loop(
     catalog: dict[str, Motor] | None = None,
     initial_spec: RobotSpec | None = None,
     max_rounds: int = DEFAULT_MAX_ROUNDS,
+    simulate: bool = True,
 ) -> RepairOutcome:
     """Round 1 checks the initial design (asked of the LLM unless given). Each later
-    round sends the failed checks back and checks the revised spec."""
+    round sends the failed checks back and checks the revised spec. With
+    `simulate`, the sim tests run in any round whose static checks all pass."""
     catalog = catalog if catalog is not None else load_motor_catalog()
     outcome = RepairOutcome(requirements=req, max_rounds=max_rounds)
     spec = initial_spec if initial_spec is not None else design_robot(client, req, catalog)
     system = design_system_prompt(catalog)  # schema + catalog, same as the design step
 
     for number in range(1, max_rounds + 1):
-        rnd = Round(number, spec, run_checks(spec, req, catalog))
+        results, runs = run_checks(spec, req, catalog), []
+        if simulate and all(r.passed for r in results):
+            runs = run_sim_tests(spec, req, catalog)
+            results = results + [run.result for run in runs]
+        rnd = Round(number, spec, results, runs)
         outcome.rounds.append(rnd)
         if rnd.passed or number == max_rounds:
             break

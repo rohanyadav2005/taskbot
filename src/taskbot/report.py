@@ -8,8 +8,9 @@ from pathlib import Path
 
 from taskbot.build_urdf import build_urdf
 from taskbot.checks import CheckResult
-from taskbot.repair import RepairOutcome, Round
+from taskbot.repair import SIM_TEST_NAMES, RepairOutcome, Round
 from taskbot.schema import Motor
+from taskbot.sim.record import render_gif
 
 
 def _cell(text: str) -> str:
@@ -39,7 +40,8 @@ def verdict(outcome: RepairOutcome) -> str:
             f"The last design still fails {failed} check(s), listed below. Do not build it as is.")
 
 
-def render_report(outcome: RepairOutcome) -> str:
+def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | None = None) -> str:
+    """`recordings` maps sim test name -> None (GIF written to sim/<name>.gif) or why not."""
     req = outcome.requirements
     final = outcome.final
     lines = [f"# Design report: {final.spec.name}", "", f"**{verdict(outcome)}**", ""]
@@ -64,6 +66,7 @@ def render_report(outcome: RepairOutcome) -> str:
 
     # Summary: one row per check name, one column per round.
     names = list(dict.fromkeys(r.check for rnd in outcome.rounds for r in rnd.results))
+    names += [n for n in SIM_TEST_NAMES if n not in names]
     lines += ["", "## Check results by round", "",
               "| Check | " + " | ".join(f"Round {r.number}" for r in outcome.rounds) + " |",
               "|---|" + "---|" * len(outcome.rounds)]
@@ -73,7 +76,7 @@ def render_report(outcome: RepairOutcome) -> str:
             rs = [r for r in rnd.results if r.check == name]
             bad = sum(not r.passed for r in rs)
             if not rs:
-                cells.append("–")
+                cells.append("not run" if name in SIM_TEST_NAMES else "–")
             elif bad:
                 cells.append(f"FAIL ({bad}/{len(rs)})" if len(rs) > 1 else "FAIL")
             else:
@@ -86,6 +89,13 @@ def render_report(outcome: RepairOutcome) -> str:
         for r in rnd.results:
             status = "pass" if r.passed and not _is_warning(r) else ("warn" if r.passed else "**FAIL**")
             lines.append(f"| {r.check} | {status} | {_num(r.value)} | {_num(r.limit)} | {_cell(r.message)} |")
+
+    lines += ["", "Simulation tests run only in rounds where every static check passed."]
+
+    if recordings:
+        lines += ["", f"## Simulation recordings (round {final.number})", ""]
+        for name, problem in recordings.items():
+            lines.append(f"- {name}: " + (f"![{name}](sim/{name}.gif)" if problem is None else problem))
 
     lines += ["", "## Changes between rounds"]
     if len(outcome.rounds) == 1:
@@ -113,10 +123,20 @@ def unique_dir(root: Path, name: str) -> Path:
     return path
 
 
-def write_outputs(outcome: RepairOutcome, out_root: Path, catalog: dict[str, Motor]) -> Path:
-    """out/<name>/{requirements.json, spec.json, robot.urdf, report.md, rounds/round_N/...}.
+def record_sim(rnd: Round, out: Path) -> dict[str, str | None]:
+    """Render the round's sim runs to out/sim/<test>.gif."""
+    return {
+        run.name: render_gif(run.robot.model, run.frames, out / "sim" / f"{run.name}.gif",
+                             look_at=run.look_at, distance=run.camera_distance)
+        for run in rnd.sim_runs
+    }
 
-    spec.json and robot.urdf are the last round's design, whether or not it passed.
+
+def write_outputs(outcome: RepairOutcome, out_root: Path, catalog: dict[str, Motor],
+                  record: bool = True) -> Path:
+    """out/<name>/{requirements.json, spec.json, robot.urdf, report.md, rounds/round_N/...,
+    sim/<test>.gif}. spec.json and robot.urdf are the last round's design, whether or
+    not it passed; GIFs are of the last round's sim tests, if they ran.
     """
     out = unique_dir(out_root, outcome.rounds[0].spec.name)
     out.mkdir(parents=True)
@@ -129,5 +149,6 @@ def write_outputs(outcome: RepairOutcome, out_root: Path, catalog: dict[str, Mot
             json.dumps([r.model_dump() for r in rnd.results], indent=2) + "\n", "utf-8")
     (out / "spec.json").write_text(_spec_json(outcome.final) + "\n", "utf-8")
     (out / "robot.urdf").write_text(build_urdf(outcome.final.spec, catalog), "utf-8")
-    (out / "report.md").write_text(render_report(outcome), "utf-8")
+    recordings = record_sim(outcome.final, out) if record else None
+    (out / "report.md").write_text(render_report(outcome, recordings), "utf-8")
     return out

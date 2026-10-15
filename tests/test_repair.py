@@ -17,7 +17,7 @@ UPGRADED = with_motor(UNDERPOWERED, "shoulder_pitch", "xm540_w270") | {
 
 def test_motor_upgrade_makes_loop_pass_in_round_2(desk_req):
     fake = FakeClient({"RobotSpec": [UNDERPOWERED, UPGRADED]})
-    outcome = repair_loop(fake, desk_req, CATALOG)
+    outcome = repair_loop(fake, desk_req, CATALOG, simulate=False)
 
     assert outcome.passed
     assert [r.number for r in outcome.rounds] == [1, 2]
@@ -32,7 +32,7 @@ def test_motor_upgrade_makes_loop_pass_in_round_2(desk_req):
 
 def test_repair_request_holds_only_failures_spec_and_requirements(desk_req):
     fake = FakeClient({"RobotSpec": [UNDERPOWERED, UPGRADED]})
-    outcome = repair_loop(fake, desk_req, CATALOG)
+    outcome = repair_loop(fake, desk_req, CATALOG, simulate=False)
     system, messages, schema = fake.calls[1]
     prompt = messages[0]["content"]
 
@@ -49,13 +49,13 @@ def test_repair_request_holds_only_failures_spec_and_requirements(desk_req):
 
 def test_loop_passing_first_time_makes_no_repair_call(desk_req):
     fake = FakeClient({"RobotSpec": [UPGRADED]})
-    outcome = repair_loop(fake, desk_req, CATALOG)
+    outcome = repair_loop(fake, desk_req, CATALOG, simulate=False)
     assert outcome.passed and len(outcome.rounds) == 1 and len(fake.calls) == 1
 
 
 def test_loop_gives_up_after_5_rounds_and_report_says_so(desk_req, tmp_path):
     fake = FakeClient({"RobotSpec": [UNDERPOWERED] * 5})  # the "repair" never changes anything
-    outcome = repair_loop(fake, desk_req, CATALOG)
+    outcome = repair_loop(fake, desk_req, CATALOG, simulate=False)
     assert not outcome.passed
     assert len(outcome.rounds) == 5 and len(fake.calls) == 5
     report = render_report(outcome)
@@ -68,7 +68,7 @@ def test_loop_gives_up_after_5_rounds_and_report_says_so(desk_req, tmp_path):
 
 def test_llm_failure_during_repair_stops_loop_honestly(desk_req):
     fake = FakeClient({"RobotSpec": [UNDERPOWERED] + [{"broken": True}] * 4})
-    outcome = repair_loop(fake, desk_req, CATALOG)
+    outcome = repair_loop(fake, desk_req, CATALOG, simulate=False)
     assert not outcome.passed and len(outcome.rounds) == 1
     assert "repair request after round 1 failed" in outcome.stop_reason
     assert "the loop stopped early" in render_report(outcome)
@@ -76,7 +76,7 @@ def test_llm_failure_during_repair_stops_loop_honestly(desk_req):
 
 def test_write_outputs_keeps_every_round_and_diffs_them(desk_req, tmp_path):
     fake = FakeClient({"RobotSpec": [UNDERPOWERED, UPGRADED]})
-    outcome = repair_loop(fake, desk_req, CATALOG)
+    outcome = repair_loop(fake, desk_req, CATALOG, simulate=False)
     out = write_outputs(outcome, tmp_path, CATALOG)
 
     assert out == tmp_path / "arm_4dof"
@@ -111,7 +111,8 @@ def test_repair_prompt_lists_each_failure_on_its_own_line(desk_req):
 def test_cli_fake_backend_repairs_and_writes_report(tmp_path, capsys):
     from taskbot import cli
 
-    assert cli.main(["design", "water my plants", "--backend", "fake", "--out", str(tmp_path)]) == 0
+    assert cli.main(["design", "water my plants", "--backend", "fake", "--out", str(tmp_path),
+                     "--no-record"]) == 0
     out = capsys.readouterr().out
     assert "Rounds: R1 1 fail  R2 pass" in out and "PASSED" in out
     assert (tmp_path / "fake_arm_4dof" / "report.md").exists()
@@ -122,5 +123,5 @@ def test_cli_exit_code_2_when_design_never_passes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "TORQUE_SAFETY_FRACTION", 1e-6)  # fake repair finds no motor strong enough
     assert cli.main(["design", "x", "--backend", "fake", "--out", str(tmp_path),
-                     "--max-rounds", "2"]) == 2
+                     "--max-rounds", "2", "--no-record"]) == 2
     assert "FAILED" in (tmp_path / "fake_arm_4dof" / "report.md").read_text()

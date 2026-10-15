@@ -183,10 +183,10 @@ def test_run_checks_returns_every_check(desk_req):
 
 
 def test_run_checks_reports_unloadable_model(desk_req, monkeypatch):
-    def broken(xml):
+    def broken(spec, catalog=None):
         raise ValueError("Error: mass and inertia of moving bodies must be larger than mjMINVAL")
 
-    monkeypatch.setattr(mujoco.MjModel, "from_xml_string", broken)
+    monkeypatch.setattr(checks, "build_model", broken)
     spec = RobotSpec.model_validate(example_dict("arm_2dof"))
     (r,) = run_checks(spec, desk_req)
     assert r.check == "build" and not r.passed and "mjMINVAL" in r.message

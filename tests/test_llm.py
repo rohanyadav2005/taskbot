@@ -255,7 +255,8 @@ def test_make_client_rejects_unknown_backend():
 
 
 def test_cli_design_with_fake_backend_writes_outputs(tmp_path, capsys):
-    argv = ["design", "pick up a cup", "--backend", "fake", "--out", str(tmp_path)]
+    argv = ["design", "pick up a cup", "--backend", "fake", "--out", str(tmp_path),
+            "--no-sim", "--no-record"]
     assert cli.main(argv) == 0
     out_dir = tmp_path / "fake_arm_4dof"
     req = Requirements.model_validate_json((out_dir / "requirements.json").read_text())

@@ -23,12 +23,13 @@ from taskbot.schema import ArmChain, Gripper, Motor, load_motor_catalog
 BACKENDS = ("anthropic", "ollama", "fake")
 
 _TORQUE_FAIL = re.compile(r"^- \[static_torque\] (\w+) needs ([\d.e+-]+) Nm", re.MULTILINE)
+_SATURATED = re.compile(r"(\w+) saturated at its rated ([\d.e+-]+) Nm")
 
 
 def fake_client(catalog: dict[str, Motor]) -> FakeClient:
     """Offline demo. Requirements are canned (echoing the prompt), the first design is a
-    canned 4-DOF arm, and 'repair' swaps any motor that fails static_torque for the
-    cheapest catalog motor strong enough. It fixes nothing else."""
+    canned 4-DOF arm, and 'repair' swaps any motor that fails static_torque, or saturates
+    in simulation, for the cheapest catalog motor strong enough. It fixes nothing else."""
 
     def requirements(system, messages, schema):
         return {
@@ -54,9 +55,11 @@ def fake_client(catalog: dict[str, Motor]) -> FakeClient:
         if prompt.startswith("Requirements:"):
             return canned
         spec = json.loads(prompt.split("Current spec: ", 1)[1].split("\nRequirements: ", 1)[0])
-        for joint_name, need in _TORQUE_FAIL.findall(prompt):
+        needs = [(j, float(n)) for j, n in _TORQUE_FAIL.findall(prompt)]
+        needs += [(j, 1.5 * float(rated)) for j, rated in _SATURATED.findall(prompt)]
+        for joint_name, need in needs:
             strong = [m for m in catalog.values()
-                      if TORQUE_SAFETY_FRACTION * m.rated_torque_nm >= float(need)]
+                      if TORQUE_SAFETY_FRACTION * m.rated_torque_nm >= need]
             if not strong:
                 continue
             best = min(strong, key=lambda m: m.price_usd)
@@ -101,7 +104,8 @@ def summarize(outcome: RepairOutcome, catalog: dict[str, Motor], out: Path) -> s
         *[f"  FAIL [{r.check}] {r.message}" for r in final.failures],
         "",
         verdict(outcome),
-        f"Saved to {out}/ : report.md, requirements.json, spec.json, robot.urdf, rounds/",
+        f"Saved to {out}/ : report.md, requirements.json, spec.json, robot.urdf, rounds/"
+        + (", sim/" if (out / "sim").exists() else ""),
     ]
     return "\n".join(lines)
 
@@ -113,11 +117,14 @@ def cmd_design(args: argparse.Namespace) -> int:
         print(f"requirements ({args.backend})...", file=sys.stderr)
         req = extract_requirements(client, args.prompt)
         print(f"design + check loop (max {args.max_rounds} rounds)...", file=sys.stderr)
-        outcome = repair_loop(client, req, catalog, max_rounds=args.max_rounds)
+        outcome = repair_loop(client, req, catalog, max_rounds=args.max_rounds,
+                              simulate=not args.no_sim)
     except LLMError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    out = write_outputs(outcome, args.out, catalog)
+    if outcome.final.sim_runs and not args.no_record:
+        print("recording simulation GIFs...", file=sys.stderr)
+    out = write_outputs(outcome, args.out, catalog, record=not args.no_record)
     print(summarize(outcome, catalog, out))
     return 0 if outcome.passed else 2
 
@@ -132,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--model", help="model name (default: TASKBOT_MODEL or the backend's default)")
     d.add_argument("--out", type=Path, default=Path("out"), help="output root (default: out/)")
     d.add_argument("--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS)
+    d.add_argument("--no-sim", action="store_true", help="static checks only")
+    d.add_argument("--no-record", action="store_true", help="don't render simulation GIFs")
     args = parser.parse_args(argv)
     return cmd_design(args)
 

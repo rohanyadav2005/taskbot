@@ -10,7 +10,7 @@ from pathlib import Path
 
 import mujoco
 
-from taskbot.build_urdf import build_urdf
+from taskbot.build_urdf import build_model, build_urdf
 from taskbot.schema import RobotSpec
 
 
@@ -19,8 +19,8 @@ def load_spec(path: str | Path) -> RobotSpec:
 
 
 def load_model(path: str | Path) -> mujoco.MjModel:
-    """Spec JSON -> validated RobotSpec -> URDF -> compiled MuJoCo model."""
-    return mujoco.MjModel.from_xml_string(build_urdf(load_spec(path)))
+    """Spec JSON -> validated RobotSpec -> URDF -> compiled MuJoCo model (with EE site)."""
+    return build_model(load_spec(path))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -33,7 +33,7 @@ def main(argv: list[str] | None = None) -> None:
     urdf = build_urdf(spec)
     if args.urdf_out:
         args.urdf_out.write_text(urdf, "utf-8")
-    model = mujoco.MjModel.from_xml_string(urdf)
+    model = build_model(spec)
 
     from mujoco import viewer  # imported late: needs a display
 

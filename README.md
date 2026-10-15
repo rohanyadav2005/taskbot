@@ -23,9 +23,17 @@ taskbot design "..." --backend fake                                   # offline,
 ```
 
 The design is checked (static torque, reach, workspace corners, self-collision,
-joint ranges, budget, mass). Failed checks go back to the LLM for repair, up to
-`--max-rounds` (default 5). `report.md` shows each round's results, a diff of
-what changed, and the final pass/fail. Exit code 0 = passed, 2 = never passed.
+joint ranges, budget, mass); once those all pass, it is simulated in MuJoCo
+(`reach_targets`, `carry_payload`, `hold_still`). Failures go back to the LLM for
+repair, up to `--max-rounds` (default 5). `report.md` shows each round's results,
+a diff of what changed, the final pass/fail and GIFs of the final round's
+simulations (`sim/*.gif`). Exit code 0 = passed, 2 = never passed.
+`--no-sim` skips simulation; `--no-record` skips the GIFs.
+
+Recording needs an OpenGL backend. On a headless Linux machine install one and
+pick it before running, e.g. `apt install libosmesa6` and `export MUJOCO_GL=osmesa`
+(or `libegl1` and `MUJOCO_GL=egl` with a GPU). Without one, the GIFs are skipped
+and the report says why.
 
 `--backend` defaults to `$TASKBOT_BACKEND` (else `anthropic`); `--model` defaults to
 `$TASKBOT_MODEL` (else the backend's default). If a reply fails validation, the errors
@@ -43,7 +51,9 @@ are sent back to the model and it retries, up to 3 times.
 | `src/taskbot/requirements.py` | `Requirements` model and the prompt → requirements step |
 | `src/taskbot/design.py` | Requirements → `RobotSpec` step |
 | `src/taskbot/prompts/` | System prompts |
-| `src/taskbot/repair.py` | design → check → repair loop |
+| `src/taskbot/sim/` | Scene building, IK, PD + gravity-compensation control, GIF recording |
+| `src/taskbot/sim_tests.py` | Simulation tests generated from the requirements |
+| `src/taskbot/repair.py` | design → check → simulate → repair loop |
 | `src/taskbot/report.py` | Writes `out/<name>/` and `report.md` |
 | `src/taskbot/cli.py` | `taskbot design "<prompt>"` |
 | `src/taskbot/checks.py` | Engineering checks and `CheckResult` |
@@ -71,3 +81,18 @@ are sent back to the model and it retries, up to 3 times.
 
 Reach uses 2000 random poses and then refines the nearest ones with IK, because random
 samples alone are too sparse for a 1 cm tolerance. All sampling uses fixed seeds.
+
+## Simulation tests
+
+Generated from the requirements; run only after every static check passes.
+
+| Test | What happens | Passes when |
+|---|---|---|
+| `reach_targets` | IK to the workspace centre and 8 corners; 2 s minimum-jerk move to each, then 1 s settle | Every final tool error < 1 cm |
+| `carry_payload` | Same moves with a `payload_kg` cube welded to the tool | As above, and no joint saturates its rated torque for > 0.2 s |
+| `hold_still` | Hold the target pose with the highest torque load, with payload, for 5 s | Tool drift < 5 mm |
+
+Control is joint-space PD (gains from each joint's effective inertia, 4 Hz bandwidth,
+critically damped) plus gravity compensation (`qfrc_bias` plus the payload's weight).
+Torques are clipped at each motor's **rated** torque, never stall. Motor speed limits
+are not modelled yet. Physics runs at 1 ms.

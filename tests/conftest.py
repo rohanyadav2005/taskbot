@@ -1,7 +1,15 @@
+import ctypes.util
 import json
+import os
+import sys
 from pathlib import Path
 
 import pytest
+
+# Headless Linux: pick an offscreen GL backend for the recording tests before
+# mujoco is imported. Tests that need rendering skip if none works.
+if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+    os.environ.setdefault("MUJOCO_GL", "osmesa" if ctypes.util.find_library("OSMesa") else "egl")
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 EXAMPLES = sorted(EXAMPLES_DIR.glob("*.json"))
@@ -45,3 +53,9 @@ def with_motor(spec: dict, joint_name: str, motor_id: str) -> dict:
             if seg["joint"]["name"] == joint_name:
                 seg["joint"]["motor_id"] = motor_id
     return spec
+
+
+def strong_arm() -> dict:
+    """4-DOF example with XM540s at shoulder and elbow: passes every check and sim test."""
+    return with_motor(with_motor(example_dict("arm_4dof"), "shoulder_pitch", "xm540_w270"),
+                      "elbow_pitch", "xm540_w270")

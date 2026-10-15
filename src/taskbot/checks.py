@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from taskbot.build_urdf import (
     LINEAR_DRIVE_RADIUS_M,
-    build_urdf,
+    build_model,
     structure_mass_by_material,
     tool_length_m,
 )
@@ -445,7 +445,7 @@ def run_checks(
     """Build the spec and run every check. A spec MuJoCo can't compile fails a 'build' check."""
     catalog = _catalog(catalog)
     try:
-        model = mujoco.MjModel.from_xml_string(build_urdf(spec, catalog))
+        model = build_model(spec, catalog)
     except Exception as exc:  # MuJoCo raises ValueError with compiler output
         return [CheckResult(check="build", passed=False,
                             message=f"the generated URDF does not load in MuJoCo: {exc}")]
