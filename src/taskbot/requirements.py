@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeFloat, PositiveFloat, model_validator
@@ -51,6 +52,11 @@ class Requirements(BaseModel):
         default=None, description="Required when gripper_needed is true; null otherwise."
     )
     max_budget_usd: PositiveFloat | None = None
+    min_joint_range_rad: PositiveFloat = Field(
+        default=math.pi / 2,
+        description="Smallest allowed range for any revolute joint. Default 90°; "
+        "lower it only if the task needs less motion, and say why in assumptions.",
+    )
     assumptions: list[str] = Field(
         default_factory=list, description="Every value the model guessed, and why."
     )

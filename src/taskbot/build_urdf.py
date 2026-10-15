@@ -57,6 +57,7 @@ class Body:
     mass: float
     com: np.ndarray
     inertia: np.ndarray  # 3x3
+    material: str | None = None  # None for motors
 
 
 def box_inertia(mass: float, x: float, y: float, z: float) -> np.ndarray:
@@ -72,12 +73,12 @@ def cylinder_inertia(mass: float, radius: float, length: float) -> np.ndarray:
 def solid_box(material: str, size, com) -> Body:
     x, y, z = size
     m = DENSITY_KG_M3[material] * x * y * z
-    return Body(m, np.asarray(com, float), box_inertia(m, x, y, z))
+    return Body(m, np.asarray(com, float), box_inertia(m, x, y, z), material)
 
 
 def solid_cylinder(material: str, radius: float, length: float, com) -> Body:
     m = DENSITY_KG_M3[material] * np.pi * radius * radius * length
-    return Body(m, np.asarray(com, float), cylinder_inertia(m, radius, length))
+    return Body(m, np.asarray(com, float), cylinder_inertia(m, radius, length), material)
 
 
 def motor_body(motor: Motor, com) -> Body:
@@ -249,11 +250,16 @@ def _gripper_drafts(g: Gripper, motor: Motor | None) -> list[_LinkDraft]:
     return [palm, *fingers]
 
 
-def build_urdf(spec: RobotSpec, catalog: dict[str, Motor] | None = None) -> str:
-    """Return the URDF XML for a validated RobotSpec."""
-    motors = catalog if catalog is not None else load_motor_catalog()
-    robot = etree.Element("robot", name=spec.name)
+def tool_length_m(gripper: Gripper | None) -> float:
+    """Distance from the last arm link's tip to the tool point (fingertips / cup face)."""
+    if gripper is None:
+        return 0.0
+    if gripper.gripper_type == "suction":
+        return SUCTION_CUP_LENGTH_M
+    return PALM_THICKNESS_M + FINGER_LENGTH_M
 
+
+def _assemble(spec: RobotSpec, motors: dict[str, Motor]) -> tuple[list[_LinkDraft], list[dict]]:
     drafts: list[_LinkDraft] = [_base_draft(spec.base)]
     joints: list[dict] = []
     prev = drafts[0]
@@ -289,7 +295,31 @@ def build_urdf(spec: RobotSpec, catalog: dict[str, Motor] | None = None) -> str:
             prev = palm
         else:  # pragma: no cover - schema allows only one base, at index 0
             raise AssertionError(f"unexpected module {module.kind}")
+    return drafts, joints
 
+
+def structure_mass_by_material(
+    spec: RobotSpec, catalog: dict[str, Motor] | None = None
+) -> dict[str, float]:
+    """kg of each material in the base, links and gripper parts (motors excluded)."""
+    drafts, _ = _assemble(spec, catalog if catalog is not None else load_motor_catalog())
+    totals: dict[str, float] = {}
+    for d in drafts:
+        for b in d.bodies:
+            if b.material is not None:
+                totals[b.material] = totals.get(b.material, 0.0) + b.mass
+    return totals
+
+
+def build_urdf(spec: RobotSpec, catalog: dict[str, Motor] | None = None) -> str:
+    """Return the URDF XML for a validated RobotSpec."""
+    drafts, joints = _assemble(spec, catalog if catalog is not None else load_motor_catalog())
+    robot = etree.Element("robot", name=spec.name)
+    # MuJoCo-only hint (other URDF tools ignore it): keep the fixed base and the
+    # palm as their own bodies, so their mass stays in the model and contacts
+    # between them and their neighbours are filtered as parent/child pairs.
+    mj = etree.SubElement(robot, "mujoco")
+    etree.SubElement(mj, "compiler", fusestatic="false", discardvisual="true")
     for d in drafts:
         _emit_link(robot, d)
     for j in joints:

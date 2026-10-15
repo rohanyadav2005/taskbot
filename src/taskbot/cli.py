@@ -8,32 +8,36 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from importlib import resources
 from pathlib import Path
 
-from lxml import etree
-
-from taskbot.build_urdf import build_urdf
-from taskbot.design import design_robot
+from taskbot.checks import TORQUE_SAFETY_FRACTION
 from taskbot.llm import FakeClient, LLMClient, LLMError, make_client
-from taskbot.requirements import OUT_OF_SCOPE_PREFIX, Requirements, extract_requirements
-from taskbot.schema import ArmChain, Gripper, Motor, RobotSpec, load_motor_catalog
+from taskbot.repair import DEFAULT_MAX_ROUNDS, RepairOutcome, repair_loop
+from taskbot.report import verdict, write_outputs
+from taskbot.requirements import OUT_OF_SCOPE_PREFIX, extract_requirements
+from taskbot.schema import ArmChain, Gripper, Motor, load_motor_catalog
 
 BACKENDS = ("anthropic", "ollama", "fake")
 
+_TORQUE_FAIL = re.compile(r"^- \[static_torque\] (\w+) needs ([\d.e+-]+) Nm", re.MULTILINE)
 
-def fake_client() -> FakeClient:
-    """Offline demo: canned requirements (echoing the prompt) and a canned 4-DOF arm."""
+
+def fake_client(catalog: dict[str, Motor]) -> FakeClient:
+    """Offline demo. Requirements are canned (echoing the prompt), the first design is a
+    canned 4-DOF arm, and 'repair' swaps any motor that fails static_torque for the
+    cheapest catalog motor strong enough. It fixes nothing else."""
 
     def requirements(system, messages, schema):
         return {
             "task_summary": messages[0]["content"],
             "robot_type": "arm",
-            "reach_m": 0.33,
+            "reach_m": 0.3,
             "payload_kg": 0.25,
-            "workspace": {"x_min": -0.3, "x_max": 0.3, "y_min": -0.3, "y_max": 0.3,
-                          "z_min": 0.0, "z_max": 0.3},
+            "workspace": {"x_min": 0.1, "x_max": 0.25, "y_min": -0.1, "y_max": 0.1,
+                          "z_min": 0.05, "z_max": 0.2},
             "dof_min": 4,
             "gripper_needed": True,
             "gripper_kind": "parallel",
@@ -41,32 +45,40 @@ def fake_client() -> FakeClient:
             "assumptions": ["FAKE BACKEND: canned requirements, only task_summary reflects the prompt."],
         }
 
-    design = json.loads(
+    canned = json.loads(
         resources.files("taskbot").joinpath("data/fake_design.json").read_text("utf-8")
     )
-    return FakeClient({"Requirements": requirements, "RobotSpec": lambda *_: design})
+
+    def design(system, messages, schema):
+        prompt = messages[-1]["content"]
+        if prompt.startswith("Requirements:"):
+            return canned
+        spec = json.loads(prompt.split("Current spec: ", 1)[1].split("\nRequirements: ", 1)[0])
+        for joint_name, need in _TORQUE_FAIL.findall(prompt):
+            strong = [m for m in catalog.values()
+                      if TORQUE_SAFETY_FRACTION * m.rated_torque_nm >= float(need)]
+            if not strong:
+                continue
+            best = min(strong, key=lambda m: m.price_usd)
+            for module in spec["modules"]:
+                for seg in module.get("segments", []):
+                    if seg["joint"]["name"] == joint_name:
+                        seg["joint"]["motor_id"] = best.id
+            spec["description"] += f" Fake repair: {joint_name} -> {best.id}."
+        return spec
+
+    return FakeClient({"Requirements": requirements, "RobotSpec": design})
 
 
-def get_client(backend: str, model: str | None) -> LLMClient:
-    return fake_client() if backend == "fake" else make_client(backend, model)
+def get_client(backend: str, model: str | None, catalog: dict[str, Motor]) -> LLMClient:
+    return fake_client(catalog) if backend == "fake" else make_client(backend, model)
 
 
-def unique_dir(root: Path, name: str) -> Path:
-    path, n = root / name, 2
-    while path.exists():
-        path, n = root / f"{name}_{n}", n + 1
-    return path
-
-
-def summarize(req: Requirements, spec: RobotSpec, urdf: str, catalog: dict[str, Motor], out: Path) -> str:
+def summarize(outcome: RepairOutcome, catalog: dict[str, Motor], out: Path) -> str:
+    req, final = outcome.requirements, outcome.final
+    spec = final.spec
     segments = [s for m in spec.modules if isinstance(m, ArmChain) for s in m.segments]
-    link_sum = sum(s.link.length for s in segments)
-    motor_ids = [s.joint.motor_id for s in segments]
-    motor_ids += [m.motor_id for m in spec.modules if isinstance(m, Gripper) and m.motor_id]
-    cost = sum(catalog[i].price_usd for i in motor_ids)
-    mass = sum(float(m.get("value")) for m in etree.fromstring(urdf.encode()).iter("mass"))
     gripper = next((m for m in spec.modules if isinstance(m, Gripper)), None)
-
     lines = [
         f"Task: {req.task_summary}",
         "",
@@ -77,17 +89,19 @@ def summarize(req: Requirements, spec: RobotSpec, urdf: str, catalog: dict[str, 
         "  assumptions:",
         *[f"    {'!! ' if a.startswith(OUT_OF_SCOPE_PREFIX) else '- '}{a}" for a in req.assumptions],
         "",
-        f"Design: {spec.name}",
+        f"Design: {spec.name} (round {final.number})",
         f"  {spec.description}",
         f"  joints ({len(segments)}):",
         *[f"    {s.joint.name:<18} {s.joint.type:<10} axis {s.joint.axis}  {s.joint.motor_id:<12}"
           f" -> {s.link.name} ({s.link.length:.3f} m {s.link.material})" for s in segments],
         f"  gripper: {gripper.gripper_type} {gripper.name}" if gripper else "  gripper: none",
-        f"  link length sum {link_sum:.3f} m vs reach {req.reach_m:.3f} m (not checked yet)",
-        f"  total mass {mass:.3f} kg | motor cost ${cost:.2f}"
-        + (f" (budget ${req.max_budget_usd:.0f})" if req.max_budget_usd else ""),
         "",
-        f"Saved to {out}/ : requirements.json, spec.json, robot.urdf",
+        "Rounds: " + "  ".join(
+            f"R{r.number} {'pass' if r.passed else f'{len(r.failures)} fail'}" for r in outcome.rounds),
+        *[f"  FAIL [{r.check}] {r.message}" for r in final.failures],
+        "",
+        verdict(outcome),
+        f"Saved to {out}/ : report.md, requirements.json, spec.json, robot.urdf, rounds/",
     ]
     return "\n".join(lines)
 
@@ -95,35 +109,29 @@ def summarize(req: Requirements, spec: RobotSpec, urdf: str, catalog: dict[str, 
 def cmd_design(args: argparse.Namespace) -> int:
     catalog = load_motor_catalog()
     try:
-        client = get_client(args.backend, args.model)
-        print(f"[1/3] requirements ({args.backend})...", file=sys.stderr)
+        client = get_client(args.backend, args.model, catalog)
+        print(f"requirements ({args.backend})...", file=sys.stderr)
         req = extract_requirements(client, args.prompt)
-        print("[2/3] design...", file=sys.stderr)
-        spec = design_robot(client, req, catalog)
+        print(f"design + check loop (max {args.max_rounds} rounds)...", file=sys.stderr)
+        outcome = repair_loop(client, req, catalog, max_rounds=args.max_rounds)
     except LLMError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print("[3/3] URDF...", file=sys.stderr)
-    urdf = build_urdf(spec, catalog)
-
-    out = unique_dir(args.out, spec.name)
-    out.mkdir(parents=True)
-    (out / "requirements.json").write_text(req.model_dump_json(indent=2) + "\n", "utf-8")
-    (out / "spec.json").write_text(spec.model_dump_json(indent=2, exclude_none=True) + "\n", "utf-8")
-    (out / "robot.urdf").write_text(urdf, "utf-8")
-    print(summarize(req, spec, urdf, catalog, out))
-    return 0
+    out = write_outputs(outcome, args.out, catalog)
+    print(summarize(outcome, catalog, out))
+    return 0 if outcome.passed else 2
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="taskbot")
     sub = parser.add_subparsers(dest="command", required=True)
-    d = sub.add_parser("design", help="prompt -> requirements -> spec -> URDF")
+    d = sub.add_parser("design", help="prompt -> requirements -> design/check/repair -> report")
     d.add_argument("prompt", help="what the robot must do, in plain English")
     d.add_argument("--backend", choices=BACKENDS,
                    default=os.environ.get("TASKBOT_BACKEND", "anthropic"))
     d.add_argument("--model", help="model name (default: TASKBOT_MODEL or the backend's default)")
     d.add_argument("--out", type=Path, default=Path("out"), help="output root (default: out/)")
+    d.add_argument("--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS)
     args = parser.parse_args(argv)
     return cmd_design(args)
 
