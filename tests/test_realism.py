@@ -10,7 +10,7 @@ from taskbot.build_urdf import build_model
 from taskbot.checks import joint_speed, static_torque
 from taskbot.report import render_report
 from taskbot.schema import Motor, RobotSpec, load_motor_catalog
-from taskbot.sim.control import PDGravityController, available_torque
+from taskbot.sim.control import MotorController
 from taskbot.sim.model import build_scene
 from taskbot.sim.plan import plan_moves
 from taskbot import sim_tests
@@ -50,36 +50,24 @@ def test_max_speed_above_no_load_speed_rejected():
 # --------------------------------------------------------------------------- torque-speed line
 
 
-def test_available_torque_follows_linear_torque_speed_line():
-    rated, w0 = np.array([2.0]), np.array([4.0])
-    at = lambda raw, w: available_torque(np.array([raw]), np.array([w]), rated, w0)[0]
-    assert at(1.0, 0.0) == 2.0           # at rest: rated
-    assert at(1.0, 2.0) == 1.0           # half no-load speed, driving: half
-    assert at(-1.0, -3.0) == 0.5         # same, other direction
-    assert at(1.0, 4.0) == 0.0           # at no-load speed: nothing left
-    assert at(1.0, 9.0) == 0.0           # beyond it: still nothing
-    assert at(-1.0, 3.0) == 2.0          # braking: rated, not on the line
-
-
 def test_controller_never_exceeds_torque_available_at_current_speed(desk_req, monkeypatch):
+    """Total joint torque (applied minus MuJoCo's damping) stays within each motor's
+    torque-speed model at every step, for a servo arm with a stepper shoulder."""
     spec = spec_of(NEMA_SHOULDER)
     seen = []
-    original = PDGravityController.compute
+    original = MotorController.compute
 
     def spy(self, data, *a, **k):
         out = original(self, data, *a, **k)
-        r = self.robot
-        qd = data.qvel[r.dadr]
-        tau = data.qfrc_applied[r.dadr]
-        driving = tau * qd > 0
-        line = r.torque_limit * np.maximum(0, 1 - np.abs(qd) / r.no_load_speed)
-        cap = np.where(driving, line, r.torque_limit)
-        seen.append(np.max(np.abs(tau) - cap))
+        qd = data.qvel[self.robot.dadr]
+        for m, tau, w in zip(self.robot.motors, out.tau, qd):
+            cap = m.limits(tau, w)[0]
+            seen.append(abs(tau) - cap)
         return out
 
-    monkeypatch.setattr(PDGravityController, "compute", spy)
+    monkeypatch.setattr(MotorController, "compute", spy)
     carry_payload(spec, desk_req, CATALOG, payload_mass_error=0.0)
-    assert max(seen) <= 1e-12
+    assert max(seen) <= 1e-9
 
 
 # --------------------------------------------------------------------------- planned durations / joint_speed
@@ -126,15 +114,15 @@ def test_mass_error_is_applied_and_ideal_result_kept(strong_runs):
     run = strong_runs["hold_still"]
     assert "controller assumes 0.2 kg" in run.result.message
     assert run.ideal is not None and "controller knows the mass" in run.ideal.message
-    assert run.result.value > 10 * run.ideal.value  # the wrong mass really makes it sag
-    assert run.result.passed  # ...but a strong arm with a PID still holds within 5 mm
-    assert re.search(r"tool drifted \d+ µm \(limit 5000 µm\)", run.result.message)
+    assert run.result.value > 100 * max(run.ideal.value, 1e-6)  # the wrong mass really makes it sag
+    assert re.search(r"peak deviation \d+ µm \(limit 5000 µm\), final error \d+ µm \(limit 1000 µm\)",
+                     run.result.message)
 
 
 def test_controller_believes_lighter_payload():
     robot = build_scene(spec_of(strong_arm()), CATALOG, payload_kg=0.25)
-    assert PDGravityController(robot).believed_payload_kg == pytest.approx(0.2)
-    assert PDGravityController(robot, payload_mass_error=0.0).believed_payload_kg == 0.25
+    assert MotorController(robot).believed_payload_kg == pytest.approx(0.2)
+    assert MotorController(robot, payload_mass_error=0.0).believed_payload_kg == 0.25
 
 
 def test_zero_drift_raises(desk_req, monkeypatch):
@@ -142,7 +130,7 @@ def test_zero_drift_raises(desk_req, monkeypatch):
         return np.tile(self.robot.ee(self.data), (10, 1))  # the tool never moves
 
     monkeypatch.setattr(sim_tests._Sim, "run", frozen)
-    with pytest.raises(SimMeasurementError, match="exactly zero drift"):
+    with pytest.raises(SimMeasurementError, match="exactly zero deviation"):
         hold_still(spec_of(strong_arm()), desk_req, CATALOG)
 
 

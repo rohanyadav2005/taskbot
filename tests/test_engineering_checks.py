@@ -178,7 +178,7 @@ def test_run_checks_returns_every_check(desk_req):
     spec = RobotSpec.model_validate(example_dict("arm_4dof"))
     names = {r.check for r in run_checks(spec, desk_req)}
     assert names == {"static_torque", "reach", "workspace_corners", "self_collision",
-                     "joint_limits", "joint_speed", "budget", "mass"}
+                     "joint_limits", "joint_speed", "torque_at_speed", "budget", "mass"}
 
 
 def test_run_checks_reports_unloadable_model(desk_req, monkeypatch):

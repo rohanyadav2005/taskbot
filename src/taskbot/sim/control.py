@@ -1,33 +1,20 @@
-"""Joint position control: PID + gravity compensation, limited by each motor's torque-speed line.
+"""Joint position control with fixed, per-motor gains (see taskbot.sim.motor).
 
-    tau = clip(Kp e + Kd (qd_ref - qd) + (Kp / Ti) ∫e + g_hat(q), available torque)
+For each joint, the motor's own position loop plus a host-side gravity feedforward:
 
-Available torque follows a linear torque-speed line from rated torque at rest
-to zero at the no-load speed: rated * max(0, 1 - |w| / w0). That limits torque
-that drives the joint the way it is already turning. Torque that opposes the
-motion (braking) is limited to rated torque: a motor brakes at least as hard as
-it holds, and capping braking on the same line would let a fast-falling arm run
-away with no torque at all.
+    desired total torque = Kp e + Kd (qd_ref - qd) + g_hat(q) - b qd
 
-Gains come from the inertia each joint currently sees (Kp = I wn², Kd = 2 zeta I wn),
-so light wrist joints and heavy shoulder joints get the same closed-loop bandwidth.
-I is the effective inertia 1 / (M^-1)_ii of the arm, plus the payload as a point mass
-at the tool (m |J_i|²), since the payload is a separate welded body that M lacks.
-Because the weld is slightly compliant, at high frequency a joint feels only the
-arm's own inertia, so both gains are capped at the explicit-integration stability
-limit for that inertia; otherwise a heavy payload on a light wrist makes the loop chatter.
+where Kp, Kd come from the motor (Dynamixel factory gains, or one conservative
+hobby/stepper setting), b qd is the motor's back-EMF, and the result is limited
+by the motor's torque-speed model. The velocity terms -b qd and -Kd qd are
+applied by MuJoCo as joint damping (integrated implicitly, so they are stable
+however light the joint); only the rest is applied as a joint force. Nothing
+here is tuned per test.
 
 g_hat(q) is MuJoCo's qfrc_bias plus the payload's weight mapped through the
 end-effector Jacobian (qfrc_bias alone doesn't include the welded payload). The
 controller's idea of the payload mass can be wrong: with payload_mass_error = 0.2
 it believes the payload is 20% lighter than it is, as a real controller would.
-
-Tuning: 8 Hz bandwidth and a 0.3 s integral time. With a 20% mass error, a 4 Hz
-PD loop sags ~1 cm even on strong motors (the error is the missing torque / Kp,
-not a lack of torque); 8 Hz is closer to a hobby/Dynamixel position loop (an
-XM430 at default gains is roughly 19 N·m/rad). The integral term (conditional
-integration, clamped at rated torque, as anti-windup) removes the remaining
-steady offset, as a servo's PID does.
 """
 
 from __future__ import annotations
@@ -39,94 +26,56 @@ import numpy as np
 
 from taskbot.sim.model import SimRobot
 
-DEFAULT_BANDWIDTH_HZ = 8.0
 DEFAULT_PAYLOAD_MASS_ERROR = 0.2
-DEFAULT_INTEGRAL_TIME_S = 0.3
-MIN_INERTIA = 1e-6  # kg·m² / kg, so a near-massless joint still gets a positive gain
-# Discrete stability margins for gains on an inertia I with timestep dt.
-KD_MAX_FRACTION = 0.5    # Kd <= 0.5 * I / dt
-KP_MAX_FRACTION = 0.25   # Kp <= 0.25 * I / dt²
-
-
-def available_torque(raw: np.ndarray, speed: np.ndarray, rated: np.ndarray,
-                     no_load_speed: np.ndarray) -> np.ndarray:
-    """Torque limit for a requested torque `raw` at joint speed `speed`."""
-    motoring = raw * speed > 0
-    on_line = rated * np.maximum(0.0, 1.0 - np.abs(speed) / no_load_speed)
-    return np.where(motoring, on_line, rated)
 
 
 @dataclass
 class ControlOutput:
-    tau: np.ndarray        # applied (clipped) arm torques
-    limit: np.ndarray      # torque that was available at this speed
-    saturated: np.ndarray  # bool per arm joint: wanted more than was available
+    tau: np.ndarray            # total arm joint torque (applied minus back-EMF)
+    saturated: np.ndarray      # bool per arm joint: wanted more torque than available
+    speed_limited: np.ndarray  # bool per arm joint: ...and the limit was low because of speed
 
 
-class PDGravityController:
-    def __init__(self, robot: SimRobot, bandwidth_hz: float = DEFAULT_BANDWIDTH_HZ,
-                 zeta: float = 1.0, payload_mass_error: float = DEFAULT_PAYLOAD_MASS_ERROR,
-                 integral_time_s: float | None = DEFAULT_INTEGRAL_TIME_S):
+def gravity_torque(robot: SimRobot, data: mujoco.MjData, payload_kg: float,
+                   jacp: np.ndarray | None = None) -> np.ndarray:
+    """Torque each arm joint needs to hold the current pose (at rest) with this payload.
+    Needs kinematics and qfrc_bias computed for the current state."""
+    g = data.qfrc_bias[robot.dadr].copy()
+    if payload_kg > 0:
+        jacp = np.zeros((3, robot.model.nv)) if jacp is None else jacp
+        mujoco.mj_jacSite(robot.model, data, jacp, None, robot.site)
+        g += jacp[:, robot.dadr].T @ (-payload_kg * robot.model.opt.gravity)
+    return g
+
+
+class MotorController:
+    def __init__(self, robot: SimRobot, payload_mass_error: float = DEFAULT_PAYLOAD_MASS_ERROR):
         self.robot = robot
-        self.wn = 2 * np.pi * bandwidth_hz
-        self.zeta = zeta
         self.payload_mass_error = payload_mass_error
-        self.integral_time_s = integral_time_s
-        self._integral = np.zeros(robot.n)  # integral term, as torque
         self.believed_payload_kg = robot.payload_kg * (1.0 - payload_mass_error)
         self._jacp = np.zeros((3, robot.model.nv))
-        self._mass = np.zeros((robot.model.nv, robot.model.nv))
-        self._payload_force = -self.believed_payload_kg * robot.model.opt.gravity
 
-    def _inertia(self, data: mujoco.MjData, dofs: np.ndarray) -> np.ndarray:
-        """Effective inertia 1 / (M^-1)_ii for these dofs."""
-        mujoco.mj_fullM(self.robot.model, data, self._mass)
-        inv_diag = np.diag(np.linalg.inv(self._mass))[dofs]
-        return np.maximum(1.0 / inv_diag, MIN_INERTIA)
-
-    def compute(self, data: mujoco.MjData, q_ref: np.ndarray, qd_ref: np.ndarray,
-                aux_ref: np.ndarray | None = None) -> ControlOutput:
-        """Needs the mass matrix and qfrc_bias for the current state: call after mj_step1."""
+    def compute(self, data: mujoco.MjData, q_ref: np.ndarray, qd_ref: np.ndarray) -> ControlOutput:
+        """Needs qfrc_bias for the current state: call after mj_step1."""
         r = self.robot
-        arm_inertia = self._inertia(data, r.dadr)
-        inertia = arm_inertia
-        gravity = data.qfrc_bias[r.dadr].copy()
-        if r.payload_kg > 0:
-            mujoco.mj_jacSite(r.model, data, self._jacp, None, r.site)
-            J = self._jacp[:, r.dadr]
-            gravity += J.T @ self._payload_force
-            inertia = arm_inertia + self.believed_payload_kg * np.sum(J * J, axis=0)
+        g_hat = gravity_torque(r, data, self.believed_payload_kg, self._jacp)
+        q, qd = data.qpos[r.qadr], data.qvel[r.dadr]
+        n = r.n
+        tau, sat, slow = np.zeros(n), np.zeros(n, bool), np.zeros(n, bool)
+        for i, m in enumerate(r.motors):
+            desired = m.kp * (q_ref[i] - q[i]) + m.kd * (qd_ref[i] - qd[i]) + g_hat[i] - m.damping * qd[i]
+            applied, tau[i], sat[i], slow[i] = m.command(desired, qd[i])
+            data.qfrc_applied[r.dadr[i]] = applied
 
-        dt = r.model.opt.timestep
-        kp = np.minimum(inertia * self.wn**2, KP_MAX_FRACTION * arm_inertia / dt**2)
-        kd = np.minimum(2 * self.zeta * inertia * self.wn, KD_MAX_FRACTION * arm_inertia / dt)
-        qd = data.qvel[r.dadr]
-        err = q_ref - data.qpos[r.qadr]
-        pd = kp * err + kd * (qd_ref - qd) + gravity
-        raw = pd + self._integral
-        limit = available_torque(raw, qd, r.torque_limit, r.no_load_speed)
-        tau = np.clip(raw, -limit, limit)
-        if self.integral_time_s:
-            # Anti-windup: integrate only while the motor isn't saturated, and never let
-            # the integral alone ask for more than rated torque.
-            free = np.abs(raw) <= limit
-            self._integral = np.where(free, self._integral + kp * err * dt / self.integral_time_s,
-                                      self._integral)
-            self._integral = np.clip(self._integral, -r.torque_limit, r.torque_limit)
-        data.qfrc_applied[r.dadr] = tau
-
-        if len(r.aux_dadr):  # fingers: hold position with the gripper motor's force
-            ref = np.zeros(len(r.aux_dadr)) if aux_ref is None else aux_ref
-            m = self._inertia(data, r.aux_dadr)
-            aqd = data.qvel[r.aux_dadr]
-            aux = (m * self.wn**2 * (ref - data.qpos[r.aux_qadr]) - 2 * self.zeta * m * self.wn * aqd
-                   + data.qfrc_bias[r.aux_dadr])
-            alim = available_torque(aux, aqd, r.aux_limit, r.aux_no_load_speed)
-            data.qfrc_applied[r.aux_dadr] = np.clip(aux, -alim, alim)
-        return ControlOutput(tau, limit, np.abs(raw) > limit + 1e-12)
+        for k, m in enumerate(r.aux_motors):  # fingers hold closed with the gripper motor
+            qa, da = r.aux_qadr[k], r.aux_dadr[k]
+            w = data.qvel[da]
+            desired = m.kp * (0.0 - data.qpos[qa]) - m.kd * w + data.qfrc_bias[da] - m.damping * w
+            data.qfrc_applied[da] = m.command(desired, w)[0]
+        return ControlOutput(tau, sat, slow)
 
 
-def step(robot: SimRobot, data: mujoco.MjData, controller: PDGravityController,
+def step(robot: SimRobot, data: mujoco.MjData, controller: MotorController,
          q_ref: np.ndarray, qd_ref: np.ndarray) -> ControlOutput:
     """One physics step with the control law evaluated on the current state."""
     mujoco.mj_step1(robot.model, data)

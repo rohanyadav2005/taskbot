@@ -22,8 +22,8 @@ from taskbot.schema import ArmChain, Gripper, Motor, load_motor_catalog
 
 BACKENDS = ("anthropic", "ollama", "fake")
 
-_TORQUE_FAIL = re.compile(r"^- \[static_torque\] (\w+) needs ([\d.e+-]+) Nm", re.MULTILINE)
-_SATURATED = re.compile(r"(\w+) saturated for [\d.]+ s while [^:]*: motor (\w+) gives")
+_TORQUE_FAIL = re.compile(r"^- \[static_torque\](?: \(cause: \w+\))? (\w+) needs ([\d.e+-]+) Nm", re.MULTILINE)
+_SATURATED = re.compile(r"(\w+) (?:saturated|speed-limited) for [\d.]+ s while [^(]*\(motor (\w+):")
 
 
 def fake_client(catalog: dict[str, Motor]) -> FakeClient:

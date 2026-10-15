@@ -20,8 +20,10 @@ def test_motor_upgrade_makes_loop_pass_in_round_2(desk_req):
     assert outcome.passed
     assert [r.number for r in outcome.rounds] == [1, 2]
     r1, r2 = outcome.rounds
-    assert [f.check for f in r1.failures] == ["static_torque"]
-    assert "shoulder_pitch needs" in r1.failures[0].message
+    # the MG996R shoulder fails both torque checks, and nothing else
+    assert [f.check for f in r1.failures] == ["static_torque", "torque_at_speed"]
+    assert all(f.message.startswith("shoulder_pitch") for f in r1.failures)
+    assert [f.cause for f in r1.failures] == ["saturated", "saturated"]
     assert r2.passed
     assert r1.spec.model_dump() == RobotSpec.model_validate(UNDERPOWERED).model_dump()
     assert r2.spec.model_dump() == RobotSpec.model_validate(UPGRADED).model_dump()
@@ -84,7 +86,7 @@ def test_write_outputs_keeps_every_round_and_diffs_them(desk_req, tmp_path):
         rnd = out / "rounds" / f"round_{n}"
         RobotSpec.model_validate_json((rnd / "spec.json").read_text())
         results = json.loads((rnd / "checks.json").read_text())
-        assert {"check", "passed", "value", "limit", "message"} == set(results[0])
+        assert {"check", "passed", "value", "limit", "message", "cause"} == set(results[0])
     assert RobotSpec.model_validate_json((out / "spec.json").read_text()).model_dump() == \
         outcome.final.spec.model_dump()
 
@@ -106,14 +108,17 @@ def test_repair_prompt_lists_each_failure_on_its_own_line(desk_req):
     assert "Failed checks:\n- [reach] too short\n- [budget] too dear\nRules:" in prompt
 
 
-def test_cli_fake_backend_repairs_and_writes_report(tmp_path, capsys):
+def test_cli_fake_backend_runs_full_loop_and_writes_report(tmp_path, capsys):
     from taskbot import cli
 
+    # R1 fails the torque checks; the fake swaps in the geared NEMA17, which then passes every
+    # static check and carry_payload but sags in hold_still (cause: compliance). The fake only
+    # swaps motors for torque failures, so it can't fix that, and the run honestly fails.
     assert cli.main(["design", "water my plants", "--backend", "fake", "--out", str(tmp_path),
-                     "--no-record"]) == 0
+                     "--no-record"]) == 2
     out = capsys.readouterr().out
-    # R1: static torque; R2: the NEMA17 shoulder saturates on its torque-speed line in sim
-    assert "Rounds: R1 1 fail  R2 1 fail  R3 pass" in out and "PASSED" in out
+    assert "Rounds: R1 2 fail  R2 1 fail  R3 1 fail  R4 1 fail  R5 1 fail" in out
+    assert "FAIL [hold_still]" in out and "Cause: compliance" in out
     assert (tmp_path / "fake_arm_4dof" / "report.md").exists()
 
 

@@ -14,7 +14,8 @@ from taskbot.build_urdf import (
     tool_link_name,
     tool_offset_m,
 )
-from taskbot.schema import ArmChain, Gripper, Joint, Motor, RobotSpec, load_motor_catalog
+from taskbot.schema import ArmChain, Gripper, Joint, Motor, RobotSpec, gripper_names, load_motor_catalog
+from taskbot.sim.motor import MotorModel, motor_model
 
 PAYLOAD_BODY = "payload"
 PAYLOAD_DENSITY_KG_M3 = 1000.0  # payload drawn as a water-density cube
@@ -31,20 +32,28 @@ class SimRobot:
     dadr: np.ndarray               # dof address per arm joint
     lower: np.ndarray              # joint limits; ±inf for continuous
     upper: np.ndarray
-    torque_limit: np.ndarray       # rated torque (N·m) or force (N) per arm joint
-    no_load_speed: np.ndarray      # rad/s (or m/s for prismatic) per arm joint
+    motors: list[MotorModel]       # per arm joint (scaled to N, m/s for prismatic joints)
     site: int                      # end-effector site id
     tool_body: int
     payload_kg: float
     payload_body: int              # -1 when there is no payload
     aux_qadr: np.ndarray = field(default_factory=lambda: np.zeros(0, int))  # finger joints
     aux_dadr: np.ndarray = field(default_factory=lambda: np.zeros(0, int))
-    aux_limit: np.ndarray = field(default_factory=lambda: np.zeros(0))
-    aux_no_load_speed: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    aux_motors: list[MotorModel] = field(default_factory=list)
 
     @property
     def n(self) -> int:
         return len(self.joints)
+
+    @property
+    def torque_limit(self) -> np.ndarray:
+        """Rated torque (N·m) or force (N) per arm joint."""
+        return np.array([m.rated for m in self.motors])
+
+    @property
+    def no_load_speed(self) -> np.ndarray:
+        """rad/s (or m/s for prismatic) per arm joint."""
+        return np.array([m.no_load_speed for m in self.motors])
 
     def sample_bounds(self) -> tuple[np.ndarray, np.ndarray]:
         """Limits with continuous joints mapped to [-π, π], for random sampling."""
@@ -115,25 +124,25 @@ def build_scene(
         # time constant is the smallest stable one, two timesteps.
         weld.solref = [2 * mjspec.option.timestep, 1.0]
         weld.solimp = [0.95, 0.99, 0.001, 0.5, 2.0]
+    segments = [s for m in spec.modules if isinstance(m, ArmChain) for s in m.segments]
+    joints = [s.joint for s in segments]
+    motors = []
+    for j in joints:
+        mm = motor_model(catalog[j.motor_id])
+        motors.append(mm.linear(LINEAR_DRIVE_RADIUS_M) if j.type == "prismatic" else mm)
+    gripper = next((m for m in spec.modules if isinstance(m, Gripper)), None)
+    gmotor = (motor_model(catalog[gripper.motor_id]).linear(LINEAR_DRIVE_RADIUS_M)
+              if gripper is not None and gripper.motor_id else None)
+    finger_joints = [n for n in gripper_names(gripper)[1][1:]] if gripper is not None else []
+    # Back-EMF and D-term damping act as joint damping; MuJoCo integrates it implicitly.
+    for j, mm in zip(joints, motors):
+        mjspec.joint(j.name).damping = [mm.joint_damping, 0.0, 0.0]
+    for name in finger_joints:
+        mjspec.joint(name).damping = [gmotor.joint_damping, 0.0, 0.0]
     model = mjspec.compile()
 
-    segments = [s for m in spec.modules if isinstance(m, ArmChain) for s in m.segments]
-    jids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, s.joint.name) for s in segments]
-    joints = [s.joint for s in segments]
-    limits, speeds = [], []
-    for j in joints:
-        motor = catalog[j.motor_id]
-        linear = j.type == "prismatic"
-        limits.append(motor.rated_torque_nm / LINEAR_DRIVE_RADIUS_M if linear else motor.rated_torque_nm)
-        speeds.append(motor.no_load_speed_rad_s * LINEAR_DRIVE_RADIUS_M if linear
-                      else motor.no_load_speed_rad_s)
-
-    gripper = next((m for m in spec.modules if isinstance(m, Gripper)), None)
-    aux = [jid for jid in range(model.njnt)
-           if jid not in jids and model.jnt_type[jid] != mujoco.mjtJoint.mjJNT_FREE]
-    gmotor = catalog[gripper.motor_id] if gripper is not None and gripper.motor_id else None
-    aux_force = gmotor.rated_torque_nm / LINEAR_DRIVE_RADIUS_M if gmotor else 0.0
-    aux_speed = gmotor.no_load_speed_rad_s * LINEAR_DRIVE_RADIUS_M if gmotor else 1.0
+    jids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, j.name) for j in joints]
+    aux = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n) for n in finger_joints]
 
     return SimRobot(
         model=model,
@@ -142,14 +151,12 @@ def build_scene(
         dadr=np.array([model.jnt_dofadr[j] for j in jids]),
         lower=np.array([-np.inf if j.type == "continuous" else j.lower for j in joints]),
         upper=np.array([np.inf if j.type == "continuous" else j.upper for j in joints]),
-        torque_limit=np.array(limits),
-        no_load_speed=np.array(speeds),
+        motors=motors,
         site=mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, EE_SITE),
         tool_body=mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, tool),
         payload_kg=payload_kg,
         payload_body=mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, PAYLOAD_BODY) if payload_kg > 0 else -1,
         aux_qadr=np.array([model.jnt_qposadr[j] for j in aux], int),
         aux_dadr=np.array([model.jnt_dofadr[j] for j in aux], int),
-        aux_limit=np.full(len(aux), aux_force),
-        aux_no_load_speed=np.full(len(aux), aux_speed),
+        aux_motors=[gmotor] * len(aux),
     )

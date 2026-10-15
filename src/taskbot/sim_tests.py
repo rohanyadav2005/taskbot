@@ -7,12 +7,18 @@
 Every test returns a SimRun whose `.result` is a CheckResult, so it plugs into
 the repair loop next to the static checks. Each move is a minimum-jerk joint
 trajectory to an IK solution, as long as the motors' speed limits require (at
-least 2 s), tracked by the PD + gravity controller under each motor's
-torque-speed line.
+least 2 s), tracked by each motor's own fixed position loop plus gravity
+feedforward (taskbot.sim.control), under each motor's torque-speed model.
 
 carry_payload and hold_still run with the controller believing the payload is
 DEFAULT_PAYLOAD_MASS_ERROR lighter than it is; that run decides pass/fail. The
 same test with the true mass is kept as `SimRun.ideal` for the report.
+
+Every failure names a cause (CheckResult.cause):
+    saturated      a joint wanted more torque than its motor's limit for > 0.2 s
+    speed_limited  ...and the limit was low because the joint was moving fast
+    compliance     the error happened without any joint saturating
+    unreachable    IK found no pose that reaches the target
 """
 
 from __future__ import annotations
@@ -22,10 +28,10 @@ from dataclasses import dataclass, field
 import mujoco
 import numpy as np
 
-from taskbot.checks import CheckResult
+from taskbot.checks import CAUSE_ADVICE, CheckResult
 from taskbot.requirements import Requirements
 from taskbot.schema import Motor, RobotSpec, load_motor_catalog
-from taskbot.sim.control import DEFAULT_PAYLOAD_MASS_ERROR, PDGravityController, step
+from taskbot.sim.control import DEFAULT_PAYLOAD_MASS_ERROR, MotorController, step
 from taskbot.sim.model import SimRobot, build_scene
 from taskbot.sim.plan import (
     MIN_MOVE_S,
@@ -42,7 +48,8 @@ SETTLE_DEADLINE_S = 1.0   # error must be under tolerance by move duration + thi
 SETTLE_CONFIRM_S = 0.5    # ...and stay there for this long after the deadline
 SATURATION_MAX_S = 0.2
 HOLD_S = 5.0
-DRIFT_MAX_M = 0.005
+HOLD_FINAL_MAX_M = 0.001
+HOLD_PEAK_MAX_M = 0.005
 
 
 class SimMeasurementError(RuntimeError):
@@ -70,14 +77,17 @@ class _Sim:
         self.robot = robot
         self.data = mujoco.MjData(robot.model)
         robot.set_pose(self.data, q_start)
-        self.ctrl = PDGravityController(robot, payload_mass_error=payload_mass_error)
+        self.ctrl = MotorController(robot, payload_mass_error=payload_mass_error)
         self.dt = robot.model.opt.timestep
         self.frame_every = max(1, round(1 / (FPS * self.dt)))
         self.steps = 0
         self.frames: list[np.ndarray] = [self.data.qpos.copy()]
-        self.sat_run = np.zeros(robot.n)        # current consecutive saturated time per joint
-        self.sat_max = np.zeros(robot.n)        # longest saturated stretch per joint
-        self.sat_where: list[str] = [""] * robot.n
+        n = robot.n
+        self.sat_run = np.zeros(n)        # current consecutive saturated time per joint
+        self.slow_run = np.zeros(n)       # ...of which speed-limited
+        self.sat_max = np.zeros(n)        # longest saturated stretch per joint
+        self.sat_max_slow = np.zeros(n)   # speed-limited time within that stretch
+        self.sat_where: list[str] = [""] * n
         self.label = ""
 
     def run(self, seconds: float, ref) -> np.ndarray:
@@ -87,9 +97,11 @@ class _Sim:
             q_ref, qd_ref = ref(k * self.dt)
             out = step(self.robot, self.data, self.ctrl, q_ref, qd_ref)
             self.sat_run = np.where(out.saturated, self.sat_run + self.dt, 0.0)
+            self.slow_run = np.where(out.saturated, self.slow_run + self.dt * out.speed_limited, 0.0)
             for i in np.flatnonzero(self.sat_run > self.sat_max):
                 self.sat_where[i] = self.label
-            self.sat_max = np.maximum(self.sat_max, self.sat_run)
+                self.sat_max[i] = self.sat_run[i]
+                self.sat_max_slow[i] = self.slow_run[i]
             self.steps += 1
             if self.steps % self.frame_every == 0:
                 self.frames.append(self.data.qpos.copy())
@@ -98,6 +110,9 @@ class _Sim:
 
     def q(self) -> np.ndarray:
         return self.data.qpos[self.robot.qadr].copy()
+
+    def saturation_cause(self, i: int) -> str:
+        return "speed_limited" if self.sat_max_slow[i] > 0.5 * self.sat_max[i] else "saturated"
 
 
 @dataclass
@@ -110,13 +125,17 @@ class _MoveResult:
     settle_s: float | None  # from move start until the error stays under tolerance
 
     @property
+    def unreachable(self) -> bool:
+        return self.ik_error >= POSITION_TOL_M
+
+    @property
     def settled_in_time(self) -> bool:
         return self.settle_s is not None and self.settle_s <= self.duration + SETTLE_DEADLINE_S
 
     @property
     def failures(self) -> list[str]:
         out = []
-        if self.ik_error >= POSITION_TOL_M:
+        if self.unreachable:
             out.append(f"unreachable: IK gets no closer than {self.ik_error * 100:.1f} cm")
         if not self.settled_in_time:
             if self.settle_s is None:
@@ -173,23 +192,36 @@ def _move_summary(moves: list[_MoveResult]) -> tuple[bool, str]:
     return not failed, text
 
 
-def _saturation_text(robot: SimRobot, sim: _Sim, payload_kg: float) -> tuple[bool, float, str]:
+def _saturation(robot: SimRobot, sim: _Sim, payload_kg: float) -> tuple[list[int], float, str]:
+    """(joints saturated > 0.2 s, longest saturation, text)."""
     worst = float(sim.sat_max.max(initial=0.0))
-    bad = [i for i in range(robot.n) if sim.sat_max[i] > SATURATION_MAX_S]
+    bad = sorted((i for i in range(robot.n) if sim.sat_max[i] > SATURATION_MAX_S),
+                 key=lambda i: -sim.sat_max[i])
     if not bad:
-        return True, worst, f"no joint saturated for more than {SATURATION_MAX_S} s"
-    parts = []
+        return [], worst, f"no joint saturated for more than {SATURATION_MAX_S} s"
     load = f" with {payload_kg:.3g} kg payload" if payload_kg else ""
-    for i in sorted(bad, key=lambda i: -sim.sat_max[i]):
-        j = robot.joints[i]
-        unit = "N" if j.type == "prismatic" else "Nm"
-        speed_unit = "m/s" if j.type == "prismatic" else "rad/s"
+    parts = []
+    for i in bad:
+        j, m = robot.joints[i], robot.motors[i]
+        unit, speed_unit = ("N", "m/s") if j.type == "prismatic" else ("Nm", "rad/s")
         parts.append(
-            f"{j.name} saturated for {sim.sat_max[i]:.2f} s while {sim.sat_where[i]}{load}: "
-            f"motor {j.motor_id} gives {robot.torque_limit[i]:.3g} {unit} rated at rest, falling "
-            f"linearly to 0 at its {robot.no_load_speed[i]:.3g} {speed_unit} no-load speed"
+            f"{j.name} {sim.saturation_cause(i).replace('_', '-')} for {sim.sat_max[i]:.2f} s while "
+            f"{sim.sat_where[i]}{load} (motor {j.motor_id}: {m.rated:.3g} {unit} rated, "
+            f"{m.no_load_speed:.3g} {speed_unit} no-load; speed model {m.speed_model})"
         )
-    return False, worst, "; ".join(parts) + ". Use a stronger motor on these joints or lighten the outer links."
+    return bad, worst, "; ".join(parts)
+
+
+def _cause(sim: _Sim, saturated: list[int], moves: list[_MoveResult] = ()) -> str:
+    if saturated:
+        return sim.saturation_cause(saturated[0])  # the longest saturation
+    if any(m.unreachable for m in moves):
+        return "unreachable"
+    return "compliance"
+
+
+def _with_cause(msg: str, cause: str | None) -> str:
+    return msg if cause is None else f"{msg} Cause: {cause}: {CAUSE_ADVICE[cause]}."
 
 
 # --------------------------------------------------------------------------- tests
@@ -201,14 +233,20 @@ def reach_targets(spec: RobotSpec, req: Requirements, catalog: dict[str, Motor] 
     sim, moves = _run_moves(robot, req, payload_mass_error=0.0)
     ok, text = _move_summary(moves)
     worst = max(m.final_error for m in moves)
-    msg = f"Without payload: {text}."
+    msg, cause = f"Without payload: {text}.", None
     if not ok:
-        sat_ok, _, sat_text = _saturation_text(robot, sim, 0.0)
-        if not sat_ok:
-            msg += " " + sat_text
-        msg += " Lengthen links or add a joint for unreachable targets; stronger motors for ones it can't settle on."
-    result = CheckResult(check="reach_targets", passed=ok, value=worst, limit=POSITION_TOL_M, message=msg)
+        saturated, _, sat_text = _saturation(robot, sim, 0.0)
+        if saturated:
+            msg += f" {sat_text}."
+        cause = _cause(sim, saturated, moves)
+    result = CheckResult(check="reach_targets", passed=ok, value=worst, limit=POSITION_TOL_M,
+                         message=_with_cause(msg, cause), cause=cause)
     return SimRun("reach_targets", result, robot, np.array(sim.frames), **_view(req))
+
+
+def _belief(req: Requirements, payload_mass_error: float) -> str:
+    return (f"controller assumes {req.payload_kg * (1 - payload_mass_error):.3g} kg"
+            if payload_mass_error else "controller knows the mass")
 
 
 def _carry(spec, req, catalog, payload_mass_error) -> tuple[CheckResult, SimRobot, _Sim]:
@@ -216,12 +254,12 @@ def _carry(spec, req, catalog, payload_mass_error) -> tuple[CheckResult, SimRobo
     robot = build_scene(spec, catalog, payload_kg=req.payload_kg, markers=targets)
     sim, moves = _run_moves(robot, req, payload_mass_error)
     reach_ok, text = _move_summary(moves)
-    sat_ok, worst_sat, sat_text = _saturation_text(robot, sim, req.payload_kg)
-    belief = (f"controller assumes {req.payload_kg * (1 - payload_mass_error):.3g} kg"
-              if payload_mass_error else "controller knows the mass")
-    msg = f"With {req.payload_kg:.3g} kg payload ({belief}): {sat_text}; {text}."
-    result = CheckResult(check="carry_payload", passed=reach_ok and sat_ok, value=worst_sat,
-                         limit=SATURATION_MAX_S, message=msg)
+    saturated, worst_sat, sat_text = _saturation(robot, sim, req.payload_kg)
+    ok = reach_ok and not saturated
+    cause = None if ok else _cause(sim, saturated, moves)
+    msg = f"With {req.payload_kg:.3g} kg payload ({_belief(req, payload_mass_error)}): {sat_text}; {text}."
+    result = CheckResult(check="carry_payload", passed=ok, value=worst_sat, limit=SATURATION_MAX_S,
+                         message=_with_cause(msg, cause), cause=cause)
     return result, robot, sim
 
 
@@ -235,13 +273,13 @@ def carry_payload(spec: RobotSpec, req: Requirements, catalog: dict[str, Motor] 
 def _worst_pose(robot: SimRobot, req: Requirements) -> tuple[str, np.ndarray, int, float]:
     """Among the IK solutions for the workspace targets, the pose where some joint needs
     the largest fraction of its rated torque to hold still with the (true) payload."""
+    from taskbot.sim.control import gravity_torque
+
     data = mujoco.MjData(robot.model)
-    ctrl = PDGravityController(robot, payload_mass_error=0.0)
     best = ("home", robot.home(), 0, -1.0)
     for mv in plan_moves(robot, req):
         robot.set_pose(data, mv.q1)
-        out = ctrl.compute(data, mv.q1, np.zeros(robot.n))  # at rest: pure gravity load
-        load = np.where(out.saturated, np.inf, np.abs(out.tau) / robot.torque_limit)
+        load = np.abs(gravity_torque(robot, data, robot.payload_kg)) / robot.torque_limit
         j = int(np.argmax(load))
         if load[j] > best[3]:
             best = (mv.label, mv.q1.copy(), j, float(load[j]))
@@ -254,27 +292,41 @@ def _hold(spec, req, catalog, payload_mass_error) -> tuple[CheckResult, SimRobot
     label, pose, joint, load = _worst_pose(robot, req)
     sim = _Sim(robot, pose, payload_mass_error)
     sim.label = f"holding at {label}"
-    start = robot.ee(sim.data)
+    commanded = robot.ee(sim.data)  # tool position of the commanded pose
     path = sim.run(HOLD_S, lambda t: (pose, np.zeros(robot.n)))
-    drift = float(np.max(np.linalg.norm(path - start, axis=1)))
-    if drift == 0.0:
+    deviation = np.linalg.norm(path - commanded, axis=1)
+    peak, final = float(deviation.max()), float(deviation[-1])
+    if peak == 0.0:
         raise SimMeasurementError(
-            f"hold_still measured exactly zero drift holding {label}: the tool didn't move "
+            f"hold_still measured exactly zero deviation holding {label}: the tool didn't move "
             "at all, so the test isn't measuring anything (is the arm or payload missing?)")
-    ok = drift < DRIFT_MAX_M
-    load_txt = "more than 100%" if not np.isfinite(load) else f"{load:.0%}"
-    belief = (f"controller assumes {req.payload_kg * (1 - payload_mass_error):.3g} kg"
-              if payload_mass_error else "controller knows the mass")
+    ok = final < HOLD_FINAL_MAX_M and peak < HOLD_PEAK_MAX_M
+    saturated, _, sat_text = _saturation(robot, sim, req.payload_kg)
+    cause = None if ok else _cause(sim, saturated)
     msg = (f"Holding the most loaded target pose ({label}; {robot.joints[joint].name} needs "
-           f"{load_txt} of its rated torque) with {req.payload_kg:.3g} kg payload ({belief}) "
-           f"for {HOLD_S:.0f} s: tool drifted {drift * 1e6:.0f} µm (limit {DRIFT_MAX_M * 1e6:.0f} µm).")
-    sat_ok, _, sat_text = _saturation_text(robot, sim, req.payload_kg)
-    if not sat_ok:
-        msg += " " + sat_text
+           f"{load:.0%} of its rated torque) with {req.payload_kg:.3g} kg payload "
+           f"({_belief(req, payload_mass_error)}) for {HOLD_S:.0f} s: peak deviation {peak * 1e6:.0f} µm "
+           f"(limit {HOLD_PEAK_MAX_M * 1e6:.0f} µm), final error {final * 1e6:.0f} µm "
+           f"(limit {HOLD_FINAL_MAX_M * 1e6:.0f} µm).")
+    if saturated:
+        msg += f" {sat_text}."
     elif not ok:
-        msg += f" Use a stronger motor on {robot.joints[joint].name}."
-    result = CheckResult(check="hold_still", passed=ok, value=drift, limit=DRIFT_MAX_M, message=msg)
+        msg += " " + _sag_breakdown(robot, sim, pose)
+    result = CheckResult(check="hold_still", passed=ok, value=final, limit=HOLD_FINAL_MAX_M,
+                         message=_with_cause(msg, cause), cause=cause)
     return result, robot, sim
+
+
+def _sag_breakdown(robot: SimRobot, sim: _Sim, pose: np.ndarray) -> str:
+    """Which joints' position loops let the tool sag, from final joint error x lever arm."""
+    jacp = np.zeros((3, robot.model.nv))
+    mujoco.mj_jacSite(robot.model, sim.data, jacp, None, robot.site)
+    err = np.abs(sim.q() - pose)
+    contrib = np.linalg.norm(jacp[:, robot.dadr], axis=0) * err
+    order = np.argsort(-contrib)[:2]
+    parts = [f"{robot.joints[i].name} ({robot.motors[i].motor_id}, Kp {robot.motors[i].kp:.3g} Nm/rad) "
+             f"{contrib[i] * 1e6:.0f} µm" for i in order if contrib[i] > 0]
+    return "Sag by joint position-loop stiffness: " + ", ".join(parts) + "."
 
 
 def hold_still(spec: RobotSpec, req: Requirements, catalog: dict[str, Motor] | None = None,
@@ -291,3 +343,14 @@ def run_sim_tests(spec: RobotSpec, req: Requirements,
                   catalog: dict[str, Motor] | None = None) -> list[SimRun]:
     catalog = catalog if catalog is not None else load_motor_catalog()
     return [test(spec, req, catalog) for test in SIM_TESTS]
+
+
+def controller_settings(robot: SimRobot) -> list[dict]:
+    """Per-joint controller and motor-model settings, for the report."""
+    rows = []
+    for j, m in zip(robot.joints, robot.motors):
+        rows.append({"joint": j.name, "motor": m.motor_id, "kind": m.kind, "kp": m.kp, "kd": m.kd,
+                     "ki": m.ki, "back_emf_damping": m.damping, "rated": m.rated, "stall": m.stall,
+                     "no_load_speed": m.no_load_speed, "gain_source": m.gain_source,
+                     "speed_model": m.speed_model})
+    return rows

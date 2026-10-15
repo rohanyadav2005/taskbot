@@ -3,12 +3,15 @@
     "SI units. Conversions: 1 kg·cm = 0.0980665 N·m; s/60° -> rad/s = (π/3)/t; rpm -> rad/s = rpm·2π/60.",
     "'RATED_RULE': most hobby servos and Dynamixels publish only stall torque. Where no continuous rating is published, rated_torque_nm = stall/3, the ratio Feetech publishes for the STS3215 (6.5 / 19.5 kg·cm). Treat these as estimates.",
     "Prices are single-unit retail and change often; they are for ranking designs, not quoting.",
-    "no_load_speed_rad_s: output speed with no load. The sim uses a linear torque-speed line from rated torque at 0 to zero torque at this speed."
+    "no_load_speed_rad_s: output speed with no load. The sim uses a linear torque-speed line from rated torque at 0 to zero torque at this speed.",
+    "kind: hobby_servo / dynamixel / stepper; decides the simulated controller gains and torque-speed model (see taskbot/sim/motor.py).",
+    "AX-12A is kind hobby_servo: it uses compliance margin/slope instead of PID gains, so it gets the documented conservative hobby setting."
   ],
   "motors": [
     {
       "id": "sts3215",
       "name": "Feetech STS3215 (7.4 V, 19 kg·cm)",
+      "kind": "hobby_servo",
       "stall_torque_nm": 1.912,
       "rated_torque_nm": 0.637,
       "max_speed_rad_s": 4.4,
@@ -33,6 +36,7 @@
     {
       "id": "mg996r",
       "name": "TowerPro MG996R",
+      "kind": "hobby_servo",
       "stall_torque_nm": 1.079,
       "rated_torque_nm": 0.36,
       "max_speed_rad_s": 7.48,
@@ -57,6 +61,7 @@
     {
       "id": "ax12a",
       "name": "ROBOTIS Dynamixel AX-12A",
+      "kind": "hobby_servo",
       "stall_torque_nm": 1.5,
       "rated_torque_nm": 0.5,
       "max_speed_rad_s": 6.18,
@@ -81,6 +86,7 @@
     {
       "id": "xl430_w250",
       "name": "ROBOTIS Dynamixel XL430-W250-T",
+      "kind": "dynamixel",
       "stall_torque_nm": 1.5,
       "rated_torque_nm": 0.5,
       "max_speed_rad_s": 6.39,
@@ -99,12 +105,19 @@
         "mass_kg": "RobotShop / mybotshop.de: 57.2 g",
         "body_size_m": "mybotshop.de: 28.5 × 46.5 × 34 mm",
         "price_usd": "approx. ROBOTIS US list price; not verified today",
-        "no_load_speed_rad_s": "ROBOTIS spec via mybotshop.de: 61 rpm is the no-load speed @ 12 V, so equal to max_speed_rad_s"
+        "no_load_speed_rad_s": "ROBOTIS spec via mybotshop.de: 61 rpm is the no-load speed @ 12 V, so equal to max_speed_rad_s",
+        "dynamixel_gains": "XL430-W250 control table, factory defaults Position P 640 / I 0 / D 4000 (addresses 84/82/80), via a copy of the ROBOTIS e-manual table (blog.ittraining.com.tw); not checked against emanual.robotis.com, which is unreachable from the build environment"
+      },
+      "dynamixel_gains": {
+        "p": 640,
+        "i": 0,
+        "d": 4000
       }
     },
     {
       "id": "xm430_w350",
       "name": "ROBOTIS Dynamixel XM430-W350-T",
+      "kind": "dynamixel",
       "stall_torque_nm": 4.1,
       "rated_torque_nm": 1.367,
       "max_speed_rad_s": 4.82,
@@ -123,12 +136,19 @@
         "mass_kg": "ROBOTIS e-manual / retailers: 82 g",
         "body_size_m": "same X430 housing as XL430: 28.5 × 46.5 × 34 mm",
         "price_usd": "RobotShop US listing, Oct 2026: US$310.39",
-        "no_load_speed_rad_s": "ROBOTIS e-manual: 46 rpm is the no-load speed @ 12 V, so equal to max_speed_rad_s"
+        "no_load_speed_rad_s": "ROBOTIS e-manual: 46 rpm is the no-load speed @ 12 V, so equal to max_speed_rad_s",
+        "dynamixel_gains": "XM430-W350 control table factory defaults Position P 800 / I 0 / D 0, from the ROBOTIS e-manual as remembered; NOT verified this session (emanual.robotis.com unreachable). Check before relying on it"
+      },
+      "dynamixel_gains": {
+        "p": 800,
+        "i": 0,
+        "d": 0
       }
     },
     {
       "id": "xm540_w270",
       "name": "ROBOTIS Dynamixel XM540-W270-T",
+      "kind": "dynamixel",
       "stall_torque_nm": 10.6,
       "rated_torque_nm": 3.533,
       "max_speed_rad_s": 3.14,
@@ -147,12 +167,19 @@
         "mass_kg": "ROBOTIS e-manual: 165 g",
         "body_size_m": "ROBOTIS e-manual: 33.5 × 58.5 × 44 mm (W × H × D)",
         "price_usd": "RobotShop US listing, Oct 2026: US$482.89",
-        "no_load_speed_rad_s": "ROBOTIS e-manual: 30 rpm is the no-load speed @ 12 V, so equal to max_speed_rad_s"
+        "no_load_speed_rad_s": "ROBOTIS e-manual: 30 rpm is the no-load speed @ 12 V, so equal to max_speed_rad_s",
+        "dynamixel_gains": "XM540-W270 control table factory defaults Position P 800 / I 0 / D 0, from the ROBOTIS e-manual as remembered; NOT verified this session (emanual.robotis.com unreachable). Check before relying on it"
+      },
+      "dynamixel_gains": {
+        "p": 800,
+        "i": 0,
+        "d": 0
       }
     },
     {
       "id": "nema17_pg27",
       "name": "NEMA 17 stepper + 26.85:1 planetary gearbox (17HS15-1684S-PG27)",
+      "kind": "stepper",
       "stall_torque_nm": 5.0,
       "rated_torque_nm": 3.0,
       "max_speed_rad_s": 0.733,
@@ -171,7 +198,8 @@
         "mass_kg": "VXB gearbox listing: 510 g (stepper listing says 570 g)",
         "body_size_m": "42 × 42 mm frame; 40 mm motor + 35 mm gearbox (VXB listing)",
         "price_usd": "VXB regular price US$99.99 (listing pricing inconsistent; StepperOnline is usually cheaper)",
-        "no_load_speed_rad_s": "VXB listing: ~7 rpm output, taken as no-load speed. A stepper's torque falls with speed along its pull-out curve, not linearly, so the linear torque-speed model is approximate here"
+        "no_load_speed_rad_s": "VXB listing: ~7 rpm output, taken as no-load speed. A stepper's torque falls with speed along its pull-out curve, not linearly, so the linear torque-speed model is approximate here",
+        "pull_out_curve": "none published in the VXB/Sigmanortec listings; the simulator's stepper approximation is used (flat rated torque to 50% of no-load speed, then linear to 0)"
       }
     }
   ]

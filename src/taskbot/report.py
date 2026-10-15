@@ -10,7 +10,10 @@ from taskbot.build_urdf import build_urdf
 from taskbot.checks import CheckResult
 from taskbot.repair import SIM_TEST_NAMES, RepairOutcome, Round
 from taskbot.schema import Motor
+from taskbot.sim.control import DEFAULT_PAYLOAD_MASS_ERROR
+from taskbot.sim.model import SIM_TIMESTEP_S, build_scene
 from taskbot.sim.record import render_gif
+from taskbot.sim_tests import controller_settings
 
 
 def _cell(text: str) -> str:
@@ -99,6 +102,22 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
               "carry_payload and hold_still are judged with the controller believing the payload "
               "is 20% lighter than it is; the \"(ideal)\" rows repeat them with the true mass, "
               "for information only."]
+
+    lines += ["", f"## Controller settings (round {final.number} design)", "",
+              "Fixed per motor, never tuned per test (see taskbot/sim/motor.py). Total joint torque = "
+              "Kp·e + Kd·(q̇_ref − q̇) + gravity feedforward − b·q̇, limited to the motor's driving "
+              "torque at the current speed, and to rated torque when braking. "
+              f"Gravity feedforward believes the payload is {DEFAULT_PAYLOAD_MASS_ERROR:.0%} lighter "
+              f"than it is (the \"(ideal)\" rows use the true mass). Physics timestep "
+              f"{SIM_TIMESTEP_S * 1000:.0f} ms.", "",
+              "| Joint | Motor | Kp (Nm/rad) | Kd (Nm·s/rad) | Ki | Back-EMF b (Nm·s/rad) | Rated / stall (Nm) "
+              "| No-load (rad/s) | Gains from | Torque-speed model |",
+              "|---|---|---|---|---|---|---|---|---|---|"]
+    for row in controller_settings(build_scene(final.spec)):
+        lines.append(
+            f"| {row['joint']} | {row['motor']} | {row['kp']:.3g} | {row['kd']:.3g} | {row['ki']:.3g} | "
+            f"{row['back_emf_damping']:.3g} | {row['rated']:.3g} / {row['stall']:.3g} | "
+            f"{row['no_load_speed']:.3g} | {_cell(row['gain_source'])} | {_cell(row['speed_model'])} |")
 
     if recordings:
         lines += ["", f"## Simulation recordings (round {final.number})", ""]

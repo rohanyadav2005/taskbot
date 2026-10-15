@@ -30,9 +30,12 @@ def test_examples_cover_2_4_6_dof():
 def test_catalog_loads_with_sources_for_every_value():
     catalog = load_motor_catalog()
     assert 6 <= len(catalog) <= 8
+    numeric = {"stall_torque_nm", "rated_torque_nm", "max_speed_rad_s", "no_load_speed_rad_s",
+               "mass_kg", "body_size_m", "price_usd"}
     for m in catalog.values():
-        numeric = set(Motor.model_fields) - {"id", "name", "sources"}
-        assert numeric <= set(m.sources), f"{m.id} missing sources for {numeric - set(m.sources)}"
+        needed = numeric | ({"dynamixel_gains"} if m.kind == "dynamixel" else set()) \
+            | ({"pull_out_curve"} if m.kind == "stepper" else set())  # says why there is none
+        assert needed <= set(m.sources), f"{m.id} missing sources for {needed - set(m.sources)}"
 
 
 def test_motor_ids_can_come_from_context(spec_dict):

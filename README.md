@@ -77,6 +77,7 @@ are sent back to the model and it retries, up to 3 times.
 | `self_collision` | ≤ 5% of random in-limit poses (tool inside the workspace) have non-adjacent links interpenetrating |
 | `joint_limits` | Every revolute joint spans ≥ `min_joint_range_rad` (default 90°) and stays within ±2π |
 | `joint_speed` | Every planned move can finish within 5 s with no joint above 80% of its no-load speed |
+| `torque_at_speed` | At each move's mid-point (peak speed), every joint's gravity torque is below what its motor gives at that speed |
 | `budget` | Motor prices + rough material cost ≤ `max_budget_usd` |
 | `mass` | Always passes; warns if a desk-scale robot (reach ≤ 1 m) is over 5 kg |
 
@@ -91,20 +92,30 @@ Generated from the requirements; run only after every static check passes.
 |---|---|---|
 | `reach_targets` | IK to the workspace centre and 8 corners; a minimum-jerk move to each | Every target: error < 1 cm by move end + 1 s and staying there, overshoot ≤ 2 cm |
 | `carry_payload` | Same moves with a `payload_kg` cube welded to the tool | As above, and no joint saturates for > 0.2 s |
-| `hold_still` | Hold the target pose with the highest torque load, with payload, for 5 s | Tool drift < 5 mm (reported in µm) |
+| `hold_still` | Hold the target pose with the highest torque load, with payload, for 5 s | Final error < 1 mm and peak deviation < 5 mm (reported in µm) |
 
-**Motors.** Available torque follows a linear torque-speed line: `rated * max(0, 1 - |w| / no_load_speed)`
-when driving the joint the way it is turning; braking is limited to rated torque. Never stall torque.
+**Motors** (`taskbot/sim/motor.py`). Driving torque at speed w: servos and Dynamixels
+`min(rated, stall · max(0, 1 − |w|/w0))`; steppers use their pull-out curve if the catalog has one,
+otherwise rated torque up to 50% of no-load speed and a straight line to 0 (an approximation).
+Braking torque is capped at rated: a motor brakes at least as hard as it holds, and putting braking
+on the driving line would leave a falling arm with no torque. (Only a joint overspun past
+w0·(1 + rated/stall) can see more, from back-EMF alone.)
 
 **Move durations** are planned per move: `max(2 s, time so no joint exceeds 80% of its no-load speed)`.
-The `joint_speed` check (static, IK only) fails if any move would need more than 80% of a motor's
-no-load speed to finish within 5 s, naming the joint, motor and speeds.
+Static checks `joint_speed` (every move doable within 5 s at ≤ 80% no-load speed) and
+`torque_at_speed` (gravity at mid-move, where speed peaks, below the motor's torque at that speed)
+run before any simulation.
 
-**Model error.** `carry_payload` and `hold_still` are judged with the controller believing the
-payload is 20% lighter than it is (`payload_mass_error=0.2`). The same tests with the true mass are
-shown in the report as "(ideal)" rows, for information. A `hold_still` drift of exactly 0 raises
-`SimMeasurementError`: it would mean the test measured nothing.
+**Control** is fixed per motor, never tuned per test, and listed in every report:
+Dynamixels use their factory position-loop gains (`Kp = P/128 · stall/885 · 4096/2π`,
+`Kd = D/16 · stall/885 · 4096/2π / 1000`, I = 0); hobby servos and steppers use one conservative
+setting (stall torque at 20° error, no D or I). Every motor has back-EMF damping `b = stall/w0`
+(steppers `rated/w0`), applied with the D term as MuJoCo joint damping. A host-side gravity
+feedforward believes the payload is 20% lighter than it is ("ideal" report rows use the true mass).
 
-**Control** is joint-space PID: gains from each joint's effective inertia (plus payload),
-8 Hz bandwidth, critically damped, 0.3 s integral time with anti-windup; gravity compensation
-from `qfrc_bias` plus the believed payload weight. Physics runs at 1 ms.
+**hold_still** reports peak deviation and final error in µm and passes on final < 1 mm and peak < 5 mm.
+
+**Failure causes.** Every sim failure (and the torque/speed static checks) carries a `cause`:
+`saturated`, `speed_limited`, `compliance` or `unreachable`, explained to the LLM in `prompts/repair.md`.
+
+Physics runs at 1 ms.

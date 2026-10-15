@@ -18,7 +18,18 @@ def test_round_trips_to_required_dict_shape():
         "value": 12.4,
         "limit": 8.0,
         "message": "shoulder_pitch needs 12.4 N·m but the motor gives 8.0 N·m.",
+        "cause": None,
     }
+
+
+@pytest.mark.parametrize("cause", ["saturated", "speed_limited", "compliance", "unreachable"])
+def test_cause_values(cause):
+    assert CheckResult(check="x", passed=False, message="m", cause=cause).cause == cause
+
+
+def test_unknown_cause_rejected():
+    with pytest.raises(ValidationError):
+        CheckResult(check="x", passed=False, message="m", cause="bad luck")
 
 
 def test_value_and_limit_optional_for_non_numeric_checks():

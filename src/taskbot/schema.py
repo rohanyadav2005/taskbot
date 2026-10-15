@@ -43,9 +43,20 @@ class _Strict(BaseModel):
 # --------------------------------------------------------------------------- motors
 
 
+class PositionGains(_Strict):
+    """Raw position-loop gains as written in a Dynamixel X-series control table."""
+
+    p: Annotated[int, Field(ge=0)]
+    i: Annotated[int, Field(ge=0)]
+    d: Annotated[int, Field(ge=0)]
+
+
 class Motor(_Strict):
     id: Name
     name: str = Field(min_length=1)
+    kind: Literal["hobby_servo", "dynamixel", "stepper"] = Field(
+        description="Decides the controller gains and the torque-speed model used in simulation."
+    )
     stall_torque_nm: PositiveFloat
     rated_torque_nm: PositiveFloat = Field(
         description="Continuous torque the motor can hold without overheating."
@@ -57,10 +68,25 @@ class Motor(_Strict):
     mass_kg: PositiveFloat
     body_size_m: Vec3 = Field(description="Housing bounding box (x, y, z).")
     price_usd: Annotated[float, Field(ge=0)]
+    dynamixel_gains: PositionGains | None = Field(
+        default=None, description="Factory position P/I/D gains (Dynamixel only)."
+    )
+    pull_out_curve: list[tuple[float, float]] | None = Field(
+        default=None,
+        description="Stepper only: (speed rad/s, torque N·m) points of the pull-out curve.",
+    )
     sources: dict[str, str] = Field(
         default_factory=dict,
         description="Where each value came from, keyed by field name.",
     )
+
+    @model_validator(mode="after")
+    def _kind_fields(self) -> Motor:
+        if (self.kind == "dynamixel") != (self.dynamixel_gains is not None):
+            raise ValueError(f"motor {self.id}: dynamixel_gains is required for, and only for, kind 'dynamixel'")
+        if self.pull_out_curve is not None and self.kind != "stepper":
+            raise ValueError(f"motor {self.id}: pull_out_curve is only for steppers")
+        return self
 
     @model_validator(mode="after")
     def _speeds_consistent(self) -> Motor:

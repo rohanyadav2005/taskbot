@@ -73,40 +73,58 @@ def test_min_jerk_starts_and_ends_at_rest():
 # --------------------------------------------------------------------------- control
 
 
-def test_torque_limits_are_rated_torque_and_never_exceeded(desk_req, monkeypatch):
+def test_total_torque_never_above_rated_and_weak_motor_hits_it(desk_req, monkeypatch):
+    """Above rated only when a joint is overspun past w0 (1 + rated/stall), where back-EMF
+    alone brakes harder than rated (see taskbot.sim.motor)."""
     spec = spec_of(with_motor(strong_arm(), "shoulder_pitch", "mg996r"))
     robot = build_scene(spec, CATALOG, payload_kg=desk_req.payload_kg)
     rated = [CATALOG[j.motor_id].rated_torque_nm for j in robot.joints]
     np.testing.assert_allclose(robot.torque_limit, rated)
 
     seen = []
-    original = control.PDGravityController.compute
+    original = control.MotorController.compute
 
     def spy(self, data, *args, **kwargs):
         out = original(self, data, *args, **kwargs)
-        seen.append(np.abs(data.qfrc_applied[self.robot.dadr]) / self.robot.torque_limit)
+        qd = np.abs(data.qvel[self.robot.dadr])
+        overspun = np.array([w > m.no_load_speed * (1 + m.rated / m.stall)
+                             for m, w in zip(self.robot.motors, qd)])
+        seen.append(np.where(overspun, 0.0, np.abs(out.tau) / self.robot.torque_limit))
         return out
 
-    monkeypatch.setattr(control.PDGravityController, "compute", spy)
+    monkeypatch.setattr(control.MotorController, "compute", spy)
     run = hold_still(spec, desk_req, CATALOG)
     ratios = np.array(seen)
-    assert ratios.max() <= 1.0 + 1e-12  # never above rated
+    assert ratios.max() <= 1.0 + 1e-9  # never above rated
     assert ratios[:, 1].max() == pytest.approx(1.0)  # the weak shoulder does hit its limit
-    assert not run.result.passed
+    assert not run.result.passed and run.result.cause == "saturated"
 
 
 # --------------------------------------------------------------------------- the three tests
 
 
-def test_strong_arm_passes_all_three(strong_runs):
-    assert set(strong_runs) == {"reach_targets", "carry_payload", "hold_still"}
-    for name, run in strong_runs.items():
+def test_strong_arm_passes_all_three_with_light_payload(two_round_outcome):
+    runs = {r.name: r for r in two_round_outcome[0].rounds[-1].sim_runs}  # 0.1 kg payload
+    assert set(runs) == {"reach_targets", "carry_payload", "hold_still"}
+    for name, run in runs.items():
         assert run.result.passed, run.result.message
-        assert run.result.check == name
-    assert strong_runs["reach_targets"].result.value < 0.01
-    assert strong_runs["carry_payload"].result.value <= 0.2  # longest saturation, s
-    assert strong_runs["hold_still"].result.value < 0.005    # drift, m
-    assert "9/9 targets reached within 1 cm" in strong_runs["carry_payload"].result.message
+        assert run.result.check == name and run.result.cause is None
+    assert runs["reach_targets"].result.value < 0.01
+    assert runs["carry_payload"].result.value <= 0.2  # longest saturation, s
+    assert runs["hold_still"].result.value < 0.001    # final error, m
+    assert "9/9 targets reached within 1 cm" in runs["carry_payload"].result.message
+
+
+def test_strong_arm_with_desk_payload_sags_from_compliance_not_torque(strong_runs):
+    # 0.25 kg, controller believes 0.2 kg: factory Dynamixel gains have no I term, so the
+    # missing feedforward torque becomes a steady droop of (missing torque / Kp).
+    assert strong_runs["reach_targets"].result.passed and strong_runs["carry_payload"].result.passed
+    hold = strong_runs["hold_still"]
+    assert not hold.result.passed and hold.result.cause == "compliance"
+    assert 0.001 < hold.result.value < 0.005
+    assert "a stronger motor will not help" in hold.result.message
+    assert "Sag by joint position-loop stiffness: wrist_pitch (xl430_w250, Kp 5.52 Nm/rad)" in hold.result.message
+    assert hold.ideal.passed  # with the true mass it holds
 
 
 def test_payload_stays_welded_to_gripper(strong_runs):
@@ -124,10 +142,11 @@ def test_weak_shoulder_fails_carry_payload_naming_the_joint(desk_req):
     result = carry_payload(spec, desk_req, CATALOG, payload_mass_error=0.0).result
     assert not result.passed
     assert result.value > 0.2 and result.limit == 0.2
-    assert re.search(r"shoulder_pitch saturated for [\d.]+ s while moving to .*: motor mg996r gives "
-                     r"0\.36 Nm rated at rest, falling linearly to 0 at its 7\.48 rad/s no-load speed",
-                     result.message)
+    assert re.search(r"shoulder_pitch saturated for [\d.]+ s while moving to .* \(motor mg996r: "
+                     r"0\.36 Nm rated, 7\.48 rad/s no-load; speed model min\(rated, stall", result.message)
     assert "elbow_pitch saturated" not in result.message
+    assert result.cause == "saturated" and result.message.endswith(
+        "Cause: saturated: torque limit hit; use a stronger motor, or shorter or lighter outer links.")
 
 
 def test_unreachable_targets_fail_reach_targets(desk_req):
@@ -142,7 +161,7 @@ def test_unreachable_targets_fail_reach_targets(desk_req):
 def test_sim_tests_run_only_after_static_checks_pass(two_round_outcome):
     outcome, _ = two_round_outcome
     r1, r2 = outcome.rounds
-    assert [f.check for f in r1.failures] == ["static_torque"] and not r1.sim_runs
+    assert [f.check for f in r1.failures] == ["static_torque", "torque_at_speed"] and not r1.sim_runs
     assert {r.check for r in r2.results} >= {"reach_targets", "carry_payload", "hold_still"}
     assert r2.passed and outcome.passed
 

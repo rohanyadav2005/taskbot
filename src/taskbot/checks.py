@@ -1,7 +1,7 @@
 """Deterministic engineering checks, and the CheckResult every check returns.
 
 Checks: static_torque, reach (+ workspace_corners), self_collision,
-joint_limits, joint_speed, budget, mass. `run_checks` builds the spec and runs them all.
+joint_limits, joint_speed, torque_at_speed, budget, mass. `run_checks` builds the spec and runs them all.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import math
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import mujoco
 import numpy as np
@@ -26,6 +26,16 @@ from taskbot.schema import ArmChain, Gripper, Motor, RobotSpec, load_motor_catal
 
 if TYPE_CHECKING:  # requirements imports the LLM layer; only needed for annotations
     from taskbot.requirements import Requirements
+
+
+FailureCause = Literal["saturated", "speed_limited", "compliance", "unreachable"]
+CAUSE_ADVICE: dict[str, str] = {
+    "saturated": "torque limit hit; use a stronger motor, or shorter or lighter outer links",
+    "speed_limited": "motor too slow for the move; use a faster motor or a different gear ratio",
+    "compliance": ("error without any motor saturating, so a stronger motor will not help; "
+                   "it is a control or stiffness problem"),
+    "unreachable": "target outside what the arm can reach; lengthen links or add a joint",
+}
 
 
 class CheckResult(BaseModel):
@@ -44,6 +54,7 @@ class CheckResult(BaseModel):
     value: float | None = None
     limit: float | None = None
     message: str
+    cause: FailureCause | None = None  # why it failed; set on failures where it's known
 
     @field_validator("check", "message")
     @classmethod
@@ -195,7 +206,7 @@ def static_torque(
                 "or shorten/lighten the links and motors outboard of this joint."
             )
         results.append(CheckResult(check="static_torque", passed=passed, value=need,
-                                   limit=limit, message=msg))
+                                   limit=limit, message=msg, cause=None if passed else "saturated"))
     return results
 
 
@@ -422,7 +433,54 @@ def joint_speed(
                f"move would take {mv.duration(robot.no_load_speed):.2f} s. Use a faster motor on "
                f"{j.name}, or a joint layout that needs less travel on it.")
     return [CheckResult(check="joint_speed", passed=ok, value=needed, limit=float(available[i]),
-                        message=msg)]
+                        message=msg, cause=None if ok else "speed_limited")]
+
+
+# --------------------------------------------------------------------------- torque at speed
+
+
+def torque_at_speed(
+    spec: RobotSpec, req: Requirements, model: mujoco.MjModel,
+    catalog: dict[str, Motor] | None = None,
+) -> list[CheckResult]:
+    """For each planned move, each joint's gravity torque (with payload) at mid-move, where
+    a minimum-jerk move reaches its peak speed, must be below what the motor can give at
+    that speed (its torque-speed model, taskbot.sim.motor)."""
+    from taskbot.sim.control import gravity_torque
+    from taskbot.sim.model import build_scene
+    from taskbot.sim.plan import plan_moves
+
+    robot = build_scene(spec, _catalog(catalog))
+    data = mujoco.MjData(robot.model)
+    worst = None  # (ratio, move, joint, gravity, available, speed, duration)
+    for mv in plan_moves(robot, req):
+        T = mv.duration(robot.no_load_speed)
+        speeds = mv.peak_speed(T)
+        robot.set_pose(data, (mv.q0 + mv.q1) / 2)
+        gravity = np.abs(gravity_torque(robot, data, req.payload_kg))
+        for i, m in enumerate(robot.motors):
+            available = m.drive_limit(speeds[i])
+            ratio = gravity[i] / available if available > 0 else (np.inf if gravity[i] > 1e-9 else 0.0)
+            if worst is None or ratio > worst[0]:
+                worst = (ratio, mv, i, float(gravity[i]), available, float(speeds[i]), T)
+    ratio, mv, i, gravity, available, speed, T = worst
+    j, m = robot.joints[i], robot.motors[i]
+    unit, speed_unit = ("N", "m/s") if j.type == "prismatic" else ("Nm", "rad/s")
+    ok = ratio <= 1.0
+    detail = (f"{j.name} holds {gravity:.3g} {unit} of gravity (with {req.payload_kg:.3g} kg payload) "
+              f"at mid-move to {mv.label}, where it peaks at {speed:.3g} {speed_unit} in the planned "
+              f"{T:.2f} s move; motor {m.motor_id} gives {available:.3g} {unit} at that speed "
+              f"({m.rated:.3g} {unit} rated at rest, {m.speed_model})")
+    if ok:
+        return [CheckResult(check="torque_at_speed", passed=True, value=gravity, limit=available,
+                            message=f"every joint keeps up with gravity at its peak planned speed. "
+                                    f"Closest: {detail}.")]
+    cause = "speed_limited" if gravity <= m.rated else "saturated"
+    fix = ("a faster motor (or different gearing) keeps more torque at this speed"
+           if cause == "speed_limited" else "it would not hold this load even at rest; use a stronger motor")
+    return [CheckResult(check="torque_at_speed", passed=False, value=gravity, limit=available,
+                        message=f"{detail}. Short by {gravity - available:.3g} {unit}: {fix}, or "
+                                f"shorten or lighten the outer links.", cause=cause)]
 
 
 # --------------------------------------------------------------------------- budget
@@ -480,7 +538,9 @@ def mass(
 
 
 CheckFn = Callable[..., list[CheckResult]]
-ALL_CHECKS: list[CheckFn] = [static_torque, reach, self_collision, joint_limits, joint_speed, budget, mass]
+ALL_CHECKS: list[CheckFn] = [
+    static_torque, reach, self_collision, joint_limits, joint_speed, torque_at_speed, budget, mass,
+]
 
 
 def run_checks(

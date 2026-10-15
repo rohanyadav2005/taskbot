@@ -55,7 +55,8 @@ class RepairOutcome:
 
 
 def format_failures(failures: list[CheckResult]) -> str:
-    return "\n".join(f"- [{r.check}] {r.message}" for r in failures)
+    return "\n".join(f"- [{r.check}]" + (f" (cause: {r.cause})" if r.cause else "") + f" {r.message}"
+                     for r in failures)
 
 
 def repair_prompt(spec: RobotSpec, req: Requirements, failures: list[CheckResult]) -> str:

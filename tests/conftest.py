@@ -34,6 +34,18 @@ DESK_REQ = {
 }
 
 
+# Same task with a 0.1 kg payload: light enough that strong_arm() passes hold_still with the
+# controller's 20% payload-mass error (at 0.25 kg no catalog motor set can; see test_motor_model).
+LIGHT_REQ = DESK_REQ | {"payload_kg": 0.1}
+
+
+@pytest.fixture
+def light_req():
+    from taskbot.requirements import Requirements
+
+    return Requirements(**LIGHT_REQ)
+
+
 @pytest.fixture
 def desk_req():
     from taskbot.requirements import Requirements
@@ -66,7 +78,7 @@ def strong_arm() -> dict:
 
 @pytest.fixture(scope="session")
 def strong_runs():
-    """run_sim_tests on strong_arm() with the desk requirements, by test name."""
+    """run_sim_tests on strong_arm() with the desk requirements (0.25 kg), by test name."""
     from taskbot.requirements import Requirements
     from taskbot.schema import RobotSpec
     from taskbot.sim_tests import run_sim_tests
@@ -77,10 +89,11 @@ def strong_runs():
 
 @pytest.fixture(scope="session")
 def two_round_outcome():
-    """Repair loop: round 1 has an MG996R shoulder (fails static_torque), round 2 is strong_arm()."""
+    """Repair loop with the light (0.1 kg) requirements: round 1 has an MG996R shoulder (fails
+    static_torque), round 2 is strong_arm(), which passes everything."""
     from taskbot.llm import FakeClient
     from taskbot.repair import repair_loop
     from taskbot.requirements import Requirements
 
     fake = FakeClient({"RobotSpec": [with_motor(strong_arm(), "shoulder_pitch", "mg996r"), strong_arm()]})
-    return repair_loop(fake, Requirements(**DESK_REQ)), fake
+    return repair_loop(fake, Requirements(**LIGHT_REQ)), fake
