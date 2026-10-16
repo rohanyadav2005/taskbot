@@ -170,16 +170,16 @@ def test_sim_tests_run_only_after_static_checks_pass(two_round_outcome):
 def test_sim_failure_is_sent_back_for_repair(desk_req, monkeypatch):
     import taskbot.repair as repair
 
-    def fake_sim(spec, req, catalog):
+    def carry_payload(spec, req, catalog):
         from taskbot.checks import CheckResult
         from taskbot.sim_tests import SimRun
 
         ok = spec.name == "fixed"
         res = CheckResult(check="carry_payload", passed=ok, value=0.0 if ok else 1.0, limit=0.2,
                           message="ok" if ok else "shoulder_pitch saturated at its rated 1.37 Nm")
-        return [SimRun("carry_payload", res, None, np.zeros((1, 1)))]
+        return SimRun("carry_payload", res, None, np.zeros((1, 1)))
 
-    monkeypatch.setattr(repair, "run_sim_tests", fake_sim)
+    monkeypatch.setattr(repair, "sim_tests_for", lambda spec, req: [carry_payload])
     fixed = strong_arm() | {"name": "fixed"}
     fake = FakeClient({"RobotSpec": [strong_arm(), fixed]})
     outcome = repair_loop(fake, desk_req, CATALOG)

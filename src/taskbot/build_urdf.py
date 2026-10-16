@@ -23,13 +23,31 @@ from taskbot.schema import (
     Link,
     Motor,
     RobotSpec,
+    WheeledBase,
     base_link_name,
     gripper_names,
     load_motor_catalog,
+    wheel_names,
 )
 
-DENSITY_KG_M3 = {"pla": 1240.0, "aluminium": 2700.0, "steel": 7850.0}
-RGBA = {"pla": "0.9 0.5 0.1 1", "aluminium": "0.75 0.75 0.78 1", "steel": "0.4 0.4 0.45 1"}
+DENSITY_KG_M3 = {"pla": 1240.0, "aluminium": 2700.0, "steel": 7850.0, "rubber": 1100.0}
+RGBA = {"pla": "0.9 0.5 0.1 1", "aluminium": "0.75 0.75 0.78 1", "steel": "0.4 0.4 0.45 1",
+        "rubber": "0.15 0.15 0.15 1"}
+
+# A mobile chassis is a closed box with walls this thick (sheet metal / printed shell);
+# arm links and fixed bases stay solid.
+CHASSIS_WALL_M = 0.003
+# Wheels are solid rubber cylinders; the caster is a PLA ball of half a wheel radius.
+WHEEL_MATERIAL = "rubber"
+CASTER_FRICTION = 0.01   # a ball caster rolls freely; nearly frictionless contact
+# Rubber wheel on each terrain: sliding friction mu, and rolling-resistance coefficient Crr
+# (rolling torque = Crr * r * normal force). Typical textbook ranges, not measured for any
+# particular wheel: ESTIMATES, unverified.
+TERRAIN = {
+    "flat": {"mu": 0.8, "crr": 0.01, "note": "hard indoor floor (tile, wood, concrete)"},
+    "carpet": {"mu": 0.6, "crr": 0.03, "note": "low-pile carpet"},
+    "outdoor": {"mu": 0.5, "crr": 0.05, "note": "paving, packed earth, short grass"},
+}
 MOTOR_RGBA = "0.1 0.1 0.1 1"
 
 # Rack-and-pinion pitch radius assumed for prismatic joints (arm or fingers):
@@ -136,6 +154,76 @@ def _arm_link_draft(link: Link) -> _LinkDraft:
     return _LinkDraft(link.name, [body], [(geom, centre, RGBA[link.material])], L)
 
 
+def shell_box(material: str, size, com, wall: float = CHASSIS_WALL_M) -> Body:
+    """Closed box with walls of thickness `wall`: outer solid minus inner solid."""
+    outer = solid_box(material, size, com)
+    inner_size = [max(s - 2 * wall, 0.0) for s in size]
+    inner = solid_box(material, inner_size, com)
+    return Body(outer.mass - inner.mass, outer.com, outer.inertia - inner.inertia, material)
+
+
+def solid_sphere(material: str, radius: float, com) -> Body:
+    m = DENSITY_KG_M3[material] * 4 / 3 * np.pi * radius**3
+    return Body(m, np.asarray(com, float), np.eye(3) * 0.4 * m * radius**2, material)
+
+
+def _sphere_geom(radius: float) -> etree._Element:
+    g = etree.Element("geometry")
+    etree.SubElement(g, "sphere", radius=_fmt(radius))
+    return g
+
+
+def wheel_layout(b: WheeledBase) -> list[tuple[str, float, float]]:
+    """(side name, x, y) of each wheel centre in the chassis frame (axles at z = radius)."""
+    half_t, half_b = b.track_width_m / 2, b.wheelbase_m / 2
+    if b.drive == "differential":
+        return [("left", half_b, half_t), ("right", half_b, -half_t)]
+    return [("front_left", half_b, half_t), ("front_right", half_b, -half_t),
+            ("rear_left", -half_b, half_t), ("rear_right", -half_b, -half_t)]
+
+
+def caster_position(b: WheeledBase) -> tuple[float, float, float, float]:
+    """(x, y, z, radius) of the caster ball centre in the chassis frame."""
+    r = 0.5 * b.wheel_radius_m
+    return (-b.wheelbase_m / 2, 0.0, r, r)
+
+
+def _wheeled_base_drafts(b: WheeledBase, motor: Motor) -> tuple[_LinkDraft, list[_LinkDraft], list[dict]]:
+    """Chassis (with wheel motors and battery), wheels, caster, and their joints."""
+    size = b.chassis_size_m
+    centre = np.array([0.0, 0.0, b.chassis_bottom_m + size[2] / 2])
+    chassis = _LinkDraft(b.name, [shell_box(b.chassis_material, size, centre)],
+                         [(_box_geom(size), centre, RGBA[b.chassis_material])], b.chassis_top_m)
+    battery = np.array([0.0, 0.0, b.chassis_bottom_m + 0.015])
+    chassis.bodies.append(Body(b.battery_kg, battery, box_inertia(b.battery_kg, 0.1, 0.06, 0.03)))
+
+    links, joints = [], []
+    link_names, joint_names = wheel_names(b)
+    r, w = b.wheel_radius_m, b.wheel_width_m
+    mx, my, mz = motor.body_size_m
+    for (side, x, y), lname, jname in zip(wheel_layout(b), link_names, joint_names):
+        sign = 1.0 if y > 0 else -1.0
+        # The motor sits inboard of its wheel with its long (z) axis along the axle.
+        at = np.array([x, sign * (abs(y) - w / 2 - mz / 2), r])
+        chassis.bodies.append(Body(motor.mass_kg, at, box_inertia(motor.mass_kg, mx, mz, my)))
+        chassis.visuals.append((_box_geom((mx, mz, my)), at, MOTOR_RGBA))
+        wheel = _LinkDraft(lname, [solid_cylinder(WHEEL_MATERIAL, r, w, (0, 0, 0))],
+                           [(_cyl_geom(r, w), np.zeros(3), RGBA[WHEEL_MATERIAL])], 0.0)
+        links.append(wheel)
+        # Wheel frame rotated -90° about x: its z axis (the cylinder axis) is the chassis y axis.
+        joints.append(dict(name=jname, jtype="continuous", parent=b.name, child=lname,
+                           xyz=(x, y, r), rpy=(-np.pi / 2, 0, 0), axis="0 0 1",
+                           limits=_joint_limits("continuous", motor)))
+    if b.caster:
+        cx, cy, cz, cr = caster_position(b)
+        caster = _LinkDraft(link_names[-1], [solid_sphere("pla", cr, (0, 0, 0))],
+                            [(_sphere_geom(cr), np.zeros(3), RGBA["pla"])], 0.0)
+        links.append(caster)
+        joints.append(dict(name=joint_names[-1], jtype="fixed", parent=b.name, child=caster.name,
+                           xyz=(cx, cy, cz)))
+    return chassis, links, joints
+
+
 def _base_draft(base: FixedBase) -> _LinkDraft:
     size = (*base.footprint_m, base.height_m)
     centre = np.array([0.0, 0.0, base.height_m / 2])
@@ -147,8 +235,8 @@ def _base_draft(base: FixedBase) -> _LinkDraft:
     )
 
 
-def _add_motor(draft: _LinkDraft, motor: Motor, at_z: float) -> None:
-    centre = np.array([0.0, 0.0, at_z])
+def _add_motor(draft: _LinkDraft, motor: Motor, at_z: float, at_xy=(0.0, 0.0)) -> None:
+    centre = np.array([at_xy[0], at_xy[1], at_z])
     draft.bodies.append(motor_body(motor, centre))
     draft.visuals.append((_box_geom(motor.body_size_m), centre, MOTOR_RGBA))
 
@@ -201,11 +289,12 @@ def _emit_joint(
     limits: tuple[float, float] | None = None,
     lower: float | None = None,
     upper: float | None = None,
+    rpy=(0.0, 0.0, 0.0),
 ) -> None:
     j = etree.SubElement(robot, "joint", name=name, type=jtype)
     etree.SubElement(j, "parent", link=parent)
     etree.SubElement(j, "child", link=child)
-    etree.SubElement(j, "origin", xyz=_fmt(xyz), rpy="0 0 0")
+    etree.SubElement(j, "origin", xyz=_fmt(xyz), rpy=_fmt(rpy))
     if axis is not None:
         etree.SubElement(j, "axis", xyz=axis)
     if limits is not None:
@@ -260,20 +349,26 @@ def tool_length_m(gripper: Gripper | None) -> float:
 
 
 def _assemble(spec: RobotSpec, motors: dict[str, Motor]) -> tuple[list[_LinkDraft], list[dict]]:
-    drafts: list[_LinkDraft] = [_base_draft(spec.base)]
     joints: list[dict] = []
-    prev = drafts[0]
+    extra: list[_LinkDraft] = []
+    if isinstance(spec.base, WheeledBase):
+        root, extra, joints = _wheeled_base_drafts(spec.base, motors[spec.base.wheel_motor_id])
+    else:
+        root = _base_draft(spec.base)
+    drafts: list[_LinkDraft] = [root]
+    prev = root
 
     for module in spec.modules[1:]:
         if isinstance(module, ArmChain):
-            for seg in module.segments:
+            for k, seg in enumerate(module.segments):
                 j: Joint = seg.joint
                 motor = motors[j.motor_id]
-                _add_motor(prev, motor, prev.tip_z)
+                xy = (module.mount_xy_m or (0.0, 0.0)) if (k == 0 and prev is root) else (0.0, 0.0)
+                _add_motor(prev, motor, prev.tip_z, xy)
                 child = _arm_link_draft(seg.link)
                 joints.append(dict(
                     name=j.name, jtype=j.type, parent=prev.name, child=child.name,
-                    xyz=(0, 0, prev.tip_z), axis=AXIS_VEC[j.axis],
+                    xyz=(xy[0], xy[1], prev.tip_z), axis=AXIS_VEC[j.axis],
                     limits=_joint_limits(j.type, motor), lower=j.lower, upper=j.upper,
                 ))
                 drafts.append(child)
@@ -295,7 +390,7 @@ def _assemble(spec: RobotSpec, motors: dict[str, Motor]) -> tuple[list[_LinkDraf
             prev = palm
         else:  # pragma: no cover - schema allows only one base, at index 0
             raise AssertionError(f"unexpected module {module.kind}")
-    return drafts, joints
+    return drafts + extra, joints
 
 
 def structure_mass_by_material(
@@ -346,9 +441,18 @@ def tool_offset_m(spec: RobotSpec) -> float:
     return segments[-1].link.length + tool_length_m(gripper)
 
 
-def build_mjspec(spec: RobotSpec, catalog: dict[str, Motor] | None = None):
+def build_mjspec(spec: RobotSpec, catalog: dict[str, Motor] | None = None,
+                 floating: bool = False, terrain: str = "flat"):
     """URDF loaded as an editable mujoco.MjSpec, with an `end_effector` site at the tool
-    point and contacts between adjacent links excluded."""
+    point (if there is an arm) and contacts between adjacent links excluded.
+
+    For a wheeled base: `floating` gives the chassis a free joint (URDF has no world link,
+    so a mobile robot's root link is free-floating by convention; MuJoCo needs it explicit);
+    otherwise the chassis is welded in place, as for the arm-only tests. The caster becomes
+    a ball joint, the wheels get the terrain's friction (see TERRAIN) with rolling
+    resistance (condim 6), and each wheel joint gets a torque actuator `<joint>_motor`
+    driven by the wheel speed controller.
+    """
     import mujoco
 
     mjspec = mujoco.MjSpec.from_string(build_urdf(spec, catalog))
@@ -360,13 +464,37 @@ def build_mjspec(spec: RobotSpec, catalog: dict[str, Motor] | None = None):
         parent = probe.body_parentid[b]
         if parent > 0:
             mjspec.add_exclude(bodyname1=probe.body(parent).name, bodyname2=probe.body(b).name)
-    mjspec.body(tool_link_name(spec)).add_site(
-        name=EE_SITE, pos=[0.0, 0.0, tool_offset_m(spec)], size=[0.006, 0, 0],
-        rgba=[1, 0.2, 0.2, 1],
-    )
+    if spec.has_arm:
+        mjspec.body(tool_link_name(spec)).add_site(
+            name=EE_SITE, pos=[0.0, 0.0, tool_offset_m(spec)], size=[0.006, 0, 0],
+            rgba=[1, 0.2, 0.2, 1],
+        )
+    if isinstance(spec.base, WheeledBase):
+        _mobile_parts(mjspec, spec.base, floating, terrain)
     return mjspec
 
 
+def _mobile_parts(mjspec, b: WheeledBase, floating: bool, terrain: str) -> None:
+    import mujoco
+
+    t = TERRAIN[terrain]
+    if floating:
+        mjspec.body(b.name).add_freejoint()
+    link_names, joint_names = wheel_names(b)
+    for lname, jname in zip(link_names, joint_names):
+        if lname.endswith("_caster"):
+            body = mjspec.body(lname)
+            body.add_joint(type=mujoco.mjtJoint.mjJNT_BALL, name=f"{lname}_ball")
+            for g in body.geoms:
+                g.friction = [CASTER_FRICTION, 0.0, 0.0]
+            continue
+        for g in mjspec.body(lname).geoms:
+            g.friction = [t["mu"], 0.005, t["crr"] * b.wheel_radius_m]
+            g.condim = 6
+        mjspec.add_actuator(name=f"{jname}_motor", target=jname,
+                            trntype=mujoco.mjtTrn.mjTRN_JOINT)
+
+
 def build_model(spec: RobotSpec, catalog: dict[str, Motor] | None = None):
-    """Compiled mujoco.MjModel of the robot, with the end-effector site."""
+    """Compiled mujoco.MjModel of the robot (base fixed in place), with the end-effector site."""
     return build_mjspec(spec, catalog).compile()

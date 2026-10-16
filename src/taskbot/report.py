@@ -50,24 +50,11 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
     final = outcome.final
     lines = [f"# Design report: {final.spec.name}", "", f"**{verdict(outcome)}**", ""]
 
-    lines += ["## Requirements", "", "| Field | Value |", "|---|---|"]
-    ws = req.workspace
-    rows = {
-        "Task": req.task_summary,
-        "Robot type": req.robot_type,
-        "Reach": f"{req.reach_m:.3g} m",
-        "Payload": f"{req.payload_kg:.3g} kg",
-        "Workspace": f"x [{ws.x_min:.3g}, {ws.x_max:.3g}] y [{ws.y_min:.3g}, {ws.y_max:.3g}] "
-                     f"z [{ws.z_min:.3g}, {ws.z_max:.3g}] m",
-        "Min DOF": str(req.dof_min),
-        "Gripper": req.gripper_kind or "none",
-        "Budget": f"${req.max_budget_usd:.2f}" if req.max_budget_usd else "none given",
-        "Min joint range": f"{req.min_joint_range_rad:.3g} rad",
-        "Position tolerance": f"{req.position_tolerance_m * 1000:.3g} mm ({req.tolerance_reason})",
-    }
-    lines += [f"| {k} | {_cell(v)} |" for k, v in rows.items()]
-    if req.assumptions:
-        lines += ["", "Assumptions:", *[f"- {_cell(a)}" for a in req.assumptions]]
+    lines += ["## Requirements", ""]
+    lines += requirements_rows(req)
+    battery = getattr(final.spec.base, "battery_note", None)
+    if battery:
+        lines += [f"- Design assumption: {battery}"]
 
     # Summary: one row per check name, one column per round.
     names = list(dict.fromkeys(r.check for rnd in outcome.rounds for r in rnd.results))
@@ -104,6 +91,10 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
               "carry_payload and hold_still are judged with the controller believing the payload "
               "is 20% lighter than it is; the \"(ideal)\" rows repeat them with the true mass, "
               "for information only."]
+    if req.is_mobile and req.has_arm:
+        lines += ["", "**For this mobile manipulator the arm tests (reach_targets, carry_payload, "
+                  "hold_still) run with the wheeled base fixed in place**, so they test the arm alone; "
+                  "drive_with_arm_extended tests the arm and base together while driving."]
 
     lines += ["", f"## Controller settings (round {final.number} design)", "",
               "Fixed per motor, never tuned per test (see taskbot/sim/motor.py). Total joint torque = "
@@ -124,6 +115,9 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
             f"| {row['joint']} | {row['motor']} | {row['kp']:.3g} | {row['kd']:.3g} | {row['ki']:.3g} | "
             f"{row['back_emf_damping']:.3g} | {row['rated']:.3g} / {row['stall']:.3g} | "
             f"{row['no_load_speed']:.3g} | {_cell(row['gain_source'])} | {_cell(row['speed_model'])} |")
+    if final.spec.is_mobile:
+        lines += ["", "Wheel rows are velocity loops: Kp is in Nm·s/rad (torque per rad/s of speed "
+                  "error) and Ki in Nm/rad."]
 
     if recordings:
         lines += ["", f"## Simulation recordings (round {final.number})", ""]
@@ -149,6 +143,55 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
     return "\n".join(lines) + "\n"
 
 
+def requirements_rows(req) -> list[str]:
+    """The requirements table and assumptions, as markdown lines."""
+    lines = ["| Field | Value |", "|---|---|"]
+    rows = {"Task": req.task_summary, "Robot type": req.robot_type}
+    if req.has_arm:
+        ws = req.workspace
+        rows |= {
+            "Reach": f"{req.reach_m:.3g} m",
+            "Payload in gripper": f"{req.payload_kg:.3g} kg",
+            "Workspace": f"x [{ws.x_min:.3g}, {ws.x_max:.3g}] y [{ws.y_min:.3g}, {ws.y_max:.3g}] "
+                         f"z [{ws.z_min:.3g}, {ws.z_max:.3g}] m",
+            "Min DOF": str(req.dof_min),
+            "Gripper": req.gripper_kind or "none",
+            "Min joint range": f"{req.min_joint_range_rad:.3g} rad",
+        }
+    if req.is_mobile:
+        rows |= {
+            "Speed": f"{req.speed_m_s:.3g} m/s",
+            "Max incline": f"{req.max_incline_deg:g}°",
+            "Terrain": req.terrain,
+            "Payload on base": f"{req.base_payload_kg:.3g} kg",
+            "Travel per charge": f"{req.travel_distance_m:g} m" if req.travel_distance_m else "not given",
+        }
+    rows |= {
+        "Budget": f"${req.max_budget_usd:.2f}" if req.max_budget_usd else "none given",
+        "Position tolerance": f"{req.position_tolerance_m * 1000:.3g} mm ({req.tolerance_reason})",
+    }
+    lines += [f"| {k} | {_cell(str(v))} |" for k, v in rows.items()]
+    if req.assumptions:
+        lines += ["", "Assumptions:", *[f"- {_cell(a)}" for a in req.assumptions]]
+    return lines
+
+
+def write_out_of_scope(req, out_root: Path) -> Path:
+    """out/<task>/{requirements.json, report.md} for a task TaskBot won't design."""
+    import re
+
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", req.task_summary.lower()).strip("_")[:40] or "out_of_scope"
+    out = unique_dir(out_root, slug)
+    out.mkdir(parents=True)
+    (out / "requirements.json").write_text(req.model_dump_json(indent=2) + "\n", "utf-8")
+    lines = [f"# Design report: {slug}", "",
+             "**OUT OF SCOPE: no design was made. TaskBot designs fixed arms and wheeled robots; "
+             "this task needs something else.**", "", "Why:", *[f"- {_cell(a)}" for a in req.out_of_scope],
+             "", "## Requirements (best attempt, for reference)", "", *requirements_rows(req)]
+    (out / "report.md").write_text("\n".join(lines) + "\n", "utf-8")
+    return out
+
+
 def unique_dir(root: Path, name: str) -> Path:
     path, n = root / name, 2
     while path.exists():
@@ -160,7 +203,8 @@ def record_sim(rnd: Round, out: Path) -> dict[str, str | None]:
     """Render the round's sim runs to out/sim/<test>.gif."""
     return {
         run.name: render_gif(run.robot.model, run.frames, out / "sim" / f"{run.name}.gif",
-                             look_at=run.look_at, distance=run.camera_distance)
+                             look_at=run.look_at, distance=run.camera_distance,
+                             track_body=run.track_body)
         for run in rnd.sim_runs
     }
 

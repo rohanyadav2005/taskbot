@@ -20,7 +20,7 @@ taskbot = "taskbot.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-taskbot = ["data/*.json", "prompts/*.md"]
+taskbot = ["data/*.json", "data/fake/*.json", "prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

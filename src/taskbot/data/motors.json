@@ -5,13 +5,19 @@
     "Prices are single-unit retail and change often; they are for ranking designs, not quoting.",
     "no_load_speed_rad_s: output speed with no load. The sim uses a linear torque-speed line from rated torque at 0 to zero torque at this speed.",
     "kind: hobby_servo / dynamixel / stepper; decides the simulated controller gains and torque-speed model (see taskbot/sim/motor.py).",
-    "AX-12A is kind hobby_servo: it uses compliance margin/slope instead of PID gains, so it gets the documented conservative hobby setting."
+    "AX-12A is kind hobby_servo: it uses compliance margin/slope instead of PID gains, so it gets the documented conservative hobby setting.",
+    "modes: which control loops a motor supports here. Arm joints and grippers need position, wheels need velocity.",
+    "dc_gearmotor: brushed DC gearmotors with encoders, velocity mode only, driven by a speed controller with one conservative PI preset (taskbot/sim/motor.py)."
   ],
   "motors": [
     {
       "id": "sts3215",
       "name": "Feetech STS3215 (7.4 V, 19 kg·cm)",
       "kind": "hobby_servo",
+      "modes": [
+        "position"
+      ],
+      "voltage_v": 6.0,
       "stall_torque_nm": 1.912,
       "rated_torque_nm": 0.637,
       "max_speed_rad_s": 4.4,
@@ -30,13 +36,19 @@
         "mass_kg": "Feetech datasheet: 55 ± 1 g",
         "body_size_m": "Feetech datasheet: 45.2 × 24.7 × 35 mm",
         "price_usd": "approx. retail (RobotShop/Seeed listings, ~US$15–20); not verified today",
-        "no_load_speed_rad_s": "Feetech datasheet: 0.238 s/60° is the no-load speed @ 6 V, so equal to max_speed_rad_s"
+        "no_load_speed_rad_s": "Feetech datasheet: 0.238 s/60° is the no-load speed @ 6 V, so equal to max_speed_rad_s",
+        "modes": "Feetech STS3215 also has a continuous 'motor mode', not modelled here; position only",
+        "voltage_v": "Feetech datasheet: torque/speed figures are given at 6 V"
       }
     },
     {
       "id": "mg996r",
       "name": "TowerPro MG996R",
       "kind": "hobby_servo",
+      "modes": [
+        "position"
+      ],
+      "voltage_v": 6.0,
       "stall_torque_nm": 1.079,
       "rated_torque_nm": 0.36,
       "max_speed_rad_s": 7.48,
@@ -55,13 +67,19 @@
         "mass_kg": "TowerPro MG996R datasheet: 55 g",
         "body_size_m": "TowerPro MG996R datasheet: 40.7 × 19.7 × 42.9 mm",
         "price_usd": "approx. retail (~US$8–12); not verified today",
-        "no_load_speed_rad_s": "TowerPro MG996R datasheet: 0.14 s/60° operating speed is measured at no load @ 6 V, so equal to max_speed_rad_s"
+        "no_load_speed_rad_s": "TowerPro MG996R datasheet: 0.14 s/60° operating speed is measured at no load @ 6 V, so equal to max_speed_rad_s",
+        "modes": "standard 180° hobby servo: position only",
+        "voltage_v": "TowerPro MG996R datasheet: 11 kgf·cm / 0.14 s at 6 V"
       }
     },
     {
       "id": "ax12a",
       "name": "ROBOTIS Dynamixel AX-12A",
       "kind": "hobby_servo",
+      "modes": [
+        "position"
+      ],
+      "voltage_v": 12.0,
       "stall_torque_nm": 1.5,
       "rated_torque_nm": 0.5,
       "max_speed_rad_s": 6.18,
@@ -80,13 +98,20 @@
         "mass_kg": "ROBOTIS spec table: 54.6 g",
         "body_size_m": "ROBOTIS spec: 32 × 50 × 40 mm",
         "price_usd": "approx. ROBOTIS list price; not verified today",
-        "no_load_speed_rad_s": "ROBOTIS spec: 59 rpm is the no-load speed @ 12 V, so equal to max_speed_rad_s"
+        "no_load_speed_rad_s": "ROBOTIS spec: 59 rpm is the no-load speed @ 12 V, so equal to max_speed_rad_s",
+        "modes": "AX-12A has an endless-turn wheel mode, but no velocity gains are modelled; position only",
+        "voltage_v": "ROBOTIS spec: figures at 12 V"
       }
     },
     {
       "id": "xl430_w250",
       "name": "ROBOTIS Dynamixel XL430-W250-T",
       "kind": "dynamixel",
+      "modes": [
+        "position",
+        "velocity"
+      ],
+      "voltage_v": 12.0,
       "stall_torque_nm": 1.5,
       "rated_torque_nm": 0.5,
       "max_speed_rad_s": 6.39,
@@ -106,18 +131,30 @@
         "body_size_m": "mybotshop.de: 28.5 × 46.5 × 34 mm",
         "price_usd": "approx. ROBOTIS US list price; not verified today",
         "no_load_speed_rad_s": "ROBOTIS spec via mybotshop.de: 61 rpm is the no-load speed @ 12 V, so equal to max_speed_rad_s",
-        "dynamixel_gains": "XL430-W250 control table, factory defaults Position P 640 / I 0 / D 4000 (addresses 84/82/80), via a copy of the ROBOTIS e-manual table (blog.ittraining.com.tw); not checked against emanual.robotis.com, which is unreachable from the build environment"
+        "dynamixel_gains": "XL430-W250 control table, factory defaults Position P 640 / I 0 / D 4000 (addresses 84/82/80), via a copy of the ROBOTIS e-manual table (blog.ittraining.com.tw); not checked against emanual.robotis.com, which is unreachable from the build environment",
+        "modes": "X-series operating modes include position and velocity (ROBOTIS e-manual)",
+        "voltage_v": "ROBOTIS spec via mybotshop.de: 12 V figures",
+        "dynamixel_velocity_gains": "XL430-W250 factory Velocity P 100 / I 1000 (addresses 78/76) from memory of the ROBOTIS e-manual: UNVERIFIED. ROBOTIS pages for other X models show the same addresses with model-specific values (e.g. XC330-M181 P 100 / I 1400)"
       },
       "dynamixel_gains": {
         "p": 640,
         "i": 0,
         "d": 4000
+      },
+      "dynamixel_velocity_gains": {
+        "p": 100,
+        "i": 1000
       }
     },
     {
       "id": "xm430_w350",
       "name": "ROBOTIS Dynamixel XM430-W350-T",
       "kind": "dynamixel",
+      "modes": [
+        "position",
+        "velocity"
+      ],
+      "voltage_v": 12.0,
       "stall_torque_nm": 4.1,
       "rated_torque_nm": 1.367,
       "max_speed_rad_s": 4.82,
@@ -137,18 +174,30 @@
         "body_size_m": "same X430 housing as XL430: 28.5 × 46.5 × 34 mm",
         "price_usd": "RobotShop US listing, Oct 2026: US$310.39",
         "no_load_speed_rad_s": "ROBOTIS e-manual: 46 rpm is the no-load speed @ 12 V, so equal to max_speed_rad_s",
-        "dynamixel_gains": "XM430-W350 control table factory defaults Position P 800 / I 0 / D 0, from the ROBOTIS e-manual as remembered; NOT verified this session (emanual.robotis.com unreachable). Check before relying on it"
+        "dynamixel_gains": "XM430-W350 control table factory defaults Position P 800 / I 0 / D 0, from the ROBOTIS e-manual as remembered; NOT verified this session (emanual.robotis.com unreachable). Check before relying on it",
+        "modes": "X-series operating modes include position and velocity (ROBOTIS e-manual)",
+        "voltage_v": "ROBOTIS e-manual: 12 V figures",
+        "dynamixel_velocity_gains": "XM430-W350 factory Velocity P 100 / I 1920 (addresses 78/76) from memory of the ROBOTIS e-manual: UNVERIFIED"
       },
       "dynamixel_gains": {
         "p": 800,
         "i": 0,
         "d": 0
+      },
+      "dynamixel_velocity_gains": {
+        "p": 100,
+        "i": 1920
       }
     },
     {
       "id": "xm540_w270",
       "name": "ROBOTIS Dynamixel XM540-W270-T",
       "kind": "dynamixel",
+      "modes": [
+        "position",
+        "velocity"
+      ],
+      "voltage_v": 12.0,
       "stall_torque_nm": 10.6,
       "rated_torque_nm": 3.533,
       "max_speed_rad_s": 3.14,
@@ -168,18 +217,30 @@
         "body_size_m": "ROBOTIS e-manual: 33.5 × 58.5 × 44 mm (W × H × D)",
         "price_usd": "RobotShop US listing, Oct 2026: US$482.89",
         "no_load_speed_rad_s": "ROBOTIS e-manual: 30 rpm is the no-load speed @ 12 V, so equal to max_speed_rad_s",
-        "dynamixel_gains": "XM540-W270 control table factory defaults Position P 800 / I 0 / D 0, from the ROBOTIS e-manual as remembered; NOT verified this session (emanual.robotis.com unreachable). Check before relying on it"
+        "dynamixel_gains": "XM540-W270 control table factory defaults Position P 800 / I 0 / D 0, from the ROBOTIS e-manual as remembered; NOT verified this session (emanual.robotis.com unreachable). Check before relying on it",
+        "modes": "X-series operating modes include position and velocity (ROBOTIS e-manual)",
+        "voltage_v": "ROBOTIS e-manual: 12 V figures",
+        "dynamixel_velocity_gains": "XM540-W270 factory Velocity P 100 / I 1920 assumed equal to the XM430 from memory: UNVERIFIED"
       },
       "dynamixel_gains": {
         "p": 800,
         "i": 0,
         "d": 0
+      },
+      "dynamixel_velocity_gains": {
+        "p": 100,
+        "i": 1920
       }
     },
     {
       "id": "nema17_pg27",
       "name": "NEMA 17 stepper + 26.85:1 planetary gearbox (17HS15-1684S-PG27)",
       "kind": "stepper",
+      "modes": [
+        "position",
+        "velocity"
+      ],
+      "voltage_v": 12.0,
       "stall_torque_nm": 5.0,
       "rated_torque_nm": 3.0,
       "max_speed_rad_s": 0.733,
@@ -199,10 +260,105 @@
         "body_size_m": "42 × 42 mm frame; 40 mm motor + 35 mm gearbox (VXB listing)",
         "price_usd": "VXB regular price US$99.99 (listing pricing inconsistent; StepperOnline is usually cheaper)",
         "no_load_speed_rad_s": "VXB listing: ~7 rpm output, taken as no-load speed. A stepper's torque falls with speed along its pull-out curve, not linearly, so the linear torque-speed model is approximate here",
-        "pull_out_curve": "none published in the VXB/Sigmanortec listings; the simulator's stepper approximation is used (flat rated torque to 50% of no-load speed, then linear to 0)"
+        "pull_out_curve": "none published in the VXB/Sigmanortec listings; the simulator's stepper approximation is used (flat rated torque to 50% of no-load speed, then linear to 0)",
+        "modes": "stepper with a driver can hold position or run at speed",
+        "voltage_v": "VXB listing: 12-24 V recommended supply; 12 V assumed"
       },
       "supported": false,
       "unsupported_reason": "stepper modeled as PD servo; real steppers hold stiffly then skip steps — not modeled"
+    },
+    {
+      "id": "pololu_37d_50",
+      "name": "Pololu 50:1 Metal Gearmotor 37Dx70L 12V with 64 CPR encoder (#4753)",
+      "kind": "dc_gearmotor",
+      "modes": [
+        "velocity"
+      ],
+      "voltage_v": 12.0,
+      "stall_torque_nm": 2.059,
+      "rated_torque_nm": 0.686,
+      "max_speed_rad_s": 20.94,
+      "no_load_speed_rad_s": 20.94,
+      "mass_kg": 0.21,
+      "body_size_m": [
+        0.037,
+        0.037,
+        0.095
+      ],
+      "price_usd": 60.95,
+      "sources": {
+        "stall_torque_nm": "Pololu #4753 specs: 21 kg·cm stall at 12 V (extrapolated)",
+        "max_speed_rad_s": "Pololu #4753: 200 rpm no-load at 12 V",
+        "no_load_speed_rad_s": "Pololu #4753: 200 rpm no-load at 12 V",
+        "mass_kg": "about 210 g with encoder, from memory: UNVERIFIED",
+        "body_size_m": "37 mm diameter; ~95 mm long with encoder, from the 37Dx70L name plus encoder: UNVERIFIED length",
+        "price_usd": "Pololu US single-unit price US$60.95 (Oct 2026 search)",
+        "rated_torque_nm": "RATED_RULE (stall/3); Pololu publishes only extrapolated stall",
+        "modes": "brushed DC gearmotor with encoder, driven by a speed controller: velocity only here",
+        "voltage_v": "12 V version"
+      }
+    },
+    {
+      "id": "pololu_25d_34_hp",
+      "name": "Pololu 34:1 Metal Gearmotor 25Dx67L HP 12V with 48 CPR encoder (#4844)",
+      "kind": "dc_gearmotor",
+      "modes": [
+        "velocity"
+      ],
+      "voltage_v": 12.0,
+      "stall_torque_nm": 1.079,
+      "rated_torque_nm": 0.36,
+      "max_speed_rad_s": 31.42,
+      "no_load_speed_rad_s": 31.42,
+      "mass_kg": 0.1,
+      "body_size_m": [
+        0.025,
+        0.025,
+        0.067
+      ],
+      "price_usd": 56.95,
+      "sources": {
+        "stall_torque_nm": "Pololu #4844: 11 kg·cm stall at 12 V (extrapolated)",
+        "max_speed_rad_s": "Pololu #4844: 300 rpm no-load at 12 V",
+        "no_load_speed_rad_s": "Pololu #4844: 300 rpm no-load at 12 V",
+        "mass_kg": "about 100 g with encoder, from memory: UNVERIFIED",
+        "body_size_m": "25 mm diameter x 67 mm (25Dx67L)",
+        "price_usd": "Pololu US single-unit price US$56.95 (Oct 2026 search)",
+        "rated_torque_nm": "RATED_RULE (stall/3); Pololu publishes only extrapolated stall",
+        "modes": "brushed DC gearmotor with encoder, driven by a speed controller: velocity only here",
+        "voltage_v": "12 V version"
+      }
+    },
+    {
+      "id": "jgb37_520_110",
+      "name": "JGB37-520 12V 110 rpm gearmotor with Hall encoder",
+      "kind": "dc_gearmotor",
+      "modes": [
+        "velocity"
+      ],
+      "voltage_v": 12.0,
+      "stall_torque_nm": 1.177,
+      "rated_torque_nm": 0.382,
+      "max_speed_rad_s": 11.52,
+      "no_load_speed_rad_s": 11.52,
+      "mass_kg": 0.18,
+      "body_size_m": [
+        0.037,
+        0.037,
+        0.075
+      ],
+      "price_usd": 12.0,
+      "sources": {
+        "stall_torque_nm": "makerselectronics.com listing (110 rpm encoder version): 12.0 kg·cm stall; other listings disagree: UNVERIFIED",
+        "max_speed_rad_s": "same listing: 110 rpm no-load",
+        "no_load_speed_rad_s": "same listing: 110 rpm no-load",
+        "mass_kg": "about 180 g, from memory of similar listings: UNVERIFIED",
+        "body_size_m": "37 mm gearbox; ~75 mm long with motor, from memory: UNVERIFIED",
+        "price_usd": "about US$12 on hobby marketplaces, from memory: UNVERIFIED",
+        "rated_torque_nm": "makerselectronics.com listing: rated 3.90 kg·cm (listings for this generic part disagree widely)",
+        "modes": "brushed DC gearmotor with encoder, driven by a speed controller: velocity only here",
+        "voltage_v": "12 V version"
+      }
     }
   ]
 }

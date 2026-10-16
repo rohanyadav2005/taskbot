@@ -42,12 +42,28 @@ class Requirements(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     task_summary: str = Field(min_length=1)
-    robot_type: Literal["arm"] = "arm"
-    reach_m: PositiveFloat = Field(description="Required reach including the 10% margin.")
-    payload_kg: NonNegativeFloat = Field(description="Required payload including the 25% margin.")
-    workspace: Workspace
-    dof_min: int = Field(ge=1, le=7)
+    robot_type: Literal["arm", "mobile", "mobile_manipulator"] = Field(
+        default="arm",
+        description="arm: works from one fixed place. mobile: drives around, no arm. "
+        "mobile_manipulator: drives and handles objects with an arm.")
+    reach_m: PositiveFloat | None = Field(
+        default=None, description="Arm types only: required reach including the 10% margin.")
+    payload_kg: NonNegativeFloat = Field(
+        description="Mass held by the gripper, including the 25% margin (0 for mobile).")
+    workspace: Workspace | None = Field(
+        default=None, description="Arm types only. For a mobile_manipulator, in the robot frame: "
+        "origin on the ground under the chassis centre, x forward, z up.")
+    dof_min: int | None = Field(default=None, ge=1, le=7, description="Arm types only.")
     gripper_needed: bool
+    speed_m_s: PositiveFloat | None = Field(default=None, description="Mobile types: cruising speed.")
+    max_incline_deg: float | None = Field(
+        default=None, ge=0, le=30, description="Mobile types: steepest slope it must climb.")
+    terrain: Literal["flat", "carpet", "outdoor"] | None = Field(
+        default=None, description="Mobile types: what it drives on.")
+    base_payload_kg: NonNegativeFloat | None = Field(
+        default=None, description="Mobile types: mass carried on the chassis (25% margin included).")
+    travel_distance_m: PositiveFloat | None = Field(
+        default=None, description="Mobile types, optional: distance it must cover per charge.")
     gripper_kind: Literal["parallel", "suction"] | None = Field(
         default=None, description="Required when gripper_needed is true; null otherwise."
     )
@@ -66,6 +82,34 @@ class Requirements(BaseModel):
     assumptions: list[str] = Field(
         default_factory=list, description="Every value the model guessed, and why."
     )
+
+    @model_validator(mode="after")
+    def _fields_match_robot_type(self) -> Requirements:
+        arm_fields = ("reach_m", "workspace", "dof_min")
+        mobile_fields = ("speed_m_s", "max_incline_deg", "terrain", "base_payload_kg")
+        has_arm = self.robot_type in ("arm", "mobile_manipulator")
+        is_mobile = self.robot_type in ("mobile", "mobile_manipulator")
+        for name in arm_fields:
+            if has_arm and getattr(self, name) is None:
+                raise ValueError(f"robot_type '{self.robot_type}' needs {name}")
+            if not has_arm and getattr(self, name) is not None:
+                raise ValueError(f"robot_type 'mobile' has no arm, so {name} must be null")
+        for name in mobile_fields + ("travel_distance_m",):
+            if is_mobile and name in mobile_fields and getattr(self, name) is None:
+                raise ValueError(f"robot_type '{self.robot_type}' needs {name}")
+            if not is_mobile and getattr(self, name) is not None:
+                raise ValueError(f"robot_type 'arm' doesn't move, so {name} must be null")
+        if not has_arm and self.gripper_needed:
+            raise ValueError("robot_type 'mobile' has no arm, so gripper_needed must be false")
+        return self
+
+    @property
+    def has_arm(self) -> bool:
+        return self.robot_type in ("arm", "mobile_manipulator")
+
+    @property
+    def is_mobile(self) -> bool:
+        return self.robot_type in ("mobile", "mobile_manipulator")
 
     @model_validator(mode="after")
     def _gripper_kind_matches(self) -> Requirements:

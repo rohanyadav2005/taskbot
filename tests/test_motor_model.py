@@ -246,8 +246,10 @@ def test_compliance_message_ranks_options_from_the_stiffness_breakdown(desk_req)
     assert "Sag by joint position-loop stiffness: wrist_pitch (xl430_w250, Kp 5.52 Nm/rad)" in msg
     options = msg.split("Options, most promising first: ")[1]
     # steady sag spread over Dynamixel joints: pid first, then a stiffer wrist motor, then geometry
-    assert re.match(r'1\) control "pid" .*; 2\) a stiffer motor on wrist_pitch: .*xm430_w350 \(Kp 18\.9\)'
-                    r'; 3\) shorter or lighter links .*; 4\) bringing the load closer to the base', options)
+    assert re.match(r'1\) control "pid" .*; 2\) a stiffer motor on wrist_pitch: xm430_w350 \(Kp 18\.9\), '
+                    r'xm540_w270 \(Kp 48\.8\); 3\) shorter or lighter links .*; 4\) bringing the load closer '
+                    r'to the base', options)
+    assert "nema17_pg27" not in options  # unsupported motors are never suggested
     assert "will not help" not in msg
 
 

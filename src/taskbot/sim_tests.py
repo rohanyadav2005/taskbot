@@ -68,6 +68,7 @@ class SimRun:
     look_at: tuple[float, float, float] = (0.0, 0.0, 0.15)
     camera_distance: float = 1.0
     ideal: CheckResult | None = None                  # same test, controller knows the mass
+    track_body: int | None = None                     # follow this body with the camera
 
 
 # --------------------------------------------------------------------------- simulation
@@ -327,7 +328,8 @@ def _compliance_advice(robot: SimRobot, contrib: np.ndarray, steady: bool, contr
         f"{_mm(contrib[i])}" for i in order[:3] if contrib[i] > 0)
     top = int(order[0])
     options = []
-    stiffer = sorted((motor_model(m, control).kp, m.id) for m in catalog.values()
+    usable = [m for m in catalog.values() if m.supported and "position" in m.modes]
+    stiffer = sorted((motor_model(m, control).kp, m.id) for m in usable
                      if robot.joints[top].type != "prismatic"
                      and motor_model(m, control).kp > robot.motors[top].kp * 1.01)
     if stiffer:
@@ -500,5 +502,10 @@ def controller_settings(robot: SimRobot) -> list[dict]:
         rows.append({"joint": j.name, "motor": m.motor_id, "kind": m.kind, "kp": m.kp, "kd": m.kd,
                      "ki": m.ki, "back_emf_damping": m.damping, "rated": m.rated, "stall": m.stall,
                      "no_load_speed": m.no_load_speed, "gain_source": m.gain_source,
-                     "speed_model": m.speed_model})
+                     "speed_model": m.speed_model, "mode": m.mode})
+    for name, m in zip(robot.wheel_names, robot.wheel_motors):
+        rows.append({"joint": name, "motor": m.motor_id, "kind": m.kind, "kp": m.kp, "kd": m.kd,
+                     "ki": m.ki, "back_emf_damping": m.damping, "rated": m.rated, "stall": m.stall,
+                     "no_load_speed": m.no_load_speed, "gain_source": m.gain_source,
+                     "speed_model": m.speed_model, "mode": m.mode})
     return rows

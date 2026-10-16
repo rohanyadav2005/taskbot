@@ -95,7 +95,7 @@ def test_write_outputs_keeps_every_round_and_diffs_them(desk_req, tmp_path):
     assert '-            "motor_id": "mg996r"' in report
     assert '+            "motor_id": "xm540_w270"' in report
     assert "| static_torque | FAIL (1/4) | pass |" in report
-    assert "## Requirements" in report and "| Payload | 0.25 kg |" in report
+    assert "## Requirements" in report and "| Payload in gripper | 0.25 kg |" in report
 
 
 def test_repair_prompt_lists_each_failure_on_its_own_line(desk_req):
@@ -123,7 +123,9 @@ def test_cli_fake_backend_runs_full_loop_and_writes_report(tmp_path, capsys):
 def test_cli_exit_code_2_when_design_never_passes(tmp_path, monkeypatch):
     from taskbot import cli
 
-    monkeypatch.setattr(cli, "TORQUE_SAFETY_FRACTION", 1e-6)  # fake repair finds no motor strong enough
+    import taskbot.fake as fake
+
+    monkeypatch.setattr(fake, "TORQUE_SAFETY_FRACTION", 1e-6)  # fake repair finds no motor strong enough
     assert cli.main(["design", "x", "--backend", "fake", "--out", str(tmp_path),
                      "--max-rounds", "2", "--no-record"]) == 2
     assert "FAILED" in (tmp_path / "fake_arm_4dof" / "report.md").read_text()

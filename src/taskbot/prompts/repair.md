@@ -10,6 +10,9 @@ Rules:
   - speed_limited: the motor is too slow, so it runs out of torque at speed; use a faster motor or a different gear ratio.
   - compliance: the error happened without any motor saturating, so the joints' position loops are too soft for the required precision; the message ranks the fixes for this design: a stiffer motor (higher Kp) on the joint that sags most, setting "control": "pid", shorter or lighter outer links, or bringing the load closer to the base.
   - unreachable: the target is outside what the arm can reach; lengthen links or add a joint.
+  - unstable: the robot would tip over; widen the track or lengthen the wheelbase, lower or weigh down the base, move the arm mount towards the middle of the wheels, or shorten the reach.
+  - slip: the driven wheels would lose grip; put more weight over them, lower the centre of mass, or drive all four wheels.
+  - wrong_type: the design is a different kind of robot from the one the requirements ask for; rebuild it as that kind.
 - In "description", add one line explaining what you changed and why.
 Current spec: {spec}
 Requirements: {requirements}

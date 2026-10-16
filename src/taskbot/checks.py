@@ -28,13 +28,19 @@ if TYPE_CHECKING:  # requirements imports the LLM layer; only needed for annotat
     from taskbot.requirements import Requirements
 
 
-FailureCause = Literal["saturated", "speed_limited", "compliance", "unreachable"]
+FailureCause = Literal["saturated", "speed_limited", "compliance", "unreachable", "unstable", "slip",
+                       "wrong_type"]
 CAUSE_ADVICE: dict[str, str] = {
     "saturated": "torque limit hit; use a stronger motor, or shorter or lighter outer links",
     "speed_limited": "motor too slow for the move; use a faster motor or a different gear ratio",
     "compliance": ("error without any motor saturating: the position loops are too soft for the "
                    "required precision; try the options above, most promising first"),
     "unreachable": "target outside what the arm can reach; lengthen links or add a joint",
+    "unstable": ("the robot would tip over; widen the track, lower or weigh down the base, move "
+                 "the arm mount towards the middle, or shorten the reach"),
+    "slip": ("the driven wheels would slip; put more weight over them, lower the centre of mass, "
+             "or drive all four wheels"),
+    "wrong_type": "the design is a different kind of robot than the requirements ask for",
 }
 
 
@@ -85,7 +91,7 @@ PENETRATION_M = 1e-4  # contacts shallower than this count as touching, not coll
 DESK_SCALE_REACH_M = 1.0
 DESK_SCALE_MAX_MASS_KG = 5.0
 # Rough raw-material cost per kg (filament / bar stock), for ranking designs only.
-MATERIAL_COST_USD_PER_KG = {"pla": 25.0, "aluminium": 15.0, "steel": 5.0}
+MATERIAL_COST_USD_PER_KG = {"pla": 25.0, "aluminium": 15.0, "steel": 5.0, "rubber": 10.0}
 
 
 def _catalog(catalog: dict[str, Motor] | None) -> dict[str, Motor]:
@@ -494,6 +500,8 @@ def budget(
     motors = _catalog(catalog)
     ids = [s.joint.motor_id for m in spec.modules if isinstance(m, ArmChain) for s in m.segments]
     ids += [m.motor_id for m in spec.modules if isinstance(m, Gripper) and m.motor_id]
+    if spec.is_mobile:
+        ids += [spec.base.wheel_motor_id] * spec.base.driven_wheels
     motor_cost = sum(motors[i].price_usd for i in ids)
     by_material = structure_mass_by_material(spec, motors)
     material_cost = sum(MATERIAL_COST_USD_PER_KG[k] * kg for k, kg in by_material.items())
@@ -525,8 +533,10 @@ def mass(
     """Total mass. Never fails; warns when a desk-scale robot is over 5 kg."""
     total = float(model.body_mass.sum())
     base = float(model.body_mass[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, spec.base.name)])
-    desk = req.reach_m <= DESK_SCALE_REACH_M
-    msg = f"total mass {total:.3g} kg ({base:.3g} kg fixed base, {total - base:.3g} kg moving)."
+    desk = not req.is_mobile and req.reach_m is not None and req.reach_m <= DESK_SCALE_REACH_M
+    what = "chassis with battery and wheel motors" if spec.is_mobile else "fixed base"
+    rest = "wheels, caster, arm and gripper" if spec.is_mobile else "moving"
+    msg = f"total mass {total:.3g} kg ({base:.3g} kg {what}, {total - base:.3g} kg {rest})."
     if desk and total > DESK_SCALE_MAX_MASS_KG:
         msg = (f"WARNING: {msg} Over {DESK_SCALE_MAX_MASS_KG:.0f} kg for a desk-scale robot; "
                "consider PLA or aluminium instead of steel and smaller parts.")
@@ -538,22 +548,44 @@ def mass(
 
 
 CheckFn = Callable[..., list[CheckResult]]
-ALL_CHECKS: list[CheckFn] = [
-    static_torque, reach, self_collision, joint_limits, joint_speed, torque_at_speed, budget, mass,
+ARM_CHECKS: list[CheckFn] = [
+    static_torque, reach, self_collision, joint_limits, joint_speed, torque_at_speed,
 ]
+COMMON_CHECKS: list[CheckFn] = [budget, mass]
+ALL_CHECKS: list[CheckFn] = ARM_CHECKS + COMMON_CHECKS  # the checks for a fixed arm
 
 
 def run_checks(
     spec: RobotSpec, req: Requirements, catalog: dict[str, Motor] | None = None,
 ) -> list[CheckResult]:
     """Build the spec and run every check. A spec MuJoCo can't compile fails a 'build' check."""
+    from taskbot.mobile_checks import MOBILE_CHECKS
+
     catalog = _catalog(catalog)
+    mismatch = robot_type_check(spec, req)
+    if mismatch is not None:
+        return [mismatch]
     try:
         model = build_model(spec, catalog)
     except Exception as exc:  # MuJoCo raises ValueError with compiler output
         return [CheckResult(check="build", passed=False,
                             message=f"the generated URDF does not load in MuJoCo: {exc}")]
+    checks = (ARM_CHECKS if req.has_arm else []) + (MOBILE_CHECKS if req.is_mobile else []) + COMMON_CHECKS
     results = []
-    for fn in ALL_CHECKS:
+    for fn in checks:
         results += fn(spec, req, model, catalog)
     return results
+
+
+def robot_type_check(spec: RobotSpec, req: Requirements) -> CheckResult | None:
+    """A failed 'robot_type' check if the design isn't the kind of robot asked for."""
+    built = ("mobile_manipulator" if spec.is_mobile and spec.has_arm else
+             "mobile" if spec.is_mobile else "arm")
+    if built == req.robot_type:
+        return None
+    needs = {"arm": "a fixed_base with an arm_chain",
+             "mobile": "a wheeled_base and no arm",
+             "mobile_manipulator": "a wheeled_base with an arm_chain (and usually a gripper)"}
+    return CheckResult(check="robot_type", passed=False, cause="wrong_type",
+                       message=f"the requirements ask for a {req.robot_type} robot, which needs "
+                               f"{needs[req.robot_type]}, but the design is a {built}.")

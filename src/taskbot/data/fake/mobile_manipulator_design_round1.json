@@ -1,0 +1,119 @@
+{
+  "name": "toy_picker",
+  "control": "pd",
+  "modules": [
+    {
+      "kind": "wheeled_base",
+      "name": "base",
+      "drive": "differential",
+      "wheel_radius_m": 0.04,
+      "wheel_width_m": 0.025,
+      "track_width_m": 0.28,
+      "wheelbase_m": 0.24,
+      "chassis_size_m": [
+        0.32,
+        0.24,
+        0.06
+      ],
+      "chassis_material": "aluminium",
+      "wheel_motor_id": "pololu_37d_50",
+      "caster": true
+    },
+    {
+      "kind": "arm_chain",
+      "name": "arm",
+      "mount_xy_m": [
+        0.14,
+        0.0
+      ],
+      "segments": [
+        {
+          "joint": {
+            "name": "base_yaw",
+            "type": "revolute",
+            "axis": "z",
+            "lower": -1.6,
+            "upper": 1.6,
+            "motor_id": "xm430_w350"
+          },
+          "link": {
+            "name": "turret",
+            "shape": "cylinder",
+            "radius_m": 0.03,
+            "length_m": 0.05,
+            "material": "aluminium"
+          }
+        },
+        {
+          "joint": {
+            "name": "shoulder_pitch",
+            "type": "revolute",
+            "axis": "y",
+            "lower": 0.0,
+            "upper": 2.6,
+            "motor_id": "xm540_w270"
+          },
+          "link": {
+            "name": "upper_arm",
+            "shape": "box",
+            "size_m": [
+              0.03,
+              0.03,
+              0.16
+            ],
+            "material": "pla"
+          }
+        },
+        {
+          "joint": {
+            "name": "elbow_pitch",
+            "type": "revolute",
+            "axis": "y",
+            "lower": -0.2,
+            "upper": 2.6,
+            "motor_id": "xm430_w350"
+          },
+          "link": {
+            "name": "forearm",
+            "shape": "box",
+            "size_m": [
+              0.03,
+              0.03,
+              0.14
+            ],
+            "material": "pla"
+          }
+        },
+        {
+          "joint": {
+            "name": "wrist_pitch",
+            "type": "revolute",
+            "axis": "y",
+            "lower": -1.8,
+            "upper": 1.8,
+            "motor_id": "xl430_w250"
+          },
+          "link": {
+            "name": "wrist",
+            "shape": "box",
+            "size_m": [
+              0.03,
+              0.03,
+              0.04
+            ],
+            "material": "pla"
+          }
+        }
+      ]
+    },
+    {
+      "kind": "gripper",
+      "name": "gripper",
+      "gripper_type": "parallel",
+      "max_opening_m": 0.06,
+      "grip_force_n": 5.0,
+      "motor_id": "xl430_w250"
+    }
+  ],
+  "description": "FAKE BACKEND round 1: compact differential base, arm at the front edge."
+}

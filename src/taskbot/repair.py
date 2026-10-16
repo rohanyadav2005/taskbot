@@ -6,6 +6,7 @@ once every static check passes.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from taskbot.checks import CheckResult, run_checks
@@ -14,12 +15,40 @@ from taskbot.llm import LLMClient, LLMError
 from taskbot.prompts import load_prompt
 from taskbot.requirements import Requirements
 from taskbot.schema import Motor, RobotSpec, load_motor_catalog, supported_motors
-from taskbot.sim_tests import SIM_TESTS, SimRun, run_sim_tests
+from taskbot.sim_tests import SIM_TESTS, SimRun
 
 DEFAULT_MAX_ROUNDS = 5
 
 
-SIM_TEST_NAMES = [t.__name__ for t in SIM_TESTS]
+def _mobile_tests():
+    from taskbot.mobile_sim import MOBILE_SIM_TESTS, drive_with_arm_extended
+
+    return MOBILE_SIM_TESTS + [drive_with_arm_extended]
+
+
+SIM_TEST_NAMES = [t.__name__ for t in SIM_TESTS] + [t.__name__ for t in _mobile_tests()]
+Event = Callable[[str], None]
+
+
+def sim_tests_for(spec: RobotSpec, req: Requirements) -> list:
+    """The simulation tests that apply: arm tests (base held fixed for a mobile manipulator)
+    and/or driving tests, and the arm-extended driving test for mobile manipulators."""
+    from taskbot.mobile_sim import MOBILE_SIM_TESTS, drive_with_arm_extended
+
+    tests = []
+    if req.is_mobile and spec.is_mobile:
+        tests += MOBILE_SIM_TESTS
+        if req.has_arm and spec.has_arm:
+            tests.append(drive_with_arm_extended)
+    if req.has_arm and spec.has_arm:
+        tests += SIM_TESTS
+    return tests
+
+
+def _line(r: CheckResult) -> str:
+    status = "PASS" if r.passed else "FAIL"
+    cause = f" (cause: {r.cause})" if r.cause else ""
+    return f"  {status} {r.check}{cause}: {r.message}"
 
 
 @dataclass(frozen=True)
@@ -75,24 +104,40 @@ def repair_loop(
     initial_spec: RobotSpec | None = None,
     max_rounds: int = DEFAULT_MAX_ROUNDS,
     simulate: bool = True,
+    on_event: Event | None = None,
 ) -> RepairOutcome:
     """Round 1 checks the initial design (asked of the LLM unless given). Each later
     round sends the failed checks back and checks the revised spec. With
-    `simulate`, the sim tests run in any round whose static checks all pass."""
+    `simulate`, the sim tests run in any round whose static checks all pass.
+    `on_event` gets one line of text per step and per check result, as they happen."""
+    emit = on_event or (lambda line: None)
     catalog = catalog if catalog is not None else load_motor_catalog()
     outcome = RepairOutcome(requirements=req, max_rounds=max_rounds)
+    if initial_spec is None:
+        emit("Designing...")
     spec = initial_spec if initial_spec is not None else design_robot(client, req, catalog)
     system = design_system_prompt(catalog)  # schema + catalog, same as the design step
 
     for number in range(1, max_rounds + 1):
+        emit(f"Round {number}: {spec.name}: static checks")
         results, runs = run_checks(spec, req, catalog), []
+        for r in results:
+            emit(_line(r))
         if simulate and all(r.passed for r in results):
-            runs = run_sim_tests(spec, req, catalog)
+            for test in sim_tests_for(spec, req):
+                emit(f"  ...simulating {test.__name__}")
+                run = test(spec, req, catalog)
+                runs.append(run)
+                emit(_line(run.result))
             results = results + [run.result for run in runs]
+        elif simulate:
+            emit("  static checks failed, so simulation is skipped this round")
         rnd = Round(number, spec, results, runs)
         outcome.rounds.append(rnd)
+        emit(f"Round {number}: " + ("all checks pass" if rnd.passed else f"{len(rnd.failures)} failed"))
         if rnd.passed or number == max_rounds:
             break
+        emit(f"Asking the model to repair {len(rnd.failures)} failure(s)...")
         try:
             spec = client.complete_json(
                 system, repair_prompt(spec, req, rnd.failures), RobotSpec,

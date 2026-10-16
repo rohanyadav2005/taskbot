@@ -1,0 +1,21 @@
+{
+  "task_summary": "carry a 2 kg box across my office",
+  "robot_type": "mobile",
+  "payload_kg": 0.0,
+  "gripper_needed": false,
+  "speed_m_s": 0.5,
+  "max_incline_deg": 5.0,
+  "terrain": "carpet",
+  "base_payload_kg": 2.5,
+  "travel_distance_m": 200.0,
+  "position_tolerance_m": 0.05,
+  "tolerance_reason": "box dropped near a desk",
+  "assumptions": [
+    "FAKE BACKEND: canned requirements for this prompt; only task_summary echoes it.",
+    "robot_type mobile: the job is moving a box between places; nothing needs picking up, so no arm",
+    "a 2 kg box plus 25% margin = 2.5 kg carried on the chassis",
+    "office floors: low-pile carpet, door thresholds and ramps up to about 5\u00b0",
+    "0.5 m/s: a safe indoor speed near people",
+    "battery_mass_kg left to the default estimate"
+  ]
+}

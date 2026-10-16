@@ -34,6 +34,7 @@ Name = Annotated[str, Field(pattern=NAME_PATTERN, max_length=64)]
 Material = Literal["pla", "aluminium", "steel"]
 Vec3 = tuple[PositiveFloat, PositiveFloat, PositiveFloat]
 Vec2 = tuple[PositiveFloat, PositiveFloat]
+Vec2Signed = tuple[float, float]
 
 
 class _Strict(BaseModel):
@@ -51,12 +52,24 @@ class PositionGains(_Strict):
     d: Annotated[int, Field(ge=0)]
 
 
+class VelocityGains(_Strict):
+    """Raw velocity-loop gains as written in a Dynamixel X-series control table."""
+
+    p: Annotated[int, Field(ge=0)]
+    i: Annotated[int, Field(ge=0)]
+
+
 class Motor(_Strict):
     id: Name
     name: str = Field(min_length=1)
-    kind: Literal["hobby_servo", "dynamixel", "stepper"] = Field(
+    kind: Literal["hobby_servo", "dynamixel", "stepper", "dc_gearmotor"] = Field(
         description="Decides the controller gains and the torque-speed model used in simulation."
     )
+    modes: list[Literal["position", "velocity"]] = Field(
+        min_length=1,
+        description="Control modes this motor supports: arm joints need position, wheels velocity.",
+    )
+    voltage_v: PositiveFloat = Field(description="Supply voltage the torque/speed figures are for.")
     stall_torque_nm: PositiveFloat
     rated_torque_nm: PositiveFloat = Field(
         description="Continuous torque the motor can hold without overheating."
@@ -70,6 +83,9 @@ class Motor(_Strict):
     price_usd: Annotated[float, Field(ge=0)]
     dynamixel_gains: PositionGains | None = Field(
         default=None, description="Factory position P/I/D gains (Dynamixel only)."
+    )
+    dynamixel_velocity_gains: VelocityGains | None = Field(
+        default=None, description="Factory velocity P/I gains (Dynamixel only)."
     )
     pull_out_curve: list[tuple[float, float]] | None = Field(
         default=None,
@@ -94,6 +110,8 @@ class Motor(_Strict):
     def _kind_fields(self) -> Motor:
         if (self.kind == "dynamixel") != (self.dynamixel_gains is not None):
             raise ValueError(f"motor {self.id}: dynamixel_gains is required for, and only for, kind 'dynamixel'")
+        if self.kind == "dynamixel" and "velocity" in self.modes and self.dynamixel_velocity_gains is None:
+            raise ValueError(f"motor {self.id}: a Dynamixel used in velocity mode needs dynamixel_velocity_gains")
         if self.pull_out_curve is not None and self.kind != "stepper":
             raise ValueError(f"motor {self.id}: pull_out_curve is only for steppers")
         return self
@@ -225,10 +243,74 @@ class FixedBase(_Strict):
     material: Material = "aluminium"
 
 
+class WheeledBase(_Strict):
+    """A mobile chassis: a box on wheels. Its frame is on the ground under the chassis centre,
+    x forward, z up. Wheel axles are at height wheel_radius_m; the chassis box sits with its
+    bottom at half a wheel radius above the ground."""
+
+    kind: Literal["wheeled_base"] = "wheeled_base"
+    name: Name
+    drive: Literal["differential", "four_wheel"] = Field(
+        description="differential: two driven wheels (plus a caster); four_wheel: four driven "
+        "wheels, steered by skidding (left and right sides at different speeds).")
+    wheel_radius_m: PositiveFloat
+    wheel_width_m: PositiveFloat
+    track_width_m: PositiveFloat = Field(description="Distance between left and right wheel centres.")
+    wheelbase_m: PositiveFloat = Field(
+        description="four_wheel: distance between front and rear axles. differential: distance "
+        "from the drive axle (at the front) to the caster (at the back).")
+    chassis_size_m: Vec3 = Field(description="Chassis box (x length, y width, z height).")
+    chassis_material: Material = "aluminium"
+    wheel_motor_id: Name
+    caster: bool = Field(default=False, description="Differential only: a ball caster at the back.")
+    battery_mass_kg: PositiveFloat | None = Field(
+        default=None, description="Omit to use the simple estimate (see battery_estimate_kg).")
+
+    @model_validator(mode="after")
+    def _drive_layout(self) -> WheeledBase:
+        if self.drive == "four_wheel" and self.caster:
+            raise ValueError(f"wheeled_base '{self.name}': caster is for differential drive only")
+        if self.track_width_m <= self.wheel_width_m:
+            raise ValueError(f"wheeled_base '{self.name}': track_width_m must exceed wheel_width_m")
+        return self
+
+    @property
+    def driven_wheels(self) -> int:
+        return 2 if self.drive == "differential" else 4
+
+    def battery_estimate_kg(self) -> float:
+        """0.25 kg of battery per pair of driven wheels: a rough 12 V, ~2 Ah pack per two
+        small gearmotors. A planning estimate, not a sourced figure."""
+        return 0.25 * self.driven_wheels / 2
+
+    @property
+    def battery_kg(self) -> float:
+        return self.battery_mass_kg if self.battery_mass_kg is not None else self.battery_estimate_kg()
+
+    @property
+    def battery_note(self) -> str | None:
+        if self.battery_mass_kg is not None:
+            return None
+        return (f"battery_mass_kg not given: estimated {self.battery_kg:.2f} kg "
+                "(0.25 kg per pair of driven wheels)")
+
+    @property
+    def chassis_bottom_m(self) -> float:
+        return 0.5 * self.wheel_radius_m
+
+    @property
+    def chassis_top_m(self) -> float:
+        return self.chassis_bottom_m + self.chassis_size_m[2]
+
+
 class ArmChain(_Strict):
     kind: Literal["arm_chain"] = "arm_chain"
     name: Name
     segments: list[Segment] = Field(min_length=1)
+    mount_xy_m: Vec2Signed | None = Field(
+        default=None,
+        description="Only when the arm sits on a wheeled_base: (x, y) of its first joint on the "
+        "chassis top, relative to the chassis centre (x forward). Defaults to (0, 0).")
 
 
 class Gripper(_Strict):
@@ -250,7 +332,7 @@ class Gripper(_Strict):
         return self
 
 
-Module = Annotated[FixedBase | ArmChain | Gripper, Field(discriminator="kind")]
+Module = Annotated[FixedBase | WheeledBase | ArmChain | Gripper, Field(discriminator="kind")]
 
 
 # --------------------------------------------------------------------------- naming
@@ -258,8 +340,20 @@ Module = Annotated[FixedBase | ArmChain | Gripper, Field(discriminator="kind")]
 # the uniqueness check below covers everything that ends up in the URDF.
 
 
-def base_link_name(base: FixedBase) -> str:
+def base_link_name(base: FixedBase | WheeledBase) -> str:
     return base.name
+
+
+def wheel_names(b: WheeledBase) -> tuple[list[str], list[str]]:
+    """(link names, joint names) generated for a wheeled base's wheels and caster."""
+    sides = ["left", "right"] if b.drive == "differential" else [
+        "front_left", "front_right", "rear_left", "rear_right"]
+    links = [f"{b.name}_wheel_{s}" for s in sides]
+    joints = [f"{b.name}_wheel_{s}_joint" for s in sides]
+    if b.caster:
+        links.append(f"{b.name}_caster")
+        joints.append(f"{b.name}_caster_mount")
+    return links, joints
 
 
 def gripper_names(g: Gripper) -> tuple[list[str], list[str]]:
@@ -285,20 +379,28 @@ class RobotSpec(_Strict):
         "gain preset on Dynamixels, which removes that sag over a few seconds; hobby servos and "
         "steppers have no integral term either way.",
     )
-    modules: list[Module] = Field(min_length=2)
+    modules: list[Module] = Field(min_length=1)
 
     @field_validator("modules")
     @classmethod
     def _serial_order(cls, modules: list[Module]) -> list[Module]:
         kinds = [m.kind for m in modules]
-        if kinds[0] != "fixed_base":
+        bases = ("fixed_base", "wheeled_base")
+        if kinds[0] not in bases:
             raise ValueError(
-                f"modules[0] must be a fixed_base (the root), got '{kinds[0]}'"
+                f"modules[0] must be a fixed_base or wheeled_base (the root), got '{kinds[0]}'"
             )
-        if kinds.count("fixed_base") > 1:
-            raise ValueError("only one fixed_base is allowed, and it must be modules[0]")
-        if "arm_chain" not in kinds:
+        if sum(k in bases for k in kinds) > 1:
+            raise ValueError("only one base (fixed_base or wheeled_base) is allowed, as modules[0]")
+        if kinds[0] == "fixed_base" and "arm_chain" not in kinds:
             raise ValueError("at least one arm_chain must follow the fixed_base")
+        if "gripper" in kinds and "arm_chain" not in kinds:
+            raise ValueError("a gripper needs an arm_chain to attach to")
+        for i, m in enumerate(modules):
+            if isinstance(m, ArmChain) and m.mount_xy_m is not None and (
+                    kinds[0] != "wheeled_base" or i != 1):
+                raise ValueError(f"arm_chain '{m.name}': mount_xy_m is only for the first arm "
+                                 "on a wheeled_base")
         for i, k in enumerate(kinds):
             if k == "gripper" and i != len(kinds) - 1:
                 raise ValueError(
@@ -330,29 +432,53 @@ class RobotSpec(_Strict):
                 links, joints = gripper_names(m)
                 for n in links + joints:
                     claim(n, f"generated part of gripper '{m.name}'")
+            elif isinstance(m, WheeledBase):
+                claim(m.name, f"module {i} (chassis link)")
+                links, joints = wheel_names(m)
+                for n in links + joints:
+                    claim(n, f"generated part of wheeled_base '{m.name}'")
             else:
                 claim(m.name, f"module {i} (base link)")
 
-        motor_ids = (info.context or {}).get("motor_ids")
+        context = info.context or {}
+        catalog = context.get("catalog") or load_motor_catalog()
+        motor_ids = context.get("motor_ids")
         if motor_ids is None:
-            motor_ids = set(load_motor_catalog())
-        for used, where in self._motor_uses():
+            motor_ids = set(catalog)
+        for used, where, mode in self._motor_uses():
             if used not in motor_ids:
                 raise ValueError(
                     f"{where} uses unknown motor_id '{used}'; "
                     f"choose one of: {', '.join(sorted(motor_ids))}"
                 )
+            if used in catalog and mode not in catalog[used].modes:
+                able = sorted(k for k in motor_ids if k in catalog and mode in catalog[k].modes)
+                raise ValueError(
+                    f"{where} needs a motor with {mode} control, but '{used}' only supports "
+                    f"{', '.join(catalog[used].modes)}; choose one of: {', '.join(able)}"
+                )
         return self
 
-    def _motor_uses(self) -> list[tuple[str, str]]:
+    def _motor_uses(self) -> list[tuple[str, str, str]]:
+        """(motor_id, where, control mode it needs)."""
         uses = []
         for m in self.modules:
             if isinstance(m, ArmChain):
-                uses += [(s.joint.motor_id, f"joint '{s.joint.name}'") for s in m.segments]
+                uses += [(s.joint.motor_id, f"joint '{s.joint.name}'", "position") for s in m.segments]
             elif isinstance(m, Gripper) and m.motor_id is not None:
-                uses.append((m.motor_id, f"gripper '{m.name}'"))
+                uses.append((m.motor_id, f"gripper '{m.name}'", "position"))
+            elif isinstance(m, WheeledBase):
+                uses.append((m.wheel_motor_id, f"wheeled_base '{m.name}' wheels", "velocity"))
         return uses
 
     @property
-    def base(self) -> FixedBase:
+    def base(self) -> FixedBase | WheeledBase:
         return self.modules[0]  # guaranteed by _serial_order
+
+    @property
+    def is_mobile(self) -> bool:
+        return isinstance(self.modules[0], WheeledBase)
+
+    @property
+    def has_arm(self) -> bool:
+        return any(isinstance(m, ArmChain) for m in self.modules)

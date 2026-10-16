@@ -6,78 +6,19 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import re
 import sys
-from importlib import resources
 from pathlib import Path
 
-from taskbot.checks import TORQUE_SAFETY_FRACTION
-from taskbot.llm import FakeClient, LLMClient, LLMError, make_client
-from taskbot.repair import DEFAULT_MAX_ROUNDS, RepairOutcome, repair_loop
-from taskbot.report import verdict, write_outputs
-from taskbot.requirements import OUT_OF_SCOPE_PREFIX, extract_requirements
-from taskbot.schema import ArmChain, Gripper, Motor, load_motor_catalog, supported_motors
+from taskbot.fake import fake_client
+from taskbot.llm import LLMClient, LLMError, make_client
+from taskbot.pipeline import run_pipeline
+from taskbot.repair import DEFAULT_MAX_ROUNDS, RepairOutcome
+from taskbot.report import verdict
+from taskbot.requirements import OUT_OF_SCOPE_PREFIX
+from taskbot.schema import ArmChain, Gripper, Motor, WheeledBase, load_motor_catalog, supported_motors
 
 BACKENDS = ("anthropic", "ollama", "fake")
-
-_TORQUE_FAIL = re.compile(r"^- \[static_torque\](?: \(cause: \w+\))? (\w+) needs ([\d.e+-]+) Nm", re.MULTILINE)
-_SATURATED = re.compile(r"(\w+) (?:saturated|speed-limited) for [\d.]+ s while [^(]*\(motor (\w+):")
-
-
-def fake_client(catalog: dict[str, Motor]) -> FakeClient:
-    """Offline demo. Requirements are canned (echoing the prompt), the first design is a
-    canned 4-DOF arm, and 'repair' swaps any motor that fails static_torque for the
-    cheapest catalog motor strong enough, and any motor that saturates in simulation for
-    the cheapest faster one with at least 80% of its torque. It fixes nothing else."""
-
-    def requirements(system, messages, schema):
-        return {
-            "task_summary": messages[0]["content"],
-            "robot_type": "arm",
-            "reach_m": 0.3,
-            "payload_kg": 0.25,
-            "workspace": {"x_min": 0.1, "x_max": 0.25, "y_min": -0.1, "y_max": 0.1,
-                          "z_min": 0.05, "z_max": 0.2},
-            "dof_min": 4,
-            "gripper_needed": True,
-            "gripper_kind": "parallel",
-            "max_budget_usd": None,
-            "position_tolerance_m": 0.005,
-            "tolerance_reason": "FAKE BACKEND: canned 5 mm default",
-            "assumptions": ["FAKE BACKEND: canned requirements, only task_summary reflects the prompt."],
-        }
-
-    canned = json.loads(
-        resources.files("taskbot").joinpath("data/fake_design.json").read_text("utf-8")
-    )
-
-    def design(system, messages, schema):
-        prompt = messages[-1]["content"]
-        if prompt.startswith("Requirements:"):
-            return canned
-        spec = json.loads(prompt.split("Current spec: ", 1)[1].split("\nRequirements: ", 1)[0])
-        # (joint, torque needed, motor it must also be faster than)
-        needs = [(j, float(n), None) for j, n in _TORQUE_FAIL.findall(prompt)]
-        needs += [(j, TORQUE_SAFETY_FRACTION * catalog[m].rated_torque_nm, catalog[m])
-                  for j, m in _SATURATED.findall(prompt)]
-        for joint_name, need, slower in needs:
-            strong = [m for m in catalog.values()
-                      if TORQUE_SAFETY_FRACTION * m.rated_torque_nm >= need
-                      and (slower is None or m.no_load_speed_rad_s > slower.no_load_speed_rad_s)]
-            if not strong:
-                continue
-            best = min(strong, key=lambda m: m.price_usd)
-            for module in spec["modules"]:
-                for seg in module.get("segments", []):
-                    if seg["joint"]["name"] == joint_name:
-                        seg["joint"]["motor_id"] = best.id
-            spec["description"] += f" Fake repair: {joint_name} -> {best.id}."
-        return spec
-
-    return FakeClient({"Requirements": requirements, "RobotSpec": design})
-
 
 def get_client(backend: str, model: str | None, catalog: dict[str, Motor]) -> LLMClient:
     return fake_client(supported_motors(catalog)) if backend == "fake" else make_client(backend, model)
@@ -88,13 +29,20 @@ def summarize(outcome: RepairOutcome, catalog: dict[str, Motor], out: Path) -> s
     spec = final.spec
     segments = [s for m in spec.modules if isinstance(m, ArmChain) for s in m.segments]
     gripper = next((m for m in spec.modules if isinstance(m, Gripper)), None)
+    needs = []
+    if req.has_arm:
+        needs.append(f"reach {req.reach_m:.3f} m | payload {req.payload_kg:.3f} kg | DOF >= {req.dof_min}"
+                     f" | gripper {req.gripper_kind or 'none'}")
+    if req.is_mobile:
+        needs.append(f"speed {req.speed_m_s:g} m/s | incline {req.max_incline_deg:g}° | {req.terrain}"
+                     f" | {req.base_payload_kg:g} kg on the base")
+    base = spec.base
     lines = [
         f"Task: {req.task_summary}",
         "",
-        "Requirements",
-        f"  reach {req.reach_m:.3f} m | payload {req.payload_kg:.3f} kg | DOF >= {req.dof_min}"
-        f" | gripper {req.gripper_kind or 'none'}"
-        + (f" | budget ${req.max_budget_usd:.0f}" if req.max_budget_usd else ""),
+        f"Requirements ({req.robot_type})",
+        *[f"  {n}" for n in needs],
+        *([f"  budget ${req.max_budget_usd:.0f}"] if req.max_budget_usd else []),
         "  assumptions:",
         *[f"    {'!! ' if a.startswith(OUT_OF_SCOPE_PREFIX) else '- '}{a}" for a in req.assumptions],
         "",
@@ -104,6 +52,9 @@ def summarize(outcome: RepairOutcome, catalog: dict[str, Motor], out: Path) -> s
         *[f"    {s.joint.name:<18} {s.joint.type:<10} axis {s.joint.axis}  {s.joint.motor_id:<12}"
           f" -> {s.link.name} ({s.link.length:.3f} m {s.link.material})" for s in segments],
         f"  gripper: {gripper.gripper_type} {gripper.name}" if gripper else "  gripper: none",
+        *([f"  base: {base.drive} drive, {base.wheel_motor_id} wheels r={base.wheel_radius_m:g} m, "
+           f"track {base.track_width_m:g} m, wheelbase {base.wheelbase_m:g} m"
+           + (", caster" if base.caster else "")] if isinstance(base, WheeledBase) else []),
         "",
         "Rounds: " + "  ".join(
             f"R{r.number} {'pass' if r.passed else f'{len(r.failures)} fail'}" for r in outcome.rounds),
@@ -120,19 +71,20 @@ def cmd_design(args: argparse.Namespace) -> int:
     catalog = load_motor_catalog()
     try:
         client = get_client(args.backend, args.model, catalog)
-        print(f"requirements ({args.backend})...", file=sys.stderr)
-        req = extract_requirements(client, args.prompt)
-        print(f"design + check loop (max {args.max_rounds} rounds)...", file=sys.stderr)
-        outcome = repair_loop(client, req, catalog, max_rounds=args.max_rounds,
-                              simulate=not args.no_sim)
+        result = run_pipeline(client, args.prompt, catalog, args.out, max_rounds=args.max_rounds,
+                              simulate=not args.no_sim, record=not args.no_record,
+                              on_event=lambda line: print(line, file=sys.stderr))
     except LLMError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    if outcome.final.sim_runs and not args.no_record:
-        print("recording simulation GIFs...", file=sys.stderr)
-    out = write_outputs(outcome, args.out, catalog, record=not args.no_record)
-    print(summarize(outcome, catalog, out))
-    return 0 if outcome.passed else 2
+    if result.outcome is None:
+        print(f"OUT OF SCOPE: no design was made for: {result.requirements.task_summary}")
+        for reason in result.out_of_scope:
+            print(f"  {reason}")
+        print(f"Saved to {result.out_dir}/ : report.md, requirements.json")
+        return 3
+    print(summarize(result.outcome, catalog, result.out_dir))
+    return 0 if result.passed else 2
 
 
 def main(argv: list[str] | None = None) -> int:

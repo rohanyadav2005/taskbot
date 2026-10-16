@@ -14,11 +14,22 @@ from taskbot.build_urdf import (
     tool_link_name,
     tool_offset_m,
 )
-from taskbot.schema import ArmChain, Gripper, Joint, Motor, RobotSpec, gripper_names, load_motor_catalog
+from taskbot.schema import (
+    ArmChain,
+    Gripper,
+    Joint,
+    Motor,
+    RobotSpec,
+    WheeledBase,
+    gripper_names,
+    load_motor_catalog,
+    wheel_names,
+)
 from taskbot.sim.motor import MotorModel, motor_model
 
 PAYLOAD_BODY = "payload"
 PAYLOAD_DENSITY_KG_M3 = 1000.0  # payload drawn as a water-density cube
+FLOOR_FRICTION = 0.01           # the wheel / caster geom's own friction decides each contact
 SIM_TIMESTEP_S = 0.001
 
 
@@ -40,6 +51,15 @@ class SimRobot:
     aux_qadr: np.ndarray = field(default_factory=lambda: np.zeros(0, int))  # finger joints
     aux_dadr: np.ndarray = field(default_factory=lambda: np.zeros(0, int))
     aux_motors: list[MotorModel] = field(default_factory=list)
+    # wheeled base (empty for a fixed base)
+    wheel_names: list[str] = field(default_factory=list)
+    wheel_qadr: np.ndarray = field(default_factory=lambda: np.zeros(0, int))
+    wheel_dadr: np.ndarray = field(default_factory=lambda: np.zeros(0, int))
+    wheel_act: np.ndarray = field(default_factory=lambda: np.zeros(0, int))
+    wheel_side: np.ndarray = field(default_factory=lambda: np.zeros(0))  # +1 left, -1 right
+    wheel_motors: list[MotorModel] = field(default_factory=list)
+    chassis_body: int = -1
+    free_qadr: int = -1        # qpos address of the chassis free joint, -1 if fixed
 
     @property
     def n(self) -> int:
@@ -85,24 +105,49 @@ def build_scene(
     catalog: dict[str, Motor] | None = None,
     payload_kg: float = 0.0,
     markers: list[np.ndarray] = (),
+    floating: bool = False,
+    terrain: str = "flat",
+    base_payload_kg: float = 0.0,
+    incline_deg: float = 0.0,
 ) -> SimRobot:
     """Robot with floor, light and target markers; a payload cube welded at the tool point
-    when payload_kg > 0. Floor, markers and payload don't collide with anything."""
+    when payload_kg > 0. Markers and the payload cube don't collide with anything.
+
+    The floor is visual only unless `floating` (a mobile robot driving): then the chassis
+    has a free joint and the floor is solid, with near-zero friction of its own so each
+    contact takes the other geom's friction (MuJoCo uses the larger of the two): the
+    terrain's for wheels, almost none for the caster. `base_payload_kg` is a box fixed on
+    the chassis top. `incline_deg` tilts gravity so that +x is uphill.
+    """
     catalog = catalog if catalog is not None else load_motor_catalog()
-    mjspec = build_mjspec(spec, catalog)
+    mjspec = build_mjspec(spec, catalog, floating=floating, terrain=terrain)
     mjspec.option.timestep = SIM_TIMESTEP_S
     mjspec.visual.headlight.ambient = [0.45, 0.45, 0.45]
     mjspec.visual.headlight.diffuse = [0.6, 0.6, 0.6]
     world = mjspec.worldbody
     world.add_light(pos=[0.5, -0.5, 1.5], dir=[-0.3, 0.3, -1], diffuse=[0.5, 0.5, 0.5])
-    world.add_geom(type=mujoco.mjtGeom.mjGEOM_PLANE, size=[1, 1, 0.01], pos=[0, 0, -0.0005],
-                   rgba=[0.9, 0.9, 0.88, 1], contype=0, conaffinity=0)
+    if floating:
+        world.add_geom(type=mujoco.mjtGeom.mjGEOM_PLANE, size=[5, 5, 0.01], pos=[0, 0, 0],
+                       rgba=[0.9, 0.9, 0.88, 1], friction=[FLOOR_FRICTION, 0, 0], condim=6)
+    else:
+        world.add_geom(type=mujoco.mjtGeom.mjGEOM_PLANE, size=[1, 1, 0.01], pos=[0, 0, -0.0005],
+                       rgba=[0.9, 0.9, 0.88, 1], contype=0, conaffinity=0)
+    if incline_deg:
+        th = np.radians(incline_deg)
+        mjspec.option.gravity = [-9.81 * np.sin(th), 0.0, -9.81 * np.cos(th)]
+    base = spec.base
+    if isinstance(base, WheeledBase) and base_payload_kg > 0:
+        side = (base_payload_kg / PAYLOAD_DENSITY_KG_M3) ** (1 / 3)
+        mjspec.body(base.name).add_geom(
+            type=mujoco.mjtGeom.mjGEOM_BOX, size=[side / 2] * 3, mass=base_payload_kg,
+            pos=[0.0, 0.0, base.chassis_top_m + side / 2], rgba=[0.6, 0.4, 0.2, 1],
+            contype=0, conaffinity=0)
     for i, p in enumerate(markers):
         world.add_site(name=f"target_{i}", pos=list(map(float, p)), size=[0.008, 0, 0],
                        rgba=[0.1, 0.7, 0.2, 0.8])
 
-    tool = tool_link_name(spec)
-    if payload_kg > 0:
+    tool = tool_link_name(spec) if spec.has_arm else None
+    if payload_kg > 0 and tool is not None:
         # Place the cube at the tool point for the qpos0 pose so the weld's
         # reference relative pose is "cube centred on the tool point".
         probe = mjspec.compile()
@@ -139,6 +184,12 @@ def build_scene(
         mjspec.joint(j.name).damping = [mm.joint_damping, 0.0, 0.0]
     for name in finger_joints:
         mjspec.joint(name).damping = [gmotor.joint_damping, 0.0, 0.0]
+    wheel_joints, wmotor = [], None
+    if isinstance(base, WheeledBase):
+        wmotor = motor_model(catalog[base.wheel_motor_id], mode="velocity")
+        wheel_joints = [n for n in wheel_names(base)[1] if not n.endswith("_caster_mount")]
+        for name in wheel_joints:
+            mjspec.joint(name).damping = [wmotor.joint_damping, 0.0, 0.0]
     model = mjspec.compile()
 
     jids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, j.name) for j in joints]
@@ -147,16 +198,26 @@ def build_scene(
     return SimRobot(
         model=model,
         joints=joints,
-        qadr=np.array([model.jnt_qposadr[j] for j in jids]),
-        dadr=np.array([model.jnt_dofadr[j] for j in jids]),
+        qadr=np.array([model.jnt_qposadr[j] for j in jids], int),
+        dadr=np.array([model.jnt_dofadr[j] for j in jids], int),
         lower=np.array([-np.inf if j.type == "continuous" else j.lower for j in joints]),
         upper=np.array([np.inf if j.type == "continuous" else j.upper for j in joints]),
         motors=motors,
         site=mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, EE_SITE),
-        tool_body=mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, tool),
-        payload_kg=payload_kg,
-        payload_body=mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, PAYLOAD_BODY) if payload_kg > 0 else -1,
+        tool_body=mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, tool) if tool else -1,
+        payload_kg=payload_kg if tool is not None else 0.0,
+        payload_body=(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, PAYLOAD_BODY)
+                      if payload_kg > 0 and tool is not None else -1),
         aux_qadr=np.array([model.jnt_qposadr[j] for j in aux], int),
         aux_dadr=np.array([model.jnt_dofadr[j] for j in aux], int),
         aux_motors=[gmotor] * len(aux),
+        wheel_names=wheel_joints,
+        wheel_qadr=np.array([model.jnt_qposadr[model.joint(n).id] for n in wheel_joints], int),
+        wheel_dadr=np.array([model.jnt_dofadr[model.joint(n).id] for n in wheel_joints], int),
+        wheel_act=np.array([model.actuator(f"{n}_motor").id for n in wheel_joints], int),
+        wheel_side=np.array([1.0 if "left" in n else -1.0 for n in wheel_joints]),
+        wheel_motors=[wmotor] * len(wheel_joints),
+        chassis_body=mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, base.name),
+        free_qadr=(int(model.jnt_qposadr[model.body_jntadr[mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, base.name)]]) if floating else -1),
     )

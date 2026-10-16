@@ -1,0 +1,16 @@
+{
+  "task_summary": "",
+  "robot_type": "mobile",
+  "payload_kg": 0.0,
+  "gripper_needed": false,
+  "speed_m_s": 5.0,
+  "max_incline_deg": 0.0,
+  "terrain": "outdoor",
+  "base_payload_kg": 0.5,
+  "position_tolerance_m": 0.1,
+  "tolerance_reason": "aerial delivery: 10 cm is fine",
+  "assumptions": [
+    "FAKE BACKEND: canned requirements for this prompt; only task_summary echoes it.",
+    "OUT OF SCOPE: the task needs a flying robot (a drone); TaskBot only designs fixed arms and wheeled robots. Best attempt recorded as a fast outdoor mobile robot, which cannot do the job."
+  ]
+}

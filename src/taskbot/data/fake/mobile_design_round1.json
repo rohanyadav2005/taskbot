@@ -1,0 +1,23 @@
+{
+  "name": "office_rover",
+  "modules": [
+    {
+      "kind": "wheeled_base",
+      "name": "base",
+      "drive": "differential",
+      "wheel_radius_m": 0.05,
+      "wheel_width_m": 0.025,
+      "track_width_m": 0.32,
+      "wheelbase_m": 0.22,
+      "chassis_size_m": [
+        0.35,
+        0.28,
+        0.08
+      ],
+      "chassis_material": "aluminium",
+      "wheel_motor_id": "jgb37_520_110",
+      "caster": true
+    }
+  ],
+  "description": "FAKE BACKEND round 1: cheap JGB37-520 wheel motors."
+}

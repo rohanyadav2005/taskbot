@@ -1,0 +1,31 @@
+{
+  "task_summary": "pick toys off the floor and drop them in a basket",
+  "robot_type": "mobile_manipulator",
+  "reach_m": 0.35,
+  "payload_kg": 0.15,
+  "workspace": {
+    "x_min": 0.28,
+    "x_max": 0.4,
+    "y_min": -0.08,
+    "y_max": 0.08,
+    "z_min": 0.04,
+    "z_max": 0.3
+  },
+  "dof_min": 4,
+  "gripper_needed": true,
+  "gripper_kind": "parallel",
+  "speed_m_s": 0.3,
+  "max_incline_deg": 3.0,
+  "terrain": "carpet",
+  "base_payload_kg": 0.0,
+  "position_tolerance_m": 0.01,
+  "tolerance_reason": "toys are a few cm across; within 1 cm is enough to grasp",
+  "assumptions": [
+    "FAKE BACKEND: canned requirements for this prompt; only task_summary echoes it.",
+    "robot_type mobile_manipulator: it must drive to each toy and pick it up, so it needs wheels and an arm",
+    "toys up to about 120 g plus 25% margin = 0.15 kg in the gripper",
+    "toys lie on the floor 0.28-0.40 m in front of the robot; the basket rim is about 0.3 m high",
+    "carpeted playroom, thresholds up to about 3\u00b0",
+    "within 1 cm is enough to grasp a toy a few cm across"
+  ]
+}

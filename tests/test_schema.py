@@ -29,7 +29,7 @@ def test_examples_cover_2_4_6_dof():
 
 def test_catalog_loads_with_sources_for_every_value():
     catalog = load_motor_catalog()
-    assert 6 <= len(catalog) <= 8
+    assert 6 <= len(catalog) <= 12
     numeric = {"stall_torque_nm", "rated_torque_nm", "max_speed_rad_s", "no_load_speed_rad_s",
                "mass_kg", "body_size_m", "price_usd"}
     for m in catalog.values():
@@ -101,7 +101,7 @@ BAD = {
     "joint/link name clash": (_dup_joint_vs_link, "name 'turret' is used by both"),
     "clash with generated gripper name": (_collides_with_generated_name, "'gripper_palm'"),
     "base not first": (_base_not_first, "modules\\[0\\] must be a fixed_base"),
-    "two bases": (_two_bases, "only one fixed_base"),
+    "two bases": (_two_bases, "only one base \\(fixed_base or wheeled_base\\)"),
     "gripper not last": (_gripper_not_last, "must be the last module"),
     "no arm": (_no_arm, "at least one arm_chain"),
     "unknown motor": (_unknown_motor, "unknown motor_id 'warp_drive'"),
