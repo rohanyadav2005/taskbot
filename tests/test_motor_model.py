@@ -268,3 +268,60 @@ def test_report_shows_pid_mode(two_round_outcome):
                                          [Round(last.number, pid_spec, last.results)]))
     assert "**Control mode: pid** (one fixed integral preset on Dynamixels: Position I Gain 100" in report
     assert "I=100 (pid preset, conversion unverified)" in report
+
+
+# --------------------------------------------------------------------------- Task 4.4: no double counting, geometric path rule
+
+
+def test_unloaded_joint_reaches_exactly_its_no_load_speed():
+    """Back-EMF counted once: an unloaded joint driven flat out tops out at w0. Counted
+    twice (controller and MuJoCo damping both), it would stop near w0 / 2."""
+    import mujoco
+    import numpy as np
+
+    from taskbot.sim.control import MotorController, step
+
+    robot = build_scene(spec_of(strong_arm()), CATALOG)
+    data = mujoco.MjData(robot.model)
+    robot.set_pose(data, robot.home())
+    ctrl = MotorController(robot, payload_mass_error=0.0)
+    q_ref = robot.home().copy()
+    q_ref[0] = 3.0  # base yaw: no gravity load
+    top = max(step(robot, data, ctrl, q_ref, np.zeros(robot.n)) and data.qvel[robot.dadr[0]]
+              for _ in range(500))
+    assert top == pytest.approx(robot.motors[0].no_load_speed, rel=1e-3)
+
+
+def test_mujoco_applies_exactly_the_controllers_total_torque():
+    import mujoco
+    import numpy as np
+
+    from taskbot.sim.control import MotorController
+    from taskbot.sim.plan import min_jerk
+
+    robot = build_scene(spec_of(strong_arm()), CATALOG)
+    m = robot.model
+    data = mujoco.MjData(m)
+    robot.set_pose(data, robot.home())
+    ctrl = MotorController(robot, payload_mass_error=0.0)
+    q1 = np.array([0.0, 0.03, 1.48, 1.12])
+    worst = 0.0
+    for k in range(2000):
+        q_ref, qd_ref = min_jerk(robot.home(), q1, 2.0, k * m.opt.timestep)
+        mujoco.mj_step1(m, data)
+        out = ctrl.compute(data, q_ref, qd_ref)
+        applied_total = data.qfrc_applied[robot.dadr] - m.dof_damping[robot.dadr] * data.qvel[robot.dadr]
+        worst = max(worst, float(np.abs(applied_total - out.tau).max()))
+        mujoco.mj_step2(m, data)
+    assert worst < 1e-9
+
+
+def test_lag_behind_schedule_does_not_fail_path_deviation(desk_req):
+    from taskbot.sim_tests import reach_targets
+
+    five_mm = desk_req.model_copy(update={"position_tolerance_m": 0.005})
+    result = reach_targets(spec_of(strong_arm()), five_mm, CATALOG).result
+    dev, lag = map(float, re.search(r"max path deviation ([\d.]+) mm, .* max lag behind the planned "
+                                    r"timing ([\d.]+) mm \(reported only\)", result.message).groups())
+    assert result.passed
+    assert dev < 15 < lag  # far behind schedule, but on the path

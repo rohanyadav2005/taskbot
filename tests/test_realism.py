@@ -157,8 +157,12 @@ def test_late_settling_fails_even_if_final_error_is_small():
 
 
 def test_path_deviation_over_3x_tolerance_fails():
-    assert move(peak_dev=0.031).failures == ["strayed 31 mm from the planned path (limit 30 mm)"]
+    assert move(peak_dev=0.031).failures == ["strayed 31 mm sideways from the planned path (limit 30 mm)"]
     assert move(peak_dev=0.029).failures == []
+
+
+def test_lag_along_the_path_is_reported_not_judged():
+    assert move(lag=0.5).failures == []
 
 
 def test_tracking_message_keeps_settling_time(strong_runs):

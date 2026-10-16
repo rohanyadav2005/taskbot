@@ -95,8 +95,9 @@ Generated from the requirements; run only after every static check passes.
 | `hold_still` | Hold the target pose with the highest torque load, with payload, for 5 s | Final error < tol, peak deviation < 3 tol (reported in µm) |
 
 `tol` is the requirements' `position_tolerance_m`: the precision the task needs, estimated by the
-LLM with a reason (5 mm when unclear). Path deviation is the distance between the tool and where
-the planned joint trajectory puts it at that instant.
+LLM with a reason (5 mm when unclear). Path deviation is the distance from the tool to the
+nearest point of the planned tool path: running late along the right path isn't a miss. That lag
+behind the planned timing is reported in the message but not judged.
 
 **Motors** (`taskbot/sim/motor.py`). Driving torque at speed w: servos and Dynamixels
 `min(rated, stall · max(0, 1 − |w|/w0))`; steppers use their pull-out curve if the catalog has one,

@@ -95,26 +95,36 @@ class _Sim:
         self._ref_data = mujoco.MjData(robot.model)
         self._jacp = np.zeros((3, robot.model.nv))
 
-    def lever_errors(self, q_target: np.ndarray) -> np.ndarray:
-        """Per joint: |joint error| x how far that joint moves the tool per radian (m)."""
-        mujoco.mj_jacSite(self.robot.model, self.data, self._jacp, None, self.robot.site)
+    def lever_errors(self, q_target: np.ndarray, q: np.ndarray | None = None) -> np.ndarray:
+        """Per joint: |joint error| x how far that joint moves the tool per radian (m),
+        at the current state or, if given, at arm configuration q."""
+        data = self.data
+        if q is not None:
+            data = self._ref_data
+            data.qpos[self.robot.qadr] = q
+            mujoco.mj_kinematics(self.robot.model, data)
+            mujoco.mj_comPos(self.robot.model, data)
+        mujoco.mj_jacSite(self.robot.model, data, self._jacp, None, self.robot.site)
         lever = np.linalg.norm(self._jacp[:, self.robot.dadr], axis=0)
-        return lever * np.abs(self.q() - q_target)
+        return lever * np.abs((self.q() if q is None else q) - q_target)
 
     def run(self, seconds: float, ref) -> np.ndarray:
         """Step for `seconds`, with ref(t) -> (q_ref, qd_ref). Returns tool positions.
-        Also tracks the peak distance between the tool and where q_ref puts it
-        (self.peak_dev) and the per-joint lever errors at that moment (self.peak_contrib)."""
-        tool = []
-        self.peak_dev, self.peak_contrib = 0.0, np.zeros(self.robot.n)
+        Also records the arm configuration each step (self.q_hist), and tracks the peak
+        distance between the tool and where q_ref puts it at that same instant
+        (self.peak_lag: lag behind schedule plus any sideways error) and the per-joint
+        lever errors at that moment (self.peak_contrib)."""
+        tool, q_hist = [], []
+        self.peak_lag, self.peak_contrib = 0.0, np.zeros(self.robot.n)
         for k in range(round(seconds / self.dt)):
             q_ref, qd_ref = ref(k * self.dt)
             out = step(self.robot, self.data, self.ctrl, q_ref, qd_ref)
+            q_hist.append(self.q())
             self._ref_data.qpos[self.robot.qadr] = q_ref
             mujoco.mj_kinematics(self.robot.model, self._ref_data)
             dev = float(np.linalg.norm(self.robot.ee(self.data) - self._ref_data.site_xpos[self.robot.site]))
-            if dev > self.peak_dev:
-                self.peak_dev, self.peak_contrib = dev, self.lever_errors(q_ref)
+            if dev > self.peak_lag:
+                self.peak_lag, self.peak_contrib = dev, self.lever_errors(q_ref)
             self.sat_run = np.where(out.saturated, self.sat_run + self.dt, 0.0)
             self.slow_run = np.where(out.saturated, self.slow_run + self.dt * out.speed_limited, 0.0)
             for i in np.flatnonzero(self.sat_run > self.sat_max):
@@ -125,6 +135,7 @@ class _Sim:
             if self.steps % self.frame_every == 0:
                 self.frames.append(self.data.qpos.copy())
             tool.append(self.robot.ee(self.data))
+        self.q_hist = np.array(q_hist)
         return np.array(tool)
 
     def q(self) -> np.ndarray:
@@ -143,9 +154,11 @@ class _MoveResult:
     final_error: float     # at duration + SETTLE_DEADLINE_S + SETTLE_CONFIRM_S
     overshoot: float       # furthest the tool went past the target along the approach line
     settle_s: float | None  # from move start until the error stays under tolerance
-    peak_dev: float        # largest distance from where the planned path puts the tool
+    peak_dev: float        # largest distance from the planned tool path (nearest point on it)
     final_contrib: np.ndarray  # per-joint lever errors at the end of the move
-    peak_contrib: np.ndarray   # ...at the moment of peak deviation
+    peak_contrib: np.ndarray   # ...at the moment of peak path deviation
+    lag: float = 0.0       # largest distance behind/ahead of the planned position at the same
+                           # instant (reported, not judged: lateness along the path isn't a miss)
 
     @property
     def unreachable(self) -> bool:
@@ -175,7 +188,8 @@ class _MoveResult:
                 out.append(f"settled after {self.settle_s:.2f} s, later than the "
                            f"{self.duration + SETTLE_DEADLINE_S:.2f} s deadline")
         if self.peak_dev >= PEAK_FACTOR * self.tol:
-            out.append(f"strayed {_mm(self.peak_dev)} from the planned path (limit {_mm(PEAK_FACTOR * self.tol)})")
+            out.append(f"strayed {_mm(self.peak_dev)} sideways from the planned path "
+                       f"(limit {_mm(PEAK_FACTOR * self.tol)})")
         if self.overshoot >= OVERSHOOT_FACTOR * self.tol:
             out.append(f"overshot by {_mm(self.overshoot)} (limit {_mm(OVERSHOOT_FACTOR * self.tol)})")
         return out
@@ -199,9 +213,41 @@ def _run_moves(robot: SimRobot, req: Requirements, payload_mass_error: float) ->
         approach = mv.target - path[0]
         dist = np.linalg.norm(approach)
         overshoot = float(np.max((path - mv.target) @ (approach / dist), initial=0.0)) if dist > 1e-9 else 0.0
+        dev, at, q_near = _path_deviation(robot, sim, path, start, mv.q1, T)
         results.append(_MoveResult(mv.label, tol, mv.ik_error, T, float(errors[-1]), max(overshoot, 0.0),
-                                   settle, sim.peak_dev, sim.lever_errors(mv.q1), sim.peak_contrib))
+                                   settle, dev, sim.lever_errors(mv.q1),
+                                   sim.lever_errors(q_near, sim.q_hist[at]), sim.peak_lag))
     return sim, results
+
+
+PATH_SAMPLES = 400
+
+
+def _path_deviation(robot: SimRobot, sim: _Sim, path: np.ndarray, q0: np.ndarray, q1: np.ndarray,
+                    T: float) -> tuple[float, int, np.ndarray]:
+    """Largest distance from the tool to the planned tool path (a polyline through the
+    tool positions of the min-jerk trajectory), the step where it happens, and the planned
+    configuration at the nearest point. Being late or early along the path doesn't count."""
+    data = mujoco.MjData(robot.model)
+    qs = np.array([min_jerk(q0, q1, T, t)[0] for t in np.linspace(0.0, T, PATH_SAMPLES)])
+    pts = np.empty((len(qs), 3))
+    for i, q in enumerate(qs):
+        data.qpos[robot.qadr] = q
+        mujoco.mj_kinematics(robot.model, data)
+        pts[i] = data.site_xpos[robot.site]
+    a, b = pts[:-1], pts[1:]
+    ab = b - a
+    ab2 = np.maximum(np.einsum("ij,ij->i", ab, ab), 1e-18)
+    best_d = np.full(len(path), np.inf)
+    best_seg = np.zeros(len(path), int)
+    for start in range(0, len(path), 2000):  # chunks of steps x segments
+        p = path[start:start + 2000, None, :]
+        t = np.clip(np.einsum("nsj,sj->ns", p - a, ab) / ab2, 0.0, 1.0)
+        d = np.linalg.norm(p - (a + t[..., None] * ab), axis=2)
+        best_seg[start:start + 2000] = d.argmin(axis=1)
+        best_d[start:start + 2000] = d.min(axis=1)
+    at = int(best_d.argmax())
+    return float(best_d[at]), at, qs[best_seg[at]]
 
 
 def _view(req: Requirements) -> dict:
@@ -223,7 +269,8 @@ def _move_summary(moves: list[_MoveResult]) -> tuple[bool, str]:
     if settles:
         text += f"; settling {min(settles):.2f}–{max(settles):.2f} s after move start"
     text += (f"; max path deviation {_mm(max(m.peak_dev for m in moves))}, max overshoot "
-             f"{_mm(max(m.overshoot for m in moves))}")
+             f"{_mm(max(m.overshoot for m in moves))}; max lag behind the planned timing "
+             f"{_mm(max(m.lag for m in moves))} (reported only)")
     if failed:
         text += "; failed: " + "; ".join(f"{m.label}: {', '.join(m.failures)}" for m in failed)
     return not failed, text
