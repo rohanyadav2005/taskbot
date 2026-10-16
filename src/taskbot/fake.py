@@ -26,7 +26,7 @@ from taskbot.schema import Motor
 
 _TORQUE_FAIL = re.compile(r"^- \[static_torque\](?: \(cause: \w+\))? (\w+) needs ([\d.e+-]+) Nm", re.MULTILINE)
 _SATURATED = re.compile(r"(\w+) (?:saturated|speed-limited) for [\d.]+ s while [^(]*\(motor (\w+):")
-OUT_OF_SCOPE_WORDS = ("fly", "flies", "flying", "drone", "swim", "underwater", "legged", "legs", "walk up stairs")
+OUT_OF_SCOPE_WORDS = ("fly", "flies", "flying", "drone", "swim", "swims", "swimming", "underwater", "legged", "legs", "walk up stairs")
 
 ARM_REQUIREMENTS = {
     "robot_type": "arm", "reach_m": 0.3, "payload_kg": 0.25,

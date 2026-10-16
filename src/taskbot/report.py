@@ -96,28 +96,8 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
                   "hold_still) run with the wheeled base fixed in place**, so they test the arm alone; "
                   "drive_with_arm_extended tests the arm and base together while driving."]
 
-    lines += ["", f"## Controller settings (round {final.number} design)", "",
-              "Fixed per motor, never tuned per test (see taskbot/sim/motor.py). Total joint torque = "
-              "Kp·e + Kd·(q̇_ref − q̇) + gravity feedforward − b·q̇, limited to the motor's driving "
-              "torque at the current speed, and to rated torque when braking. "
-              f"Gravity feedforward believes the payload is {DEFAULT_PAYLOAD_MASS_ERROR:.0%} lighter "
-              f"than it is (the \"(ideal)\" rows use the true mass). Physics timestep "
-              f"{SIM_TIMESTEP_S * 1000:.0f} ms.", "",
-              f"**Control mode: {final.spec.control}**"
-              + (" (one fixed integral preset on Dynamixels: Position I Gain "
-                 f"{PID_PRESET_DYNAMIXEL_I}; the gain conversion is unverified)"
-                 if final.spec.control == "pid" else " (factory position loops, no integral term)"), "",
-              "| Joint | Motor | Kp (Nm/rad) | Kd (Nm·s/rad) | Ki (Nm/(rad·s)) | Back-EMF b (Nm·s/rad) | Rated / stall (Nm) "
-              "| No-load (rad/s) | Gains from | Torque-speed model |",
-              "|---|---|---|---|---|---|---|---|---|---|"]
-    for row in controller_settings(build_scene(final.spec)):
-        lines.append(
-            f"| {row['joint']} | {row['motor']} | {row['kp']:.3g} | {row['kd']:.3g} | {row['ki']:.3g} | "
-            f"{row['back_emf_damping']:.3g} | {row['rated']:.3g} / {row['stall']:.3g} | "
-            f"{row['no_load_speed']:.3g} | {_cell(row['gain_source'])} | {_cell(row['speed_model'])} |")
-    if final.spec.is_mobile:
-        lines += ["", "Wheel rows are velocity loops: Kp is in Nm·s/rad (torque per rad/s of speed "
-                  "error) and Ki in Nm/rad."]
+    lines += ["", f"## Controller settings (round {final.number} design)", ""]
+    lines += controller_table_lines(final.spec)
 
     if recordings:
         lines += ["", f"## Simulation recordings (round {final.number})", ""]
@@ -141,6 +121,32 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
     if warnings:
         lines += ["", "Warnings:", *[f"- [{r.check}] {_cell(r.message)}" for r in warnings]]
     return "\n".join(lines) + "\n"
+
+
+def controller_table_lines(spec) -> list[str]:
+    """Controller mode, rules and the per-joint gain table, as markdown lines."""
+    lines = ["Fixed per motor, never tuned per test (see taskbot/sim/motor.py). Total joint torque = "
+             "Kp·e + Kd·(q̇_ref − q̇) + gravity feedforward − b·q̇, limited to the motor's driving "
+             "torque at the current speed, and to rated torque when braking. "
+             f"Gravity feedforward believes the payload is {DEFAULT_PAYLOAD_MASS_ERROR:.0%} lighter "
+             f"than it is (the \"(ideal)\" rows use the true mass). Physics timestep "
+             f"{SIM_TIMESTEP_S * 1000:.0f} ms.", "",
+             f"**Control mode: {spec.control}**"
+             + (" (one fixed integral preset on Dynamixels: Position I Gain "
+                f"{PID_PRESET_DYNAMIXEL_I}; the gain conversion is unverified)"
+                if spec.control == "pid" else " (factory position loops, no integral term)"), "",
+             "| Joint | Motor | Kp (Nm/rad) | Kd (Nm·s/rad) | Ki (Nm/(rad·s)) | Back-EMF b (Nm·s/rad) "
+             "| Rated / stall (Nm) | No-load (rad/s) | Gains from | Torque-speed model |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
+    for row in controller_settings(build_scene(spec)):
+        lines.append(
+            f"| {row['joint']} | {row['motor']} | {row['kp']:.3g} | {row['kd']:.3g} | {row['ki']:.3g} | "
+            f"{row['back_emf_damping']:.3g} | {row['rated']:.3g} / {row['stall']:.3g} | "
+            f"{row['no_load_speed']:.3g} | {_cell(row['gain_source'])} | {_cell(row['speed_model'])} |")
+    if spec.is_mobile:
+        lines += ["", "Wheel rows are velocity loops: Kp is in Nm·s/rad (torque per rad/s of speed "
+                  "error) and Ki in Nm/rad."]
+    return lines
 
 
 def requirements_rows(req) -> list[str]:

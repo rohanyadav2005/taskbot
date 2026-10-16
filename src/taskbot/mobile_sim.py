@@ -173,8 +173,19 @@ def _run(name: str, result: CheckResult, sim: _MobileSim) -> SimRun:
                   camera_distance=1.8, track_body=sim.robot.chassis_body)
 
 
+# The arm advice in CAUSE_ADVICE ("shorter or lighter outer links") doesn't fit a wheel.
+WHEEL_ADVICE = {
+    "saturated": ("a wheel motor hit its torque limit; use a stronger wheel motor, smaller wheels, "
+                  "more driven wheels (four_wheel), or a lighter robot"),
+    "speed_limited": ("a wheel motor ran out of speed; use a faster wheel motor, or larger wheels "
+                      "if it has torque to spare"),
+}
+
+
 def _msg(text: str, cause: str | None) -> str:
-    return text if cause is None else f"{text} Cause: {cause}: {CAUSE_ADVICE[cause]}."
+    if cause is None:
+        return text
+    return f"{text} Cause: {cause}: {WHEEL_ADVICE.get(cause, CAUSE_ADVICE[cause])}."
 
 
 # --------------------------------------------------------------------------- tests
@@ -248,8 +259,10 @@ def incline(spec: RobotSpec, req: Requirements, catalog=None) -> SimRun:
     ok = reached and not slid_back  # distance accuracy is drive_straight's job; slip is reported
     sat_cause, sat_text = _wheel_saturation(sim)
     cause = None if ok else (sat_cause or "slip")
+    progress = (f"climbed {climbed:.3f} m (wheel slip {slip:.1%}, reported only)" if climbed > 0
+                else f"went {-climbed:.3f} m backwards down the slope instead")
     text = (f"Drove up a {req.max_incline_deg:g}° slope on {req.terrain} for {INCLINE_M:g} m by odometry: "
-            f"climbed {climbed:.3f} m (wheel slip {slip:.1%}, reported only); slid back at most "
+            f"{progress}; slid back at most "
             f"{max(0.0, -track['min_x']) * 1000:.0f} mm (limit 10 mm)"
             f"{'' if reached else '; stalled: never covered the distance'}.{sat_text}")
     result = CheckResult(check="incline", passed=ok, value=-track["min_x"], limit=0.01,

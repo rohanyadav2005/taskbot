@@ -12,9 +12,11 @@ dependencies = ["pydantic>=2", "numpy>=1.24", "lxml>=5", "mujoco>=3.3", "pillow>
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 anthropic = ["anthropic>=0.40"]
+app = ["gradio>=4.44", "trimesh>=4"]
 
 [project.scripts]
 taskbot = "taskbot.cli:main"
+taskbot-app = "taskbot.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

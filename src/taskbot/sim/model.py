@@ -27,6 +27,7 @@ from taskbot.schema import (
 )
 from taskbot.sim.motor import MotorModel, motor_model
 
+BASE_PAYLOAD_BODY = "base_payload"
 PAYLOAD_BODY = "payload"
 PAYLOAD_DENSITY_KG_M3 = 1000.0  # payload drawn as a water-density cube
 FLOOR_FRICTION = 0.01           # the wheel / caster geom's own friction decides each contact
@@ -137,11 +138,14 @@ def build_scene(
         mjspec.option.gravity = [-9.81 * np.sin(th), 0.0, -9.81 * np.cos(th)]
     base = spec.base
     if isinstance(base, WheeledBase) and base_payload_kg > 0:
+        # Its own body with explicit inertia: the URDF chassis body has an explicit
+        # <inertial>, so MuJoCo would ignore the mass of a geom added to it.
         side = (base_payload_kg / PAYLOAD_DENSITY_KG_M3) ** (1 / 3)
-        mjspec.body(base.name).add_geom(
-            type=mujoco.mjtGeom.mjGEOM_BOX, size=[side / 2] * 3, mass=base_payload_kg,
-            pos=[0.0, 0.0, base.chassis_top_m + side / 2], rgba=[0.6, 0.4, 0.2, 1],
-            contype=0, conaffinity=0)
+        box = mjspec.body(base.name).add_body(
+            name=BASE_PAYLOAD_BODY, pos=[0.0, 0.0, base.chassis_top_m + side / 2],
+            mass=base_payload_kg, inertia=[base_payload_kg * side ** 2 / 6] * 3, explicitinertial=True)
+        box.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[side / 2] * 3, rgba=[0.6, 0.4, 0.2, 1],
+                     contype=0, conaffinity=0, mass=0)
     for i, p in enumerate(markers):
         world.add_site(name=f"target_{i}", pos=list(map(float, p)), size=[0.008, 0, 0],
                        rgba=[0.1, 0.7, 0.2, 0.8])
