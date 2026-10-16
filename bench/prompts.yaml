@@ -1,0 +1,326 @@
+# TaskBot benchmark prompts. Loaded and validated by taskbot.bench (see README, "Running
+# the benchmark"). Every prompt has an id, a category and expectations about the
+# requirements the model extracts:
+#   robot_type        one type or a list of acceptable types
+#   should_reject     true: the task is out of scope and must stop without a design
+#   min_reach_m       requirements.reach_m must be at least this
+#   payload_kg        [min, max] for requirements.payload_kg (in the gripper, margin included)
+#   base_payload_kg   [min, max] for requirements.base_payload_kg (carried on the base)
+#   tolerance_m       [min, max] for requirements.position_tolerance_m
+#   terrain           expected terrain for mobile types
+# Ranges are deliberately wide: they catch physically wrong numbers, not style.
+# Prompts marked "from Task 5.1" are the five original hand-run prompts.
+
+- id: easy_arm_water_plants
+  category: easy_arm
+  note: from Task 5.1
+  prompt: Water the three potted plants on my windowsill
+  expect:
+    robot_type: arm
+    min_reach_m: 0.25
+    payload_kg: [0.2, 2.0]
+    tolerance_m: [0.003, 0.03]
+
+- id: easy_arm_lego_sort
+  category: easy_arm
+  prompt: Sort a pile of LEGO bricks on my desk into four trays by colour
+  expect:
+    robot_type: arm
+    min_reach_m: 0.2
+    payload_kg: [0.0, 0.2]
+    tolerance_m: [0.001, 0.01]
+
+- id: easy_arm_phone_timelapse
+  category: easy_arm
+  prompt: Hold my phone and slowly pan it across my desk for time-lapse videos
+  expect:
+    robot_type: arm
+    min_reach_m: 0.15
+    payload_kg: [0.15, 0.5]
+    tolerance_m: [0.001, 0.02]
+
+- id: easy_arm_envelope_stamps
+  category: easy_arm
+  prompt: Stick postage stamps on a stack of envelopes on my table
+  expect:
+    robot_type: arm
+    min_reach_m: 0.15
+    payload_kg: [0.0, 0.2]
+    tolerance_m: [0.001, 0.01]
+
+- id: easy_arm_cat_feeder
+  category: easy_arm
+  prompt: Scoop dry cat food from a bin on the counter into my cat's bowl twice a day
+  expect:
+    robot_type: arm
+    min_reach_m: 0.2
+    payload_kg: [0.05, 0.6]
+    tolerance_m: [0.003, 0.03]
+
+- id: easy_arm_chess
+  category: easy_arm
+  prompt: Move the pieces on a chess board on my table so I can play against the computer
+  expect:
+    robot_type: arm
+    min_reach_m: 0.3
+    payload_kg: [0.0, 0.15]
+    tolerance_m: [0.001, 0.01]
+
+- id: easy_arm_coffee_button
+  category: easy_arm
+  prompt: Press the start button on my coffee machine every morning at 7
+  expect:
+    robot_type: arm
+    min_reach_m: 0.1
+    payload_kg: [0.0, 0.2]
+    tolerance_m: [0.001, 0.01]
+
+- id: easy_arm_page_turner
+  category: easy_arm
+  prompt: Turn the pages of a cookbook on a stand next to my stove
+  expect:
+    robot_type: arm
+    min_reach_m: 0.15
+    payload_kg: [0.0, 0.2]
+    tolerance_m: [0.001, 0.02]
+
+- id: hard_arm_m3_screws
+  category: hard_arm
+  note: from Task 5.1
+  prompt: Pick M3 screws out of a parts tray and drop them into the holes of a 3D-printed jig
+  expect:
+    robot_type: arm
+    min_reach_m: 0.15
+    payload_kg: [0.0, 0.1]
+    tolerance_m: [0.0005, 0.003]
+
+- id: hard_arm_grandma_shelf
+  category: hard_arm
+  note: from Task 5.1
+  prompt: Help my grandmother get jars of jam down from the top shelf of her kitchen cupboard, about 1.6 m up
+  expect:
+    robot_type: [arm, mobile_manipulator]
+    min_reach_m: 0.4
+    payload_kg: [0.3, 1.5]
+    tolerance_m: [0.003, 0.03]
+
+- id: hard_arm_cast_iron_pan
+  category: hard_arm
+  prompt: Lift my 1.5 kg cast iron pan from the counter onto the stove burner
+  expect:
+    robot_type: arm
+    min_reach_m: 0.3
+    payload_kg: [1.5, 3.0]
+    tolerance_m: [0.005, 0.05]
+
+- id: hard_arm_pcb_soldering
+  category: hard_arm
+  prompt: Hold a soldering iron and solder the through-hole pins on a small circuit board
+  expect:
+    robot_type: arm
+    min_reach_m: 0.1
+    payload_kg: [0.03, 0.4]
+    tolerance_m: [0.0002, 0.001]
+
+- id: hard_arm_tomato_sorter
+  category: hard_arm
+  prompt: Take ripe tomatoes off a 60 cm wide conveyor belt and put them in a crate beside it
+  expect:
+    robot_type: arm
+    min_reach_m: 0.5
+    payload_kg: [0.1, 0.5]
+    tolerance_m: [0.005, 0.03]
+
+- id: hard_arm_jug_pour
+  category: hard_arm
+  prompt: Pour water from a full 1 litre jug into four glasses lined up on the table
+  expect:
+    robot_type: arm
+    min_reach_m: 0.3
+    payload_kg: [1.0, 2.5]
+    tolerance_m: [0.002, 0.02]
+
+- id: mobile_office_box
+  category: mobile
+  note: from Task 5.1
+  prompt: a robot that carries a 2 kg box across my office
+  expect:
+    robot_type: mobile
+    base_payload_kg: [2.0, 3.5]
+
+- id: mobile_mail_delivery
+  category: mobile
+  prompt: Deliver letters and small parcels between desks on one floor of our office
+  expect:
+    robot_type: mobile
+    base_payload_kg: [0.2, 5.0]
+
+- id: mobile_laundry_basket
+  category: mobile
+  prompt: Carry a full 5 kg laundry basket from my bedroom to the washing machine down the hall
+  expect:
+    robot_type: mobile
+    base_payload_kg: [5.0, 8.0]
+
+- id: mobile_warehouse_patrol
+  category: mobile
+  prompt: Drive up and down the aisles of my small warehouse at night carrying a camera
+  expect:
+    robot_type: mobile
+    base_payload_kg: [0.1, 2.0]
+
+- id: mobile_garden_cart
+  category: mobile
+  prompt: Carry 10 kg of potting soil along the paved path from my garage to the vegetable beds
+  expect:
+    robot_type: mobile
+    base_payload_kg: [10.0, 15.0]
+    terrain: outdoor
+
+- id: mobile_party_drinks
+  category: mobile
+  prompt: Carry a tray of drinks around the living room during a party
+  expect:
+    robot_type: mobile
+    base_payload_kg: [0.5, 4.0]
+
+- id: mm_toy_picker
+  category: mobile_manipulator
+  prompt: a robot that picks toys off the floor and drops them in a basket
+  expect:
+    robot_type: mobile_manipulator
+    min_reach_m: 0.2
+    payload_kg: [0.05, 0.6]
+    tolerance_m: [0.003, 0.03]
+
+- id: mm_sock_collector
+  category: mobile_manipulator
+  prompt: Pick up dirty socks from the bedroom floor and put them in the laundry hamper
+  expect:
+    robot_type: mobile_manipulator
+    min_reach_m: 0.2
+    payload_kg: [0.02, 0.3]
+    tolerance_m: [0.005, 0.05]
+
+- id: mm_tennis_balls
+  category: mobile_manipulator
+  prompt: Collect tennis balls from the court after practice and drop them in a bucket
+  expect:
+    robot_type: mobile_manipulator
+    min_reach_m: 0.2
+    payload_kg: [0.05, 0.3]
+    tolerance_m: [0.005, 0.05]
+    terrain: outdoor
+
+- id: mm_cafe_cups
+  category: mobile_manipulator
+  prompt: Clear empty cups from the tables in our cafe and bring them to the counter
+  expect:
+    robot_type: mobile_manipulator
+    min_reach_m: 0.3
+    payload_kg: [0.1, 0.8]
+    tolerance_m: [0.003, 0.03]
+
+- id: mm_shelf_restock
+  category: mobile_manipulator
+  prompt: Restock packets of crisps on the bottom shelf of a corner shop from a box on the floor
+  expect:
+    robot_type: mobile_manipulator
+    min_reach_m: 0.3
+    payload_kg: [0.05, 0.5]
+    tolerance_m: [0.003, 0.03]
+
+- id: mm_remote_fetch
+  category: mobile_manipulator
+  prompt: Fetch the TV remote from wherever it was left on the coffee table and bring it to me on the sofa
+  expect:
+    robot_type: mobile_manipulator
+    min_reach_m: 0.3
+    payload_kg: [0.05, 0.5]
+    tolerance_m: [0.003, 0.03]
+
+- id: vague_grandma
+  category: vague
+  prompt: something to help my grandma
+  expect:
+    should_reject: false
+
+- id: vague_kitchen
+  category: vague
+  prompt: a robot for my kitchen
+  expect:
+    should_reject: false
+
+- id: vague_workshop
+  category: vague
+  prompt: I want a robot to help me in my workshop
+  expect:
+    should_reject: false
+
+- id: vague_mornings
+  category: vague
+  prompt: make my mornings easier
+  expect:
+    should_reject: false
+
+- id: vague_shop
+  category: vague
+  prompt: a helper robot for my small shop
+  expect:
+    should_reject: false
+
+- id: vague_desk
+  category: vague
+  prompt: keep my desk tidy
+  expect:
+    robot_type: [arm, mobile_manipulator]
+    should_reject: false
+
+- id: oos_coffee_drone
+  category: out_of_scope
+  note: from Task 5.1
+  prompt: a drone that flies a cup of coffee from the kitchen to my desk
+  expect:
+    should_reject: true
+
+- id: oos_aquarium_fish
+  category: out_of_scope
+  prompt: A robot fish that swims around my aquarium and cleans the glass
+  expect:
+    should_reject: true
+
+- id: oos_hull_inspection
+  category: out_of_scope
+  prompt: An underwater robot that inspects the hull of my sailing boat in the harbour
+  expect:
+    should_reject: true
+
+- id: oos_robot_dog
+  category: out_of_scope
+  prompt: A four-legged robot dog that walks with me on mountain hiking trails
+  expect:
+    should_reject: true
+
+- id: oos_humanoid_laundry
+  category: out_of_scope
+  prompt: A humanoid robot that walks around my flat and folds laundry like a person
+  expect:
+    should_reject: true
+
+- id: oos_stairs_tea
+  category: out_of_scope
+  prompt: A robot that climbs the stairs to bring me tea in my bedroom upstairs
+  expect:
+    should_reject: true
+
+- id: oos_crop_sprayer
+  category: out_of_scope
+  prompt: A drone that sprays pesticide over my two hectares of wheat
+  expect:
+    should_reject: true
+
+- id: oos_yard_turret
+  category: out_of_scope
+  prompt: A turret that shoots anyone who walks into my yard at night
+  expect:
+    should_reject: true

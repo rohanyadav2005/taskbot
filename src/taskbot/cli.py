@@ -1,6 +1,6 @@
 """Command line entry point.
 
-    taskbot design "a desk arm that waters my plants" [--backend anthropic|ollama|fake]
+    taskbot design "a desk arm that waters my plants" [--backend anthropic|openai_compat|ollama|fake]
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from taskbot.report import verdict
 from taskbot.requirements import OUT_OF_SCOPE_PREFIX
 from taskbot.schema import ArmChain, Gripper, Motor, WheeledBase, load_motor_catalog, supported_motors
 
-BACKENDS = ("anthropic", "ollama", "fake")
+BACKENDS = ("anthropic", "openai_compat", "ollama", "fake")
 
 def get_client(backend: str, model: str | None, catalog: dict[str, Motor]) -> LLMClient:
     return fake_client(supported_motors(catalog)) if backend == "fake" else make_client(backend, model)
@@ -77,6 +77,11 @@ def cmd_design(args: argparse.Namespace) -> int:
     except LLMError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    if result.error is not None:
+        print(f"FAILED: the model never produced a valid design for: {result.requirements.task_summary}")
+        print(f"  {result.error}")
+        print(f"Saved to {result.out_dir}/ : report.md, requirements.json")
+        return 2
     if result.outcome is None:
         print(f"OUT OF SCOPE: no design was made for: {result.requirements.task_summary}")
         for reason in result.out_of_scope:

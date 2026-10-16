@@ -1,0 +1,3 @@
+# Benchmark runs (state, per-prompt outputs, reports) stay local.
+*
+!.gitignore

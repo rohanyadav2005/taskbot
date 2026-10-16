@@ -18,6 +18,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 taskbot design "water the three plants on my windowsill"
 # -> out/<name>/report.md, requirements.json, spec.json, robot.urdf, rounds/round_N/
 
+taskbot design "..." --backend openai_compat                          # any OpenAI-compatible API (below)
 taskbot design "..." --backend ollama --model qwen2.5:7b-instruct   # local, needs `ollama serve`
 taskbot design "..." --backend fake                                   # offline, canned output
 ```
@@ -37,7 +38,86 @@ and the report says why.
 
 `--backend` defaults to `$TASKBOT_BACKEND` (else `anthropic`); `--model` defaults to
 `$TASKBOT_MODEL` (else the backend's default). If a reply fails validation, the errors
-are sent back to the model and it retries, up to 3 times.
+are sent back to the model and it retries, up to 3 times. Rate-limit errors (HTTP 429/503)
+are retried with exponential backoff, honouring `Retry-After`. Every run writes `run.json`
+and an "LLM usage" section in `report.md`: provider, model, calls, tokens, JSON validation
+retries, rate-limit waits and time. API keys are never printed, logged or written.
+
+### OpenAI-compatible backends (`--backend openai_compat`)
+
+Configured with three environment variables: `TASKBOT_BASE_URL`, `TASKBOT_MODEL` and
+`TASKBOT_API_KEY` (optional; local Ollama needs none). JSON mode (`response_format:
+json_object`) is requested; a provider that rejects it gets plain requests and the reply
+is left to Pydantic validation and retries (`TASKBOT_JSON_MODE=0` turns it off up front).
+`TASKBOT_TIMEOUT_S` sets the per-request timeout (default 120 s). It is also in the web
+app's backend list.
+
+Set the key without putting it in your shell history: `read -rs TASKBOT_API_KEY && export TASKBOT_API_KEY`.
+
+| Preset | `TASKBOT_BASE_URL` | Example `TASKBOT_MODEL` | Key |
+|---|---|---|---|
+| Ollama (local) | `http://localhost:11434/v1` | `qwen2.5:7b-instruct` | none |
+| Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | console.groq.com |
+| Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.0-flash` | aistudio.google.com |
+| OpenRouter | `https://openrouter.ai/api/v1` | `meta-llama/llama-3.3-70b-instruct:free` | openrouter.ai |
+
+The URLs and model names are from memory, not checked against the providers' current
+docs (unverified), and free-tier models and limits change: check the provider's model list.
+
+```bash
+export TASKBOT_BASE_URL=http://localhost:11434/v1 TASKBOT_MODEL=qwen2.5:7b-instruct   # Ollama
+taskbot design "water the three plants on my windowsill" --backend openai_compat
+```
+
+## Running the benchmark
+
+`bench/prompts.yaml` has 40 prompts in six categories (easy_arm 8, hard_arm 6, mobile 6,
+mobile_manipulator 6, vague 6, out_of_scope 8), each with expectations about the extracted
+requirements (robot type, minimum reach, payload, tolerance range, or `should_reject: true`).
+`bench/holdout.yaml` has 10 more, scored separately: don't use them while improving prompts.
+
+`bench/run.py` runs each prompt through the full pipeline (2 at a time by default,
+`--concurrency`), retrying rate-limit errors with backoff (`--retries`, `--backoff`). It writes
+`bench/results/<date>_<backend>_<model>.md` and `.csv`: pass rate overall and per category,
+the holdout score separately, average rounds to pass, out-of-scope rejection accuracy, the most
+common failing checks and causes, links to each prompt's report, and an **Unfixed failures**
+section with the exact messages the model was given and didn't fix, grouped by cause.
+A prompt passes when an in-scope task ends with a design passing every check and sim, or an
+out-of-scope task is rejected.
+
+The run's state is in `bench/results/<name>/results.jsonl`. If it stops (rate limit, crash,
+Ctrl-C), run the same command again to continue; on a later day add `--name <name>`.
+Rate-limited and errored prompts are retried on resume; finished ones are not.
+
+Start with a small slice, then the full set, then the holdout:
+
+```bash
+# Ollama (local, no key)
+ollama pull qwen2.5:7b-instruct
+export TASKBOT_BASE_URL=http://localhost:11434/v1 TASKBOT_MODEL=qwen2.5:7b-instruct
+python bench/run.py --backend openai_compat --limit 5
+python bench/run.py --backend openai_compat                 # all 40 (resumes the 5 above)
+python bench/run.py --backend openai_compat --split all     # + the 10 holdout prompts
+
+# A free API tier (Groq shown; see the presets above), one prompt at a time
+export TASKBOT_BASE_URL=https://api.groq.com/openai/v1 TASKBOT_MODEL=llama-3.3-70b-versatile
+read -rs TASKBOT_API_KEY && export TASKBOT_API_KEY
+python bench/run.py --backend openai_compat --limit 5 --concurrency 1
+python bench/run.py --backend openai_compat --category out_of_scope --concurrency 1
+python bench/run.py --backend openai_compat --split all --concurrency 1
+
+# Compare two runs of the same model (e.g. before/after a prompt change)
+python bench/run.py --compare bench/results/OLD.csv bench/results/NEW.csv
+```
+
+`--compare` lists the prompts that got better (fail → pass) or worse, and refuses runs from
+different models unless `--allow-different-models` is given. `--no-sim` skips the simulations,
+`--record` renders GIFs.
+
+`--backend fake` runs the benchmark offline. It has scripted answers for only a few prompts
+(the rest are recorded as "no fake response" and not counted), and its report starts with
+**FAKE BACKEND — scripted responses. Tests the benchmark itself only. Not a measure of design
+ability.** with no headline pass rate.
 
 ## Robot types
 
@@ -49,8 +129,8 @@ The requirements step picks `robot_type` and explains why in its assumptions:
 | `mobile` | travel and carry things on the body, never pick anything up | `wheeled_base` |
 | `mobile_manipulator` | travel and pick/place/handle objects | `wheeled_base`, `arm_chain` (with `mount_xy_m` on the chassis top), optional `gripper` |
 
-Anything else (flying, swimming, legged walking, climbing stairs) gets an assumption starting
-`OUT OF SCOPE:`; the pipeline stops before designing and writes `report.md` saying why
+Anything else (flying, swimming, legged walking, humanoids, climbing stairs), and anything
+meant to hurt people or animals, gets an assumption starting `OUT OF SCOPE:`; the pipeline stops before designing and writes `report.md` saying why
 (exit code 3).
 
 **Wheeled base**: `drive` `differential` (two driven wheels at x = +wheelbase/2, plus a caster at
@@ -96,7 +176,7 @@ requirements with assumptions; the controller table; and downloads of `spec.json
 | `src/taskbot/data/motors.json` | Motor catalog with a source for every value |
 | `src/taskbot/build_urdf.py` | `RobotSpec` → URDF; all mass and inertia computed here |
 | `src/taskbot/view.py` | Spec JSON → URDF → MuJoCo viewer |
-| `src/taskbot/llm.py` | `LLMClient.complete_json` + Anthropic, Ollama and fake backends |
+| `src/taskbot/llm.py` | `LLMClient.complete_json` + Anthropic, OpenAI-compatible, Ollama and fake backends |
 | `src/taskbot/requirements.py` | `Requirements` model and the prompt → requirements step |
 | `src/taskbot/design.py` | Requirements → `RobotSpec` step |
 | `src/taskbot/prompts/` | System prompts |
@@ -112,6 +192,7 @@ requirements with assumptions; the controller table; and downloads of `spec.json
 | `src/taskbot/fake.py` | Offline fake backend with canned arm, mobile and mobile-manipulator runs (`data/fake/`) |
 | `src/taskbot/export3d.py` | Final robot → GLB for the app's 3D view |
 | `src/taskbot/app.py` | Gradio app (`taskbot-app`) |
+| `src/taskbot/bench.py`, `bench/` | Evaluation benchmark: prompts, runner, reports, compare |
 | `examples/` | 2-, 4- and 6-DOF arms |
 
 ## Geometry conventions

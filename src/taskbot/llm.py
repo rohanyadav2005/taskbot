@@ -1,11 +1,14 @@
 """One interface for every LLM backend.
 
-    client = AnthropicClient()            # or OllamaClient(), FakeClient(...)
+    client = AnthropicClient()   # or OpenAICompatClient(), OllamaClient(), FakeClient(...)
     spec = client.complete_json(system, user, RobotSpec)
 
 `complete_json` asks for JSON, validates it against the Pydantic model, and on
 failure sends the validation errors back to the model and tries again.
 Backends only implement `_chat`, which turns a conversation into reply text.
+Rate-limit errors are retried with exponential backoff (honouring Retry-After).
+Each client counts its calls, tokens and JSON retries in `client.usage`.
+API keys are never put in messages, errors or `usage`.
 """
 
 from __future__ import annotations
@@ -13,10 +16,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -24,13 +31,24 @@ from pydantic import BaseModel, ValidationError
 T = TypeVar("T", bound=BaseModel)
 Message = dict[str, str]  # {"role": "user" | "assistant", "content": str}
 
-DEFAULT_MAX_RETRIES = 3
+DEFAULT_MAX_RETRIES = 3          # JSON validation retries per complete_json call
+DEFAULT_RATE_LIMIT_RETRIES = 4   # waits after a rate-limit error, per model call
+DEFAULT_BACKOFF_S = 2.0          # first wait; doubles each time (Retry-After wins if given)
+MAX_BACKOFF_S = 60.0
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
 DEFAULT_OLLAMA_MODEL = "qwen2.5:7b-instruct"
 
 
 class LLMError(RuntimeError):
     """The backend failed (network, auth, bad response)."""
+
+
+class LLMRateLimitError(LLMError):
+    """The provider said slow down (HTTP 429, or 503 overloaded). Retried with backoff."""
+
+    def __init__(self, message: str, retry_after_s: float | None = None):
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
 
 
 class LLMOutputError(LLMError):
@@ -40,14 +58,57 @@ class LLMOutputError(LLMError):
         super().__init__(
             f"no valid {schema.__name__} after {attempts} attempts; last error:\n{last_error}"
         )
+        self.schema_name = schema.__name__
         self.attempts = attempts
         self.last_error = last_error
         self.last_reply = last_reply
 
 
+@dataclass
+class Usage:
+    """What one client used: recorded per run in run.json and the report."""
+
+    provider: str
+    model: str
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    json_retries: int = 0       # replies that failed JSON/schema validation and were retried
+    rate_limit_waits: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    def as_dict(self) -> dict:
+        return asdict(self) | {"total_tokens": self.total_tokens}
+
+
 class LLMClient(ABC):
-    def __init__(self, max_retries: int = DEFAULT_MAX_RETRIES):
+    provider = "unknown"
+
+    def __init__(self, max_retries: int = DEFAULT_MAX_RETRIES,
+                 rate_limit_retries: int = DEFAULT_RATE_LIMIT_RETRIES,
+                 backoff_s: float = DEFAULT_BACKOFF_S):
         self.max_retries = max_retries
+        self.rate_limit_retries = rate_limit_retries
+        self.backoff_s = backoff_s
+        self.usage = Usage(self.provider, "")
+        self._sleep = time.sleep  # replaced in tests
+
+    def _call(self, system: str, messages: list[Message], schema: type[BaseModel]) -> str:
+        """`_chat`, waiting and retrying on rate-limit errors."""
+        for attempt in range(self.rate_limit_retries + 1):
+            try:
+                self.usage.calls += 1
+                return self._chat(system, messages, schema)
+            except LLMRateLimitError as exc:
+                if attempt == self.rate_limit_retries:
+                    raise
+                wait = exc.retry_after_s if exc.retry_after_s is not None else self.backoff_s * 2**attempt
+                self.usage.rate_limit_waits += 1
+                self._sleep(min(max(wait, 0.0), MAX_BACKOFF_S))
+        raise AssertionError("unreachable")
 
     @abstractmethod
     def _chat(self, system: str, messages: list[Message], schema: type[BaseModel]) -> str:
@@ -67,7 +128,7 @@ class LLMClient(ABC):
         messages: list[Message] = [{"role": "user", "content": user}]
         attempts = self.max_retries + 1
         for attempt in range(1, attempts + 1):
-            reply = self._chat(system, messages, schema)
+            reply = self._call(system, messages, schema)
             try:
                 data = extract_json(reply)
                 return schema.model_validate(data, context=dict(context or {}))
@@ -75,6 +136,7 @@ class LLMClient(ABC):
                 error = describe_error(exc)
             if attempt == attempts:
                 raise LLMOutputError(schema, attempts, error, reply)
+            self.usage.json_retries += 1
             messages += [
                 {"role": "assistant", "content": reply},
                 {"role": "user", "content": retry_message(schema, error)},
@@ -125,6 +187,8 @@ def retry_message(schema: type[BaseModel], error: str) -> str:
 class AnthropicClient(LLMClient):
     """Anthropic Messages API. Reads ANTHROPIC_API_KEY from the environment."""
 
+    provider = "anthropic"
+
     def __init__(
         self,
         model: str | None = None,
@@ -134,6 +198,7 @@ class AnthropicClient(LLMClient):
     ):
         super().__init__(max_retries)
         self.model = model or os.environ.get("TASKBOT_MODEL", DEFAULT_ANTHROPIC_MODEL)
+        self.usage.model = self.model
         self.max_tokens = max_tokens
         if sdk_client is None:
             if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -154,12 +219,20 @@ class AnthropicClient(LLMClient):
                 messages=messages,
             )
         except Exception as exc:  # SDK raises many types; surface them uniformly
+            if getattr(exc, "status_code", None) in (429, 529) or type(exc).__name__ == "RateLimitError":
+                raise LLMRateLimitError(f"Anthropic rate limit: {exc}") from exc
             raise LLMError(f"Anthropic API call failed: {exc}") from exc
+        u = getattr(resp, "usage", None)
+        self.usage.input_tokens += int(getattr(u, "input_tokens", 0) or 0)
+        self.usage.output_tokens += int(getattr(u, "output_tokens", 0) or 0)
         return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 
 
 class OllamaClient(LLMClient):
-    """Local model through Ollama's /api/chat in JSON mode."""
+    """Local model through Ollama's /api/chat in JSON mode. (Ollama also serves the
+    OpenAI-compatible API at /v1, usable through OpenAICompatClient.)"""
+
+    provider = "ollama"
 
     def __init__(
         self,
@@ -173,6 +246,7 @@ class OllamaClient(LLMClient):
         host = host or os.environ.get("OLLAMA_HOST", "http://localhost:11434")
         self.host = (host if "://" in host else f"http://{host}").rstrip("/")
         self.timeout_s = timeout_s
+        self.usage.model = self.model
 
     def _chat(self, system: str, messages: list[Message], schema: type[BaseModel]) -> str:
         body = {
@@ -193,9 +267,108 @@ class OllamaClient(LLMClient):
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise LLMError(f"Ollama call to {self.host} failed: {exc}") from exc
         try:
-            return payload["message"]["content"]
+            content = payload["message"]["content"]
         except (KeyError, TypeError) as exc:
             raise LLMError(f"unexpected Ollama response: {payload!r:.200}") from exc
+        self.usage.input_tokens += int(payload.get("prompt_eval_count") or 0)
+        self.usage.output_tokens += int(payload.get("eval_count") or 0)
+        return content
+
+
+class OpenAICompatClient(LLMClient):
+    """Any OpenAI-compatible /chat/completions endpoint: Ollama (/v1), Groq, Gemini,
+    OpenRouter, vLLM, ...
+
+    Configured from the environment (arguments override):
+        TASKBOT_BASE_URL   e.g. http://localhost:11434/v1
+        TASKBOT_MODEL      e.g. qwen2.5:7b-instruct
+        TASKBOT_API_KEY    optional (local Ollama needs none); sent as a Bearer token only
+        TASKBOT_JSON_MODE  "0" to never ask for JSON mode
+        TASKBOT_TIMEOUT_S  per request, default 120
+
+    JSON mode (response_format json_object) is requested by default; if the provider
+    rejects that parameter, it is dropped for the rest of the run and the reply is left
+    to Pydantic validation and the usual retries.
+    """
+
+    provider = "openai_compat"
+
+    def __init__(
+        self,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        timeout_s: float | None = None,
+        json_mode: bool | None = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        rate_limit_retries: int = DEFAULT_RATE_LIMIT_RETRIES,
+        backoff_s: float = DEFAULT_BACKOFF_S,
+    ):
+        super().__init__(max_retries, rate_limit_retries, backoff_s)
+        self.base_url = (base_url or os.environ.get("TASKBOT_BASE_URL") or "").rstrip("/")
+        if not self.base_url:
+            raise LLMError("TASKBOT_BASE_URL is not set (e.g. http://localhost:11434/v1 for Ollama)")
+        self.model = model or os.environ.get("TASKBOT_MODEL") or ""
+        if not self.model:
+            raise LLMError("TASKBOT_MODEL is not set (the provider's model name)")
+        self._api_key = (api_key if api_key is not None else os.environ.get("TASKBOT_API_KEY")) or None
+        self.json_mode = (json_mode if json_mode is not None
+                          else os.environ.get("TASKBOT_JSON_MODE", "1") != "0")
+        self.timeout_s = timeout_s or float(os.environ.get("TASKBOT_TIMEOUT_S", "120"))
+        host = urllib.parse.urlsplit(self.base_url).netloc or self.base_url
+        self.usage = Usage(f"openai_compat ({host})", self.model)
+
+    def __repr__(self) -> str:  # never show the key
+        return (f"OpenAICompatClient(base_url={self.base_url!r}, model={self.model!r}, "
+                f"api_key={'set' if self._api_key else 'none'})")
+
+    def _redact(self, text: str) -> str:
+        return text.replace(self._api_key, "***") if self._api_key else text
+
+    def _chat(self, system: str, messages: list[Message], schema: type[BaseModel]) -> str:
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": system}, *messages],
+            "temperature": 0.2,
+        }
+        if self.json_mode:
+            body["response_format"] = {"type": "json_object"}
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        url = f"{self.base_url}/chat/completions"
+        req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            text = self._redact(exc.read().decode("utf-8", "replace"))[:400]
+            if exc.code in (429, 503):
+                retry = exc.headers.get("Retry-After") if exc.headers else None
+                try:
+                    retry_s = float(retry) if retry is not None else None
+                except ValueError:
+                    retry_s = None
+                raise LLMRateLimitError(f"{exc.code} from {url}: {text}", retry_s) from None
+            if exc.code == 400 and self.json_mode and "response_format" in text.lower():
+                self.json_mode = False  # provider doesn't take JSON mode; rely on validation
+                return self._chat(system, messages, schema)
+            raise LLMError(f"HTTP {exc.code} from {url}: {text}") from None
+        except (TimeoutError, socket.timeout) as exc:
+            raise LLMError(f"{url} timed out after {self.timeout_s:g} s") from exc
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+                raise LLMError(f"{url} timed out after {self.timeout_s:g} s") from None
+            raise LLMError(f"can't reach {url}: {self._redact(str(exc.reason))}") from None
+        try:
+            payload = json.loads(raw)
+            content = payload["choices"][0]["message"]["content"] or ""
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+            raise LLMError(f"unexpected response from {url}: {self._redact(raw.decode('utf-8', 'replace'))[:200]}") from None
+        u = payload.get("usage") or {}
+        self.usage.input_tokens += int(u.get("prompt_tokens") or 0)
+        self.usage.output_tokens += int(u.get("completion_tokens") or 0)
+        return content
 
 
 Responder = Callable[[str, list[Message], type[BaseModel]], str]
@@ -215,6 +388,7 @@ class FakeClient(LLMClient):
         max_retries: int = DEFAULT_MAX_RETRIES,
     ):
         super().__init__(max_retries)
+        self.usage = Usage("fake", "scripted")
         self._replies = {k: (v if callable(v) else list(v)) for k, v in replies.items()}
         self.calls: list[tuple[str, list[Message], str]] = []
 
@@ -238,4 +412,6 @@ def make_client(backend: str, model: str | None = None) -> LLMClient:
         return AnthropicClient(model=model)
     if backend == "ollama":
         return OllamaClient(model=model)
-    raise ValueError(f"unknown backend '{backend}' (use anthropic or ollama)")
+    if backend == "openai_compat":
+        return OpenAICompatClient(model=model)
+    raise ValueError(f"unknown backend '{backend}' (use anthropic, openai_compat or ollama)")

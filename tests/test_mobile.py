@@ -331,7 +331,7 @@ def test_out_of_scope_stops_without_a_design(tmp_path):
                  "--out", str(tmp_path)])
     assert code == 3
     (out,) = tmp_path.iterdir()
-    assert sorted(p.name for p in out.iterdir()) == ["report.md", "requirements.json"]
+    assert sorted(p.name for p in out.iterdir()) == ["report.md", "requirements.json", "run.json"]
     report = (out / "report.md").read_text()
     assert "OUT OF SCOPE: no design was made" in report and "fly" in report
 

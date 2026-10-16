@@ -187,13 +187,26 @@ def write_out_of_scope(req, out_root: Path) -> Path:
     import re
 
     slug = re.sub(r"[^A-Za-z0-9]+", "_", req.task_summary.lower()).strip("_")[:40] or "out_of_scope"
+    return _write_no_design(req, out_root, slug,
+                            "OUT OF SCOPE: no design was made. TaskBot designs fixed arms and wheeled "
+                            "robots; this task needs something else.", req.out_of_scope,
+                            "Requirements (best attempt, for reference)")
+
+
+def write_design_failed(req, out_root: Path, error: str) -> Path:
+    """out/<task>/{requirements.json, report.md} when the model never produced a valid design."""
+    return _write_no_design(req, out_root, "invalid_design",
+                            "FAILED: the model never produced a valid design (JSON that matches the "
+                            "schema), so nothing was checked.", [error], "Requirements")
+
+
+def _write_no_design(req, out_root: Path, slug: str, headline: str, reasons: list[str],
+                     req_title: str) -> Path:
     out = unique_dir(out_root, slug)
     out.mkdir(parents=True)
     (out / "requirements.json").write_text(req.model_dump_json(indent=2) + "\n", "utf-8")
-    lines = [f"# Design report: {slug}", "",
-             "**OUT OF SCOPE: no design was made. TaskBot designs fixed arms and wheeled robots; "
-             "this task needs something else.**", "", "Why:", *[f"- {_cell(a)}" for a in req.out_of_scope],
-             "", "## Requirements (best attempt, for reference)", "", *requirements_rows(req)]
+    lines = [f"# Design report: {slug}", "", f"**{headline}**", "", "Why:",
+             *[f"- {_cell(a)}" for a in reasons], "", f"## {req_title}", "", *requirements_rows(req)]
     (out / "report.md").write_text("\n".join(lines) + "\n", "utf-8")
     return out
 

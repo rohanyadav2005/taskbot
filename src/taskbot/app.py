@@ -42,6 +42,8 @@ def _requirements_md(result: PipelineResult) -> str:
 
 
 def _summary_md(result: PipelineResult) -> str:
+    if result.error is not None:
+        return f"### FAILED: the model never produced a valid design\n\n```\n{result.error}\n```"
     if result.outcome is None:
         return ("### OUT OF SCOPE: no design was made\n\n"
                 + "\n".join(f"- {r}" for r in result.out_of_scope))
@@ -119,7 +121,9 @@ def build_app():
                 prompt = gr.Textbox(label="What must the robot do?", lines=2, value=EXAMPLES[2])
                 gr.Examples(EXAMPLES, inputs=prompt)
             with gr.Column(scale=1):
-                backend = gr.Radio(list(BACKENDS[::-1]), value="fake", label="Backend")
+                backend = gr.Radio(list(BACKENDS[::-1]), value="fake", label="Backend",
+                                   info="openai_compat reads TASKBOT_BASE_URL, TASKBOT_MODEL and "
+                                        "TASKBOT_API_KEY from the environment")
                 record = gr.Checkbox(value=False, label="Record simulation GIFs (slow without a GPU)")
                 go = gr.Button("Design", variant="primary")
         summary = gr.Markdown()

@@ -1,0 +1,83 @@
+# Holdout prompts: same format and categories as prompts.yaml, reported separately.
+# Do not look at these results (or use these prompts) while improving the system
+# prompts; run them only to measure the final version (--split holdout or all).
+
+- id: holdout_easy_arm_tea_bag
+  category: easy_arm
+  prompt: Dip a tea bag in my mug and take it out after three minutes
+  expect:
+    robot_type: arm
+    min_reach_m: 0.15
+    payload_kg: [0.0, 0.2]
+    tolerance_m: [0.002, 0.02]
+
+- id: holdout_easy_arm_seedlings
+  category: easy_arm
+  prompt: Water the seedlings in a 40 by 30 cm tray on my desk with a small spray bottle
+  expect:
+    robot_type: arm
+    min_reach_m: 0.25
+    payload_kg: [0.1, 1.0]
+    tolerance_m: [0.002, 0.02]
+
+- id: holdout_hard_arm_beads
+  category: hard_arm
+  prompt: Place 5 mm beads one by one onto the pegs of a bead pattern board
+  expect:
+    robot_type: arm
+    min_reach_m: 0.15
+    payload_kg: [0.0, 0.1]
+    tolerance_m: [0.0003, 0.002]
+
+- id: holdout_hard_arm_dumbbells
+  category: hard_arm
+  prompt: Put my two 2 kg dumbbells back on the rack next to my bench after each workout
+  expect:
+    robot_type: arm
+    min_reach_m: 0.3
+    payload_kg: [2.0, 3.5]
+    tolerance_m: [0.005, 0.05]
+
+- id: holdout_mobile_toolbox
+  category: mobile
+  prompt: Follow me around the garage carrying my 3 kg toolbox
+  expect:
+    robot_type: mobile
+    base_payload_kg: [3.0, 5.0]
+
+- id: holdout_mm_shoes
+  category: mobile_manipulator
+  prompt: Pick up the shoes left in the hallway and put them on the shoe rack by the door
+  expect:
+    robot_type: mobile_manipulator
+    min_reach_m: 0.2
+    payload_kg: [0.2, 1.5]
+    tolerance_m: [0.005, 0.05]
+
+- id: holdout_mm_dog_toys
+  category: mobile_manipulator
+  prompt: Gather my dog's chew toys from around the back lawn into her toy box
+  expect:
+    robot_type: mobile_manipulator
+    min_reach_m: 0.2
+    payload_kg: [0.05, 0.6]
+    tolerance_m: [0.005, 0.05]
+    terrain: outdoor
+
+- id: holdout_vague_office
+  category: vague
+  prompt: a robot for my office
+  expect:
+    should_reject: false
+
+- id: holdout_oos_pool_walls
+  category: out_of_scope
+  prompt: A robot that swims along the walls of my swimming pool scrubbing off algae
+  expect:
+    should_reject: true
+
+- id: holdout_oos_biped_greeter
+  category: out_of_scope
+  prompt: A robot that walks on two legs to the front door to greet my guests
+  expect:
+    should_reject: true
