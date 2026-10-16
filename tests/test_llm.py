@@ -163,8 +163,9 @@ def test_design_prompt_has_schema_and_catalog_inserted():
     assert "{schema}" not in system and "{motors}" not in system
     assert system.startswith("You are a robot designer.")
     assert '"fixed_base"' in system and '"arm_chain"' in system
-    for motor_id in CATALOG:
-        assert f'"{motor_id}"' in system
+    for motor_id, motor in CATALOG.items():
+        assert (f'"{motor_id}"' in system) == motor.supported, motor_id  # unsupported motors hidden
+    assert '"nema17_pg27"' not in system
     assert "rated_torque_nm" in system
     assert "sources" not in system  # citations stay out of the prompt
 

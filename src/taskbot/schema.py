@@ -79,6 +79,16 @@ class Motor(_Strict):
         default_factory=dict,
         description="Where each value came from, keyed by field name.",
     )
+    supported: bool = Field(
+        default=True, description="False: the simulator can't model this motor faithfully, so "
+        "the designer isn't offered it.")
+    unsupported_reason: str | None = None
+
+    @model_validator(mode="after")
+    def _unsupported_needs_reason(self) -> Motor:
+        if not self.supported and not self.unsupported_reason:
+            raise ValueError(f"motor {self.id}: unsupported motors need an unsupported_reason")
+        return self
 
     @model_validator(mode="after")
     def _kind_fields(self) -> Motor:
@@ -105,6 +115,11 @@ class Motor(_Strict):
                 f"exceeds stall_torque_nm ({self.stall_torque_nm})"
             )
         return self
+
+
+def supported_motors(catalog: dict[str, Motor]) -> dict[str, Motor]:
+    """The motors a designer may choose from."""
+    return {k: m for k, m in catalog.items() if m.supported}
 
 
 @lru_cache(maxsize=1)

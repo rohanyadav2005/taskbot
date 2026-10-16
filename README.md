@@ -130,3 +130,15 @@ Compliance failures include a per-joint stiffness breakdown and the fix options 
 bringing the load closer to the base).
 
 Physics runs at 1 ms.
+
+## Known limits / future work
+
+- **No velocity feedforward.** Joints track moves with the motors' factory position loops plus
+  gravity feedforward only, so they run behind the planned timing (back-EMF drag ÷ Kp). That lag
+  is reported in `reach_targets` / `carry_payload` messages but never fails a test.
+- **The PID integral winds up during moves.** With `"control": "pid"` the integral runs all the
+  time, so tracking error during a move builds it up and leaves a few mm of error after the move.
+  Future: integrate only while holding.
+- **Steppers are not modelled.** The simulator treats a stepper as a PD servo; real steppers hold
+  stiffly and then skip steps under overload. Steppers are marked `"supported": false` in
+  `motors.json`, so the designer is never offered them; existing designs that use one still load.

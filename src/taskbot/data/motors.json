@@ -200,7 +200,9 @@
         "price_usd": "VXB regular price US$99.99 (listing pricing inconsistent; StepperOnline is usually cheaper)",
         "no_load_speed_rad_s": "VXB listing: ~7 rpm output, taken as no-load speed. A stepper's torque falls with speed along its pull-out curve, not linearly, so the linear torque-speed model is approximate here",
         "pull_out_curve": "none published in the VXB/Sigmanortec listings; the simulator's stepper approximation is used (flat rated torque to 50% of no-load speed, then linear to 0)"
-      }
+      },
+      "supported": false,
+      "unsupported_reason": "stepper modeled as PD servo; real steppers hold stiffly then skip steps — not modeled"
     }
   ]
 }

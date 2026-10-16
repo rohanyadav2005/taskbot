@@ -18,7 +18,7 @@ from taskbot.llm import FakeClient, LLMClient, LLMError, make_client
 from taskbot.repair import DEFAULT_MAX_ROUNDS, RepairOutcome, repair_loop
 from taskbot.report import verdict, write_outputs
 from taskbot.requirements import OUT_OF_SCOPE_PREFIX, extract_requirements
-from taskbot.schema import ArmChain, Gripper, Motor, load_motor_catalog
+from taskbot.schema import ArmChain, Gripper, Motor, load_motor_catalog, supported_motors
 
 BACKENDS = ("anthropic", "ollama", "fake")
 
@@ -80,7 +80,7 @@ def fake_client(catalog: dict[str, Motor]) -> FakeClient:
 
 
 def get_client(backend: str, model: str | None, catalog: dict[str, Motor]) -> LLMClient:
-    return fake_client(catalog) if backend == "fake" else make_client(backend, model)
+    return fake_client(supported_motors(catalog)) if backend == "fake" else make_client(backend, model)
 
 
 def summarize(outcome: RepairOutcome, catalog: dict[str, Motor], out: Path) -> str:

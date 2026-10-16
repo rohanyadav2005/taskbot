@@ -13,7 +13,7 @@ from taskbot.design import design_robot, design_system_prompt
 from taskbot.llm import LLMClient, LLMError
 from taskbot.prompts import load_prompt
 from taskbot.requirements import Requirements
-from taskbot.schema import Motor, RobotSpec, load_motor_catalog
+from taskbot.schema import Motor, RobotSpec, load_motor_catalog, supported_motors
 from taskbot.sim_tests import SIM_TESTS, SimRun, run_sim_tests
 
 DEFAULT_MAX_ROUNDS = 5
@@ -96,7 +96,7 @@ def repair_loop(
         try:
             spec = client.complete_json(
                 system, repair_prompt(spec, req, rnd.failures), RobotSpec,
-                context={"motor_ids": set(catalog)},
+                context={"motor_ids": set(supported_motors(catalog))},
             )
         except LLMError as exc:
             outcome.stop_reason = f"repair request after round {number} failed: {exc}"

@@ -167,3 +167,34 @@ def test_rated_torque_above_stall_rejected():
     m["rated_torque_nm"] = m["stall_torque_nm"] * 2
     with pytest.raises(ValidationError, match="exceeds stall_torque_nm"):
         Motor(**m)
+
+
+def test_steppers_are_unsupported_with_a_reason():
+    from taskbot.schema import supported_motors
+
+    catalog = load_motor_catalog()
+    nema = catalog["nema17_pg27"]
+    assert not nema.supported and "skip steps" in nema.unsupported_reason
+    assert "nema17_pg27" not in supported_motors(catalog)
+    assert all(m.supported for m in catalog.values() if m.kind != "stepper")
+
+
+def test_unsupported_motor_needs_a_reason():
+    data = load_motor_catalog()["sts3215"].model_dump() | {"supported": False}
+    with pytest.raises(ValidationError, match="unsupported_reason"):
+        Motor(**data)
+
+
+def test_design_step_rejects_unsupported_motors(desk_req):
+    import json
+
+    from conftest import example_dict, with_motor
+    from taskbot.design import design_robot
+    from taskbot.llm import FakeClient, LLMOutputError
+
+    nema = with_motor(example_dict("arm_4dof"), "shoulder_pitch", "nema17_pg27")
+    fake = FakeClient({"RobotSpec": [nema] * 4})
+    with pytest.raises(LLMOutputError, match="unknown motor_id 'nema17_pg27'"):
+        design_robot(fake, desk_req, load_motor_catalog())
+    assert json.dumps(nema)  # the same spec still loads outside the design step
+    RobotSpec.model_validate(nema)
