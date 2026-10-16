@@ -85,7 +85,7 @@ def test_dynamixel_gains_come_from_factory_values():
     xl = motor_model(CATALOG["xl430_w250"])  # P=640 D=4000, stall 1.5
     assert xl.kp == pytest.approx(640 / 128 * 1.5 / 885 * 4096 / (2 * math.pi))
     assert xl.kd == pytest.approx(4000 / 16 * 1.5 / 885 * 4096 / (2 * math.pi) / 1000)
-    assert "P=640 I=0 D=4000" in xl.gain_source
+    assert xl.gain_source == "Dynamixel factory gains P=640 D=4000, I=0 (pd)"
 
 
 def test_hobby_and_stepper_use_one_conservative_setting():
@@ -116,7 +116,8 @@ def test_report_lists_controller_settings(two_round_outcome):
     assert "## Controller settings (round 2 design)" in report
     assert "never tuned per test" in report
     assert re.search(r"\| shoulder_pitch \| xm540_w270 \| 48\.8 \| 0 \| 0 \| 3\.38 \| 3\.53 / 10\.6 \|", report)
-    assert "Dynamixel factory gains P=640 I=0 D=4000" in report
+    assert "Dynamixel factory gains P=640 D=4000, I=0 (pd)" in report
+    assert "**Control mode: pd** (factory position loops, no integral term)" in report
 
 
 # --------------------------------------------------------------------------- hold_still criteria
@@ -125,13 +126,17 @@ def test_report_lists_controller_settings(two_round_outcome):
 def test_hold_reports_peak_and_final_separately(strong_runs):
     msg = strong_runs["hold_still"].result.message
     peak, final = map(int, re.search(r"peak deviation (\d+) µm .* final error (\d+) µm", msg).groups())
-    assert peak >= final > 1000  # fails on final error (> 1 mm) ...
-    assert peak < 5000           # ... not on peak
+    assert peak >= final > 1000
 
 
-def test_hold_passes_only_when_final_under_1mm_and_peak_under_5mm(light_req):
-    result = hold_still(spec_of(strong_arm()), light_req, CATALOG).result
-    assert result.passed and result.value < 0.001 and result.limit == 0.001
+def test_hold_limits_come_from_task_tolerance(strong_runs, desk_req):
+    # Same physics (strong arm, 0.25 kg, ~2.15 mm steady sag), judged against two tolerances.
+    loose = strong_runs["hold_still"].result  # 10 mm task
+    assert loose.passed and loose.limit == 0.01 and "(limit 30000 µm)" in loose.message
+    tight = hold_still(spec_of(strong_arm()), desk_req.model_copy(update={"position_tolerance_m": 0.002}),
+                       CATALOG, payload_mass_error=0.2).result
+    assert not tight.passed and tight.limit == 0.002 and tight.cause == "compliance"
+    assert tight.value == pytest.approx(loose.value)
 
 
 # --------------------------------------------------------------------------- causes
@@ -142,7 +147,7 @@ def test_repair_prompt_explains_every_cause_in_one_line():
     for cause in CAUSE_ADVICE:
         lines = [l for l in prompt.splitlines() if l.strip().startswith(f"- {cause}:")]
         assert len(lines) == 1, cause
-    assert "a stronger motor will not help" in prompt
+    assert 'setting "control": "pid"' in prompt and "stronger motor will not help" not in prompt
 
 
 def test_failures_sent_to_llm_carry_their_cause(desk_req):
@@ -185,3 +190,81 @@ def test_nema17_shoulder_passes_torque_at_speed_after_stepper_fix(desk_req):
     (r,) = torque_at_speed(spec, desk_req, build_model(spec))
     assert r.passed
     assert re.search(r"shoulder_pitch holds 1\.04 Nm .* motor nema17_pg27 gives 1\.2 Nm", r.message)
+
+
+# --------------------------------------------------------------------------- Task 4.3: tolerance, pid, options
+
+
+def test_requirements_need_a_tolerance_and_its_reason(desk_req):
+    from pydantic import ValidationError
+
+    from conftest import DESK_REQ
+    from taskbot.requirements import Requirements, requirements_system_prompt
+
+    for missing in ("position_tolerance_m", "tolerance_reason"):
+        with pytest.raises(ValidationError, match=missing):
+            Requirements(**{k: v for k, v in DESK_REQ.items() if k != missing})
+    with pytest.raises(ValidationError):
+        Requirements(**(DESK_REQ | {"position_tolerance_m": 0.0}))
+    prompt = requirements_system_prompt()
+    assert "use 5 mm and add that guess to assumptions" in prompt and "M3 screws ~2 mm" in prompt
+
+
+def test_control_defaults_to_pd_and_only_accepts_pd_or_pid():
+    from pydantic import ValidationError
+
+    assert spec_of(strong_arm()).control == "pd"
+    assert spec_of(strong_arm() | {"control": "pid"}).control == "pid"
+    with pytest.raises(ValidationError):
+        spec_of(strong_arm() | {"control": "lqr"})
+
+
+def test_pid_is_one_fixed_preset_and_only_for_dynamixels():
+    from taskbot.sim.motor import PID_PRESET_DYNAMIXEL_I
+
+    assert PID_PRESET_DYNAMIXEL_I == 100
+    for mid in ("xl430_w250", "xm430_w350", "xm540_w270"):
+        pd, pid = motor_model(CATALOG[mid], "pd"), motor_model(CATALOG[mid], "pid")
+        assert pd.ki == 0 and (pid.kp, pid.kd) == (pd.kp, pd.kd)
+        stall = CATALOG[mid].stall_torque_nm
+        assert pid.ki == pytest.approx(100 / 65536 * stall / 885 * 4096 / (2 * math.pi) / 0.001)
+        assert "I=100 (pid preset, conversion unverified)" in pid.gain_source
+    for mid in ("mg996r", "nema17_pg27"):
+        pid = motor_model(CATALOG[mid], "pid")
+        assert pid.ki == 0 and "pid not available on this motor" in pid.gain_source
+
+
+def test_pid_removes_steady_sag(strong_runs, desk_req):
+    pd_final = strong_runs["hold_still"].result.value
+    pid = hold_still(spec_of(strong_arm() | {"control": "pid"}), desk_req, CATALOG).result
+    assert pid.value < 0.5 * pd_final
+
+
+def test_compliance_message_ranks_options_from_the_stiffness_breakdown(desk_req):
+    tight = desk_req.model_copy(update={"position_tolerance_m": 0.002})
+    msg = hold_still(spec_of(strong_arm()), tight, CATALOG).result.message
+    assert "Sag by joint position-loop stiffness: wrist_pitch (xl430_w250, Kp 5.52 Nm/rad)" in msg
+    options = msg.split("Options, most promising first: ")[1]
+    # steady sag spread over Dynamixel joints: pid first, then a stiffer wrist motor, then geometry
+    assert re.match(r'1\) control "pid" .*; 2\) a stiffer motor on wrist_pitch: .*xm430_w350 \(Kp 18\.9\)'
+                    r'; 3\) shorter or lighter links .*; 4\) bringing the load closer to the base', options)
+    assert "will not help" not in msg
+
+
+def test_compliance_options_drop_pid_when_already_pid(desk_req):
+    tight = desk_req.model_copy(update={"position_tolerance_m": 0.0005})
+    result = hold_still(spec_of(strong_arm() | {"control": "pid"}), tight, CATALOG).result
+    assert not result.passed and result.cause == "compliance"
+    assert 'control "pid"' not in result.message.split("Options")[1]
+
+
+def test_report_shows_pid_mode(two_round_outcome):
+    from taskbot.repair import Round, RepairOutcome
+
+    outcome = two_round_outcome[0]
+    last = outcome.final
+    pid_spec = last.spec.model_copy(update={"control": "pid"})
+    report = render_report(RepairOutcome(outcome.requirements, outcome.max_rounds,
+                                         [Round(last.number, pid_spec, last.results)]))
+    assert "**Control mode: pid** (one fixed integral preset on Dynamixels: Position I Gain 100" in report
+    assert "I=100 (pid preset, conversion unverified)" in report

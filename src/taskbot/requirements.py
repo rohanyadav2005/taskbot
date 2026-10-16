@@ -52,6 +52,12 @@ class Requirements(BaseModel):
         default=None, description="Required when gripper_needed is true; null otherwise."
     )
     max_budget_usd: PositiveFloat | None = None
+    position_tolerance_m: float = Field(
+        gt=0, le=0.1,
+        description="How precisely the tool must be placed for this task (m), e.g. ~0.01 to water "
+        "a plant, ~0.002 to pick M3 screws. Use 0.005 if unclear and say so in assumptions.",
+    )
+    tolerance_reason: str = Field(min_length=1, description="Why the task needs this precision.")
     min_joint_range_rad: PositiveFloat = Field(
         default=math.pi / 2,
         description="Smallest allowed range for any revolute joint. Default 90°; "

@@ -90,9 +90,13 @@ Generated from the requirements; run only after every static check passes.
 
 | Test | What happens | Passes when |
 |---|---|---|
-| `reach_targets` | IK to the workspace centre and 8 corners; a minimum-jerk move to each | Every target: error < 1 cm by move end + 1 s and staying there, overshoot ≤ 2 cm |
+| `reach_targets` | IK to the workspace centre and 8 corners; a minimum-jerk move to each | Every target: error < tol by move end + 1 s and staying there, path deviation < 3 tol, overshoot < 2 tol |
 | `carry_payload` | Same moves with a `payload_kg` cube welded to the tool | As above, and no joint saturates for > 0.2 s |
-| `hold_still` | Hold the target pose with the highest torque load, with payload, for 5 s | Final error < 1 mm and peak deviation < 5 mm (reported in µm) |
+| `hold_still` | Hold the target pose with the highest torque load, with payload, for 5 s | Final error < tol, peak deviation < 3 tol (reported in µm) |
+
+`tol` is the requirements' `position_tolerance_m`: the precision the task needs, estimated by the
+LLM with a reason (5 mm when unclear). Path deviation is the distance between the tool and where
+the planned joint trajectory puts it at that instant.
 
 **Motors** (`taskbot/sim/motor.py`). Driving torque at speed w: servos and Dynamixels
 `min(rated, stall · max(0, 1 − |w|/w0))`; steppers use their pull-out curve if the catalog has one,
@@ -113,9 +117,15 @@ setting (stall torque at 20° error, no D or I). Every motor has back-EMF dampin
 (steppers `rated/w0`), applied with the D term as MuJoCo joint damping. A host-side gravity
 feedforward believes the payload is 20% lighter than it is ("ideal" report rows use the true mass).
 
-**hold_still** reports peak deviation and final error in µm and passes on final < 1 mm and peak < 5 mm.
+**Control mode** is a design choice, `"control": "pd"` (default) or `"pid"`. "pid" adds one fixed
+integral preset on Dynamixels (raw Position I Gain 100, the dynamixel_hardware_interface example
+value; its conversion to N·m/(rad·s) assumes a 1 ms firmware cycle, unverified). Hobby servos and
+steppers have no integral term either way.
 
 **Failure causes.** Every sim failure (and the torque/speed static checks) carries a `cause`:
 `saturated`, `speed_limited`, `compliance` or `unreachable`, explained to the LLM in `prompts/repair.md`.
+Compliance failures include a per-joint stiffness breakdown and the fix options ranked by it
+(a stiffer motor on the joint that sags most, "pid", shorter or lighter outer links, or
+bringing the load closer to the base).
 
 Physics runs at 1 ms.

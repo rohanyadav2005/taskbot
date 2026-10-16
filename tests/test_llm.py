@@ -33,6 +33,8 @@ REQ = {
     "dof_min": 4,
     "gripper_needed": True,
     "gripper_kind": "parallel",
+    "position_tolerance_m": 0.01,
+    "tolerance_reason": "a mug only needs to land on the desk",
     "assumptions": ["a mug weighs about 0.2 kg; +25% margin"],
 }
 

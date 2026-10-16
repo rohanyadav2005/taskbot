@@ -15,7 +15,7 @@ from taskbot.sim.model import build_scene
 from taskbot.sim.plan import plan_moves
 from taskbot import sim_tests
 from taskbot.sim_tests import (
-    OVERSHOOT_MAX_M,
+    OVERSHOOT_FACTOR,
     SimMeasurementError,
     _MoveResult,
     carry_payload,
@@ -115,8 +115,8 @@ def test_mass_error_is_applied_and_ideal_result_kept(strong_runs):
     assert "controller assumes 0.2 kg" in run.result.message
     assert run.ideal is not None and "controller knows the mass" in run.ideal.message
     assert run.result.value > 100 * max(run.ideal.value, 1e-6)  # the wrong mass really makes it sag
-    assert re.search(r"peak deviation \d+ µm \(limit 5000 µm\), final error \d+ µm \(limit 1000 µm\)",
-                     run.result.message)
+    assert re.search(r"peak deviation \d+ µm \(limit 30000 µm\), final error \d+ µm \(limit 10000 µm, "
+                     r"the task tolerance\)", run.result.message)
 
 
 def test_controller_believes_lighter_payload():
@@ -138,26 +138,33 @@ def test_zero_drift_raises(desk_req, monkeypatch):
 
 
 def move(**kw):
-    base = dict(label="corner", ik_error=0.0, duration=2.0, final_error=0.001, overshoot=0.0, settle_s=1.6)
+    base = dict(label="corner", tol=0.01, ik_error=0.0, duration=2.0, final_error=0.001, overshoot=0.0,
+                settle_s=1.6, peak_dev=0.005, final_contrib=np.zeros(4), peak_contrib=np.zeros(4))
     return _MoveResult(**(base | kw))
 
 
-def test_overshoot_over_2_cm_fails_even_if_it_settles():
+def test_overshoot_over_2x_tolerance_fails_even_if_it_settles():
     assert move().failures == []
-    assert move(overshoot=OVERSHOOT_MAX_M + 0.001).failures == ["overshot by 2.1 cm (limit 2 cm)"]
+    assert move(overshoot=OVERSHOOT_FACTOR * 0.01 + 0.001).failures == ["overshot by 21 mm (limit 20 mm)"]
+    assert move(tol=0.002, final_error=0.001, overshoot=0.0045).failures == ["overshot by 4.5 mm (limit 4 mm)"]
 
 
 def test_late_settling_fails_even_if_final_error_is_small():
     late = move(settle_s=3.2)  # deadline is duration + 1 s = 3.0 s
     assert late.failures == ["settled after 3.20 s, later than the 3.00 s deadline"]
     assert move(settle_s=None, final_error=0.03).failures == [
-        "never settled within 1 cm (final error 3.0 cm)"]
+        "never settled within 10 mm (final error 30 mm)"]
+
+
+def test_path_deviation_over_3x_tolerance_fails():
+    assert move(peak_dev=0.031).failures == ["strayed 31 mm from the planned path (limit 30 mm)"]
+    assert move(peak_dev=0.029).failures == []
 
 
 def test_tracking_message_keeps_settling_time(strong_runs):
     msg = strong_runs["reach_targets"].result.message
     assert re.search(r"settling [\d.]+–[\d.]+ s after move start", msg)
-    assert re.search(r"max overshoot [\d.]+ cm", msg)
+    assert re.search(r"max path deviation [\d.]+ mm, max overshoot [\d.]+ mm", msg)
 
 
 # --------------------------------------------------------------------------- static vs sim (MG996R)

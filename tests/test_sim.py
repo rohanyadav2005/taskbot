@@ -112,19 +112,17 @@ def test_strong_arm_passes_all_three_with_light_payload(two_round_outcome):
     assert runs["reach_targets"].result.value < 0.01
     assert runs["carry_payload"].result.value <= 0.2  # longest saturation, s
     assert runs["hold_still"].result.value < 0.001    # final error, m
-    assert "9/9 targets reached within 1 cm" in runs["carry_payload"].result.message
+    assert "9/9 targets met the 10 mm task tolerance" in runs["carry_payload"].result.message
 
 
-def test_strong_arm_with_desk_payload_sags_from_compliance_not_torque(strong_runs):
+def test_strong_arm_with_desk_payload_sags_about_2mm_within_10mm_tolerance(strong_runs):
     # 0.25 kg, controller believes 0.2 kg: factory Dynamixel gains have no I term, so the
-    # missing feedforward torque becomes a steady droop of (missing torque / Kp).
-    assert strong_runs["reach_targets"].result.passed and strong_runs["carry_payload"].result.passed
+    # missing feedforward torque becomes a steady droop of (missing torque / Kp), ~2 mm here,
+    # within the desk task's 10 mm tolerance.
+    assert all(r.result.passed for r in strong_runs.values())
     hold = strong_runs["hold_still"]
-    assert not hold.result.passed and hold.result.cause == "compliance"
     assert 0.001 < hold.result.value < 0.005
-    assert "a stronger motor will not help" in hold.result.message
-    assert "Sag by joint position-loop stiffness: wrist_pitch (xl430_w250, Kp 5.52 Nm/rad)" in hold.result.message
-    assert hold.ideal.passed  # with the true mass it holds
+    assert hold.ideal.value < 1e-5  # with the true mass there is no sag
 
 
 def test_payload_stays_welded_to_gripper(strong_runs):

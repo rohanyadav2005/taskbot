@@ -12,6 +12,7 @@ from taskbot.repair import SIM_TEST_NAMES, RepairOutcome, Round
 from taskbot.schema import Motor
 from taskbot.sim.control import DEFAULT_PAYLOAD_MASS_ERROR
 from taskbot.sim.model import SIM_TIMESTEP_S, build_scene
+from taskbot.sim.motor import PID_PRESET_DYNAMIXEL_I
 from taskbot.sim.record import render_gif
 from taskbot.sim_tests import controller_settings
 
@@ -62,6 +63,7 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
         "Gripper": req.gripper_kind or "none",
         "Budget": f"${req.max_budget_usd:.2f}" if req.max_budget_usd else "none given",
         "Min joint range": f"{req.min_joint_range_rad:.3g} rad",
+        "Position tolerance": f"{req.position_tolerance_m * 1000:.3g} mm ({req.tolerance_reason})",
     }
     lines += [f"| {k} | {_cell(v)} |" for k, v in rows.items()]
     if req.assumptions:
@@ -110,7 +112,11 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
               f"Gravity feedforward believes the payload is {DEFAULT_PAYLOAD_MASS_ERROR:.0%} lighter "
               f"than it is (the \"(ideal)\" rows use the true mass). Physics timestep "
               f"{SIM_TIMESTEP_S * 1000:.0f} ms.", "",
-              "| Joint | Motor | Kp (Nm/rad) | Kd (Nm·s/rad) | Ki | Back-EMF b (Nm·s/rad) | Rated / stall (Nm) "
+              f"**Control mode: {final.spec.control}**"
+              + (" (one fixed integral preset on Dynamixels: Position I Gain "
+                 f"{PID_PRESET_DYNAMIXEL_I}; the gain conversion is unverified)"
+                 if final.spec.control == "pid" else " (factory position loops, no integral term)"), "",
+              "| Joint | Motor | Kp (Nm/rad) | Kd (Nm·s/rad) | Ki (Nm/(rad·s)) | Back-EMF b (Nm·s/rad) | Rated / stall (Nm) "
               "| No-load (rad/s) | Gains from | Torque-speed model |",
               "|---|---|---|---|---|---|---|---|---|---|"]
     for row in controller_settings(build_scene(final.spec)):

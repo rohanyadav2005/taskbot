@@ -263,6 +263,13 @@ def gripper_names(g: Gripper) -> tuple[list[str], list[str]]:
 class RobotSpec(_Strict):
     name: Name
     description: str = ""
+    control: Literal["pd", "pid"] = Field(
+        default="pd",
+        description="Joint position control. 'pd': the motors' factory position loops (no "
+        "integral term), so an unmodelled load leaves a steady sag. 'pid': adds one fixed integral "
+        "gain preset on Dynamixels, which removes that sag over a few seconds; hobby servos and "
+        "steppers have no integral term either way.",
+    )
     modules: list[Module] = Field(min_length=2)
 
     @field_validator("modules")

@@ -2,14 +2,21 @@
 
 For each joint, the motor's own position loop plus a host-side gravity feedforward:
 
-    desired total torque = Kp e + Kd (qd_ref - qd) + g_hat(q) - b qd
+    desired total torque = Kp e + Kd (qd_ref - qd) + Ki ∫e dt + g_hat(q) - b qd
 
 where Kp, Kd come from the motor (Dynamixel factory gains, or one conservative
-hobby/stepper setting), b qd is the motor's back-EMF, and the result is limited
+hobby/stepper setting), Ki is zero unless the design chose control = "pid" (then
+one fixed preset on Dynamixels; see taskbot.sim.motor), b qd is the motor's
+back-EMF, and the result is limited
 by the motor's torque-speed model. The velocity terms -b qd and -Kd qd are
 applied by MuJoCo as joint damping (integrated implicitly, so they are stable
 however light the joint); only the rest is applied as a joint force. Nothing
 here is tuned per test.
+
+The integral runs continuously (it isn't reset between moves), integrates only
+while the motor isn't saturated, and its contribution is clamped to ±rated torque
+(anti-windup; the firmware's own anti-windup isn't documented, so this is a
+modelling choice).
 
 g_hat(q) is MuJoCo's qfrc_bias plus the payload's weight mapped through the
 end-effector Jacobian (qfrc_bias alone doesn't include the welded payload). The
@@ -54,6 +61,7 @@ class MotorController:
         self.payload_mass_error = payload_mass_error
         self.believed_payload_kg = robot.payload_kg * (1.0 - payload_mass_error)
         self._jacp = np.zeros((3, robot.model.nv))
+        self._integral = np.zeros(robot.n)  # Ki ∫e dt, as torque
 
     def compute(self, data: mujoco.MjData, q_ref: np.ndarray, qd_ref: np.ndarray) -> ControlOutput:
         """Needs qfrc_bias for the current state: call after mj_step1."""
@@ -62,10 +70,15 @@ class MotorController:
         q, qd = data.qpos[r.qadr], data.qvel[r.dadr]
         n = r.n
         tau, sat, slow = np.zeros(n), np.zeros(n, bool), np.zeros(n, bool)
+        dt = r.model.opt.timestep
         for i, m in enumerate(r.motors):
-            desired = m.kp * (q_ref[i] - q[i]) + m.kd * (qd_ref[i] - qd[i]) + g_hat[i] - m.damping * qd[i]
+            e = q_ref[i] - q[i]
+            desired = (m.kp * e + m.kd * (qd_ref[i] - qd[i]) + self._integral[i] + g_hat[i]
+                       - m.damping * qd[i])
             applied, tau[i], sat[i], slow[i] = m.command(desired, qd[i])
             data.qfrc_applied[r.dadr[i]] = applied
+            if m.ki and not sat[i]:
+                self._integral[i] = np.clip(self._integral[i] + m.ki * e * dt, -m.rated, m.rated)
 
         for k, m in enumerate(r.aux_motors):  # fingers hold closed with the gripper motor
             qa, da = r.aux_qadr[k], r.aux_dadr[k]

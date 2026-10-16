@@ -32,8 +32,8 @@ FailureCause = Literal["saturated", "speed_limited", "compliance", "unreachable"
 CAUSE_ADVICE: dict[str, str] = {
     "saturated": "torque limit hit; use a stronger motor, or shorter or lighter outer links",
     "speed_limited": "motor too slow for the move; use a faster motor or a different gear ratio",
-    "compliance": ("error without any motor saturating, so a stronger motor will not help; "
-                   "it is a control or stiffness problem"),
+    "compliance": ("error without any motor saturating: the position loops are too soft for the "
+                   "required precision; try the options above, most promising first"),
     "unreachable": "target outside what the arm can reach; lengthen links or add a joint",
 }
 

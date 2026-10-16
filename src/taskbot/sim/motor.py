@@ -52,6 +52,15 @@ PULSES_PER_RAD = 4096 / (2 * np.pi)
 HOBBY_FULL_TORQUE_ERROR_RAD = np.radians(20.0)
 STEPPER_FLAT_FRACTION = 0.5
 
+# The one integral-gain preset used when a design chooses control = "pid". Raw Dynamixel
+# X-series Position I Gain (control table address 82, range 0..16383). 100 is the value in
+# the dynamixel_hardware_interface example configuration (docs.ros.org), not a ROBOTIS
+# recommendation. Converted like the other gains with KPI = I / 65536, assuming the firmware
+# integrates the error (in pulses) once per 1 ms control cycle: UNVERIFIED, from memory of
+# the ROBOTIS e-manual, which was unreachable when this was written.
+PID_PRESET_DYNAMIXEL_I = 100
+FIRMWARE_CYCLE_S = 0.001
+
 
 @dataclass(frozen=True)
 class MotorModel:
@@ -119,20 +128,31 @@ class MotorModel:
         )
 
 
-def motor_model(motor: Motor) -> MotorModel:
+def motor_model(motor: Motor, control: str = "pd") -> MotorModel:
+    """Gains for this motor under the design's control mode ("pd" or "pid").
+
+    "pid" only changes Dynamixels, which get Position I Gain = PID_PRESET_DYNAMIXEL_I.
+    Hobby servos and steppers have no integral term in their own controllers, so
+    their gains are the same in both modes.
+    """
+    if control not in ("pd", "pid"):
+        raise ValueError(f"unknown control mode {control!r}")
     torque_per_pwm = motor.stall_torque_nm / PWM_FULL
     if motor.kind == "dynamixel":
         g = motor.dynamixel_gains
+        if g.i:
+            raise NotImplementedError(f"{motor.id}: non-zero factory I gain isn't modelled")
+        i_gain = PID_PRESET_DYNAMIXEL_I if control == "pid" else 0
         kp = g.p / 128 * torque_per_pwm * PULSES_PER_RAD
         kd = g.d / 16 * torque_per_pwm * PULSES_PER_RAD / 1000
-        ki = 0.0
-        if g.i:
-            raise NotImplementedError(f"{motor.id}: non-zero Dynamixel I gain isn't modelled")
-        source = f"Dynamixel factory gains P={g.p} I={g.i} D={g.d}"
+        ki = i_gain / 65536 * torque_per_pwm * PULSES_PER_RAD / FIRMWARE_CYCLE_S
+        source = f"Dynamixel factory gains P={g.p} D={g.d}, I={i_gain}" + (
+            " (pid preset, conversion unverified)" if i_gain else " (pd)")
     else:
         kp = motor.stall_torque_nm / HOBBY_FULL_TORQUE_ERROR_RAD
         kd = ki = 0.0
-        source = f"conservative {motor.kind.replace('_', ' ')} setting: stall torque at 20° error"
+        source = f"conservative {motor.kind.replace('_', ' ')} setting: stall torque at 20° error" + (
+            "; no I term (pid not available on this motor)" if control == "pid" else "")
     if motor.kind == "stepper":
         speed_model = ("pull-out curve" if motor.pull_out_curve else
                        "approx.: rated to 50% of no-load speed, then linear to 0")

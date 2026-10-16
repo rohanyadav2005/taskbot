@@ -30,6 +30,8 @@ DESK_REQ = {
     "dof_min": 4,
     "gripper_needed": True,
     "gripper_kind": "parallel",
+    "position_tolerance_m": 0.01,
+    "tolerance_reason": "placing a cup on a desk: within 1 cm is fine",
     "assumptions": [],
 }
 

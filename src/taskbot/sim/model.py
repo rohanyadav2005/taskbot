@@ -128,10 +128,10 @@ def build_scene(
     joints = [s.joint for s in segments]
     motors = []
     for j in joints:
-        mm = motor_model(catalog[j.motor_id])
+        mm = motor_model(catalog[j.motor_id], spec.control)
         motors.append(mm.linear(LINEAR_DRIVE_RADIUS_M) if j.type == "prismatic" else mm)
     gripper = next((m for m in spec.modules if isinstance(m, Gripper)), None)
-    gmotor = (motor_model(catalog[gripper.motor_id]).linear(LINEAR_DRIVE_RADIUS_M)
+    gmotor = (motor_model(catalog[gripper.motor_id], spec.control).linear(LINEAR_DRIVE_RADIUS_M)
               if gripper is not None and gripper.motor_id else None)
     finger_joints = [n for n in gripper_names(gripper)[1][1:]] if gripper is not None else []
     # Back-EMF and D-term damping act as joint damping; MuJoCo integrates it implicitly.

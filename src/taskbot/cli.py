@@ -44,6 +44,8 @@ def fake_client(catalog: dict[str, Motor]) -> FakeClient:
             "gripper_needed": True,
             "gripper_kind": "parallel",
             "max_budget_usd": None,
+            "position_tolerance_m": 0.005,
+            "tolerance_reason": "FAKE BACKEND: canned 5 mm default",
             "assumptions": ["FAKE BACKEND: canned requirements, only task_summary reflects the prompt."],
         }
 

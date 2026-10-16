@@ -42,14 +42,17 @@ from taskbot.sim.plan import (
 )
 from taskbot.sim.record import FPS
 
-POSITION_TOL_M = 0.01
-OVERSHOOT_MAX_M = 0.02
+# Position limits come from the requirements' position_tolerance_m (tol):
+PEAK_FACTOR = 3.0        # peak deviation from the planned path / commanded pose < 3 tol
+OVERSHOOT_FACTOR = 2.0   # overshoot past a target < 2 tol
 SETTLE_DEADLINE_S = 1.0   # error must be under tolerance by move duration + this
 SETTLE_CONFIRM_S = 0.5    # ...and stay there for this long after the deadline
 SATURATION_MAX_S = 0.2
 HOLD_S = 5.0
-HOLD_FINAL_MAX_M = 0.001
-HOLD_PEAK_MAX_M = 0.005
+
+
+def _mm(x: float) -> str:
+    return f"{x * 1000:.3g} mm"
 
 
 class SimMeasurementError(RuntimeError):
@@ -89,13 +92,29 @@ class _Sim:
         self.sat_max_slow = np.zeros(n)   # speed-limited time within that stretch
         self.sat_where: list[str] = [""] * n
         self.label = ""
+        self._ref_data = mujoco.MjData(robot.model)
+        self._jacp = np.zeros((3, robot.model.nv))
+
+    def lever_errors(self, q_target: np.ndarray) -> np.ndarray:
+        """Per joint: |joint error| x how far that joint moves the tool per radian (m)."""
+        mujoco.mj_jacSite(self.robot.model, self.data, self._jacp, None, self.robot.site)
+        lever = np.linalg.norm(self._jacp[:, self.robot.dadr], axis=0)
+        return lever * np.abs(self.q() - q_target)
 
     def run(self, seconds: float, ref) -> np.ndarray:
-        """Step for `seconds`, with ref(t) -> (q_ref, qd_ref). Returns tool positions."""
+        """Step for `seconds`, with ref(t) -> (q_ref, qd_ref). Returns tool positions.
+        Also tracks the peak distance between the tool and where q_ref puts it
+        (self.peak_dev) and the per-joint lever errors at that moment (self.peak_contrib)."""
         tool = []
+        self.peak_dev, self.peak_contrib = 0.0, np.zeros(self.robot.n)
         for k in range(round(seconds / self.dt)):
             q_ref, qd_ref = ref(k * self.dt)
             out = step(self.robot, self.data, self.ctrl, q_ref, qd_ref)
+            self._ref_data.qpos[self.robot.qadr] = q_ref
+            mujoco.mj_kinematics(self.robot.model, self._ref_data)
+            dev = float(np.linalg.norm(self.robot.ee(self.data) - self._ref_data.site_xpos[self.robot.site]))
+            if dev > self.peak_dev:
+                self.peak_dev, self.peak_contrib = dev, self.lever_errors(q_ref)
             self.sat_run = np.where(out.saturated, self.sat_run + self.dt, 0.0)
             self.slow_run = np.where(out.saturated, self.slow_run + self.dt * out.speed_limited, 0.0)
             for i in np.flatnonzero(self.sat_run > self.sat_max):
@@ -118,38 +137,52 @@ class _Sim:
 @dataclass
 class _MoveResult:
     label: str
+    tol: float
     ik_error: float
     duration: float
     final_error: float     # at duration + SETTLE_DEADLINE_S + SETTLE_CONFIRM_S
     overshoot: float       # furthest the tool went past the target along the approach line
     settle_s: float | None  # from move start until the error stays under tolerance
+    peak_dev: float        # largest distance from where the planned path puts the tool
+    final_contrib: np.ndarray  # per-joint lever errors at the end of the move
+    peak_contrib: np.ndarray   # ...at the moment of peak deviation
 
     @property
     def unreachable(self) -> bool:
-        return self.ik_error >= POSITION_TOL_M
+        return self.ik_error >= self.tol
 
     @property
     def settled_in_time(self) -> bool:
         return self.settle_s is not None and self.settle_s <= self.duration + SETTLE_DEADLINE_S
 
     @property
+    def steady_fail(self) -> bool:
+        return not self.settled_in_time
+
+    @property
+    def transient_fail(self) -> bool:
+        return self.peak_dev >= PEAK_FACTOR * self.tol or self.overshoot >= OVERSHOOT_FACTOR * self.tol
+
+    @property
     def failures(self) -> list[str]:
         out = []
         if self.unreachable:
-            out.append(f"unreachable: IK gets no closer than {self.ik_error * 100:.1f} cm")
+            out.append(f"unreachable: IK gets no closer than {_mm(self.ik_error)}")
         if not self.settled_in_time:
             if self.settle_s is None:
-                out.append(f"never settled within {POSITION_TOL_M * 100:.0f} cm "
-                           f"(final error {self.final_error * 100:.1f} cm)")
+                out.append(f"never settled within {_mm(self.tol)} (final error {_mm(self.final_error)})")
             else:
                 out.append(f"settled after {self.settle_s:.2f} s, later than the "
                            f"{self.duration + SETTLE_DEADLINE_S:.2f} s deadline")
-        if self.overshoot > OVERSHOOT_MAX_M:
-            out.append(f"overshot by {self.overshoot * 100:.1f} cm (limit {OVERSHOOT_MAX_M * 100:.0f} cm)")
+        if self.peak_dev >= PEAK_FACTOR * self.tol:
+            out.append(f"strayed {_mm(self.peak_dev)} from the planned path (limit {_mm(PEAK_FACTOR * self.tol)})")
+        if self.overshoot >= OVERSHOOT_FACTOR * self.tol:
+            out.append(f"overshot by {_mm(self.overshoot)} (limit {_mm(OVERSHOOT_FACTOR * self.tol)})")
         return out
 
 
 def _run_moves(robot: SimRobot, req: Requirements, payload_mass_error: float) -> tuple[_Sim, list[_MoveResult]]:
+    tol = req.position_tolerance_m
     sim = _Sim(robot, robot.home(), payload_mass_error)
     results = []
     for mv in plan_moves(robot, req):
@@ -158,15 +191,16 @@ def _run_moves(robot: SimRobot, req: Requirements, payload_mass_error: float) ->
         sim.label = f"moving to {mv.label}"
         path = sim.run(T + SETTLE_DEADLINE_S + SETTLE_CONFIRM_S, lambda t: min_jerk(start, mv.q1, T, t))
         errors = np.linalg.norm(path - mv.target, axis=1)
-        outside = np.flatnonzero(errors >= POSITION_TOL_M)
-        if errors[-1] >= POSITION_TOL_M:
+        outside = np.flatnonzero(errors >= tol)
+        if errors[-1] >= tol:
             settle = None
         else:
             settle = 0.0 if not len(outside) else (outside[-1] + 1) * sim.dt
         approach = mv.target - path[0]
         dist = np.linalg.norm(approach)
         overshoot = float(np.max((path - mv.target) @ (approach / dist), initial=0.0)) if dist > 1e-9 else 0.0
-        results.append(_MoveResult(mv.label, mv.ik_error, T, float(errors[-1]), max(overshoot, 0.0), settle))
+        results.append(_MoveResult(mv.label, tol, mv.ik_error, T, float(errors[-1]), max(overshoot, 0.0),
+                                   settle, sim.peak_dev, sim.lever_errors(mv.q1), sim.peak_contrib))
     return sim, results
 
 
@@ -177,16 +211,19 @@ def _view(req: Requirements) -> dict:
 
 
 def _move_summary(moves: list[_MoveResult]) -> tuple[bool, str]:
+    tol = moves[0].tol
     failed = [m for m in moves if m.failures]
     durations = [m.duration for m in moves]
     settles = [m.settle_s for m in moves if m.settle_s is not None]
-    text = (f"{len(moves) - len(failed)}/{len(moves)} targets reached within {POSITION_TOL_M * 100:.0f} cm "
-            f"by move end + {SETTLE_DEADLINE_S:.0f} s with overshoot <= {OVERSHOOT_MAX_M * 100:.0f} cm; "
+    text = (f"{len(moves) - len(failed)}/{len(moves)} targets met the {_mm(tol)} task tolerance (final "
+            f"error < {_mm(tol)} by move end + {SETTLE_DEADLINE_S:.0f} s, path deviation < "
+            f"{_mm(PEAK_FACTOR * tol)}, overshoot < {_mm(OVERSHOOT_FACTOR * tol)}); "
             f"move durations {min(durations):.2f}–{max(durations):.2f} s (planned for "
             f"<= {SPEED_FRACTION:.0%} of no-load speed, min {MIN_MOVE_S:.0f} s)")
     if settles:
         text += f"; settling {min(settles):.2f}–{max(settles):.2f} s after move start"
-    text += f"; max overshoot {max(m.overshoot for m in moves) * 100:.1f} cm"
+    text += (f"; max path deviation {_mm(max(m.peak_dev for m in moves))}, max overshoot "
+             f"{_mm(max(m.overshoot for m in moves))}")
     if failed:
         text += "; failed: " + "; ".join(f"{m.label}: {', '.join(m.failures)}" for m in failed)
     return not failed, text
@@ -224,10 +261,79 @@ def _with_cause(msg: str, cause: str | None) -> str:
     return msg if cause is None else f"{msg} Cause: {cause}: {CAUSE_ADVICE[cause]}."
 
 
+def _compliance_advice(robot: SimRobot, contrib: np.ndarray, steady: bool, control: str,
+                       catalog: dict[str, Motor]) -> str:
+    """Stiffness breakdown and the fix options, ranked by it.
+
+    Scores (higher first): a stiffer motor on the joint that sags most (its share of the
+    error); "pid" (share of the error on Dynamixel joints, x0.3 if the error is transient,
+    since an integral only removes steady sag); shorter or lighter outer links (0.25) and
+    bringing the load closer to the base (0.2), which lower every joint's load a little.
+    """
+    from taskbot.sim.motor import motor_model
+
+    total = float(contrib.sum())
+    share = contrib / total if total > 0 else np.zeros_like(contrib)
+    order = np.argsort(-contrib)
+    breakdown = ", ".join(
+        f"{robot.joints[i].name} ({robot.motors[i].motor_id}, Kp {robot.motors[i].kp:.3g} Nm/rad) "
+        f"{_mm(contrib[i])}" for i in order[:3] if contrib[i] > 0)
+    top = int(order[0])
+    options = []
+    stiffer = sorted((motor_model(m, control).kp, m.id) for m in catalog.values()
+                     if robot.joints[top].type != "prismatic"
+                     and motor_model(m, control).kp > robot.motors[top].kp * 1.01)
+    if stiffer:
+        names = ", ".join(f"{mid} (Kp {kp:.3g})" for kp, mid in stiffer[:2])
+        options.append((share[top], f"a stiffer motor on {robot.joints[top].name}: {names}"))
+    if control == "pd":
+        dyn = sum(share[i] for i, m in enumerate(robot.motors) if m.kind == "dynamixel")
+        if dyn > 0:
+            options.append((dyn * (1.0 if steady else 0.3),
+                            'control "pid" (integral action on the Dynamixel joints removes steady sag '
+                            'over a few seconds; it does little for errors while moving)'))
+    options.append((0.25, "shorter or lighter links outboard of the sagging joints"))
+    options.append((0.2, "bringing the load closer to the base (shorter reach to the workspace)"))
+    options.sort(key=lambda o: -o[0])
+    ranked = "; ".join(f"{k}) {text}" for k, (_, text) in enumerate(options, 1))
+    return f"Sag by joint position-loop stiffness: {breakdown}. Options, most promising first: {ranked}."
+
+
 # --------------------------------------------------------------------------- tests
 
 
+def _catalog(catalog: dict[str, Motor] | None) -> dict[str, Motor]:
+    return catalog if catalog is not None else load_motor_catalog()
+
+
+def _move_compliance(robot: SimRobot, moves: list[_MoveResult], spec: RobotSpec,
+                     catalog: dict[str, Motor]) -> str:
+    """Compliance advice for the worst failed move: steady sag if it didn't settle,
+    otherwise the error while moving."""
+    failed = [m for m in moves if m.failures and not m.unreachable]
+    if not failed:
+        return ""
+    worst = max(failed, key=lambda m: max(m.final_error, m.peak_dev / PEAK_FACTOR) / m.tol)
+    steady = worst.steady_fail
+    contrib = worst.final_contrib if steady else worst.peak_contrib
+    when = "at the end of" if steady else "at the worst moment of"
+    return f"({when} the move to {worst.label}) " + _compliance_advice(
+        robot, contrib, steady, spec.control, catalog)
+
+
+def _move_failure_text(robot, sim, moves, spec, catalog, payload_kg) -> tuple[str, str]:
+    """(extra message, cause) for a failed reach/carry test."""
+    saturated, _, sat_text = _saturation(robot, sim, payload_kg)
+    cause = _cause(sim, saturated, moves)
+    if saturated:
+        return f" {sat_text}.", cause
+    if cause == "compliance":
+        return " " + _move_compliance(robot, moves, spec, catalog), cause
+    return "", cause
+
+
 def reach_targets(spec: RobotSpec, req: Requirements, catalog: dict[str, Motor] | None = None) -> SimRun:
+    catalog = _catalog(catalog)
     targets = [p for _, p in workspace_targets(req)]
     robot = build_scene(spec, catalog, payload_kg=0.0, markers=targets)
     sim, moves = _run_moves(robot, req, payload_mass_error=0.0)
@@ -235,11 +341,9 @@ def reach_targets(spec: RobotSpec, req: Requirements, catalog: dict[str, Motor] 
     worst = max(m.final_error for m in moves)
     msg, cause = f"Without payload: {text}.", None
     if not ok:
-        saturated, _, sat_text = _saturation(robot, sim, 0.0)
-        if saturated:
-            msg += f" {sat_text}."
-        cause = _cause(sim, saturated, moves)
-    result = CheckResult(check="reach_targets", passed=ok, value=worst, limit=POSITION_TOL_M,
+        extra, cause = _move_failure_text(robot, sim, moves, spec, catalog, 0.0)
+        msg += extra
+    result = CheckResult(check="reach_targets", passed=ok, value=worst, limit=req.position_tolerance_m,
                          message=_with_cause(msg, cause), cause=cause)
     return SimRun("reach_targets", result, robot, np.array(sim.frames), **_view(req))
 
@@ -256,8 +360,12 @@ def _carry(spec, req, catalog, payload_mass_error) -> tuple[CheckResult, SimRobo
     reach_ok, text = _move_summary(moves)
     saturated, worst_sat, sat_text = _saturation(robot, sim, req.payload_kg)
     ok = reach_ok and not saturated
-    cause = None if ok else _cause(sim, saturated, moves)
     msg = f"With {req.payload_kg:.3g} kg payload ({_belief(req, payload_mass_error)}): {sat_text}; {text}."
+    cause = None
+    if not ok:
+        extra, cause = _move_failure_text(robot, sim, moves, spec, catalog, req.payload_kg)
+        if cause == "compliance":
+            msg += extra
     result = CheckResult(check="carry_payload", passed=ok, value=worst_sat, limit=SATURATION_MAX_S,
                          message=_with_cause(msg, cause), cause=cause)
     return result, robot, sim
@@ -265,6 +373,7 @@ def _carry(spec, req, catalog, payload_mass_error) -> tuple[CheckResult, SimRobo
 
 def carry_payload(spec: RobotSpec, req: Requirements, catalog: dict[str, Motor] | None = None,
                   payload_mass_error: float = DEFAULT_PAYLOAD_MASS_ERROR) -> SimRun:
+    catalog = _catalog(catalog)
     result, robot, sim = _carry(spec, req, catalog, payload_mass_error)
     ideal = _carry(spec, req, catalog, 0.0)[0] if payload_mass_error else None
     return SimRun("carry_payload", result, robot, np.array(sim.frames), ideal=ideal, **_view(req))
@@ -287,6 +396,7 @@ def _worst_pose(robot: SimRobot, req: Requirements) -> tuple[str, np.ndarray, in
 
 
 def _hold(spec, req, catalog, payload_mass_error) -> tuple[CheckResult, SimRobot, _Sim]:
+    tol = req.position_tolerance_m
     targets = [p for _, p in workspace_targets(req)]
     robot = build_scene(spec, catalog, payload_kg=req.payload_kg, markers=targets)
     label, pose, joint, load = _worst_pose(robot, req)
@@ -300,37 +410,28 @@ def _hold(spec, req, catalog, payload_mass_error) -> tuple[CheckResult, SimRobot
         raise SimMeasurementError(
             f"hold_still measured exactly zero deviation holding {label}: the tool didn't move "
             "at all, so the test isn't measuring anything (is the arm or payload missing?)")
-    ok = final < HOLD_FINAL_MAX_M and peak < HOLD_PEAK_MAX_M
+    final_ok, peak_ok = final < tol, peak < PEAK_FACTOR * tol
+    ok = final_ok and peak_ok
     saturated, _, sat_text = _saturation(robot, sim, req.payload_kg)
     cause = None if ok else _cause(sim, saturated)
     msg = (f"Holding the most loaded target pose ({label}; {robot.joints[joint].name} needs "
            f"{load:.0%} of its rated torque) with {req.payload_kg:.3g} kg payload "
            f"({_belief(req, payload_mass_error)}) for {HOLD_S:.0f} s: peak deviation {peak * 1e6:.0f} µm "
-           f"(limit {HOLD_PEAK_MAX_M * 1e6:.0f} µm), final error {final * 1e6:.0f} µm "
-           f"(limit {HOLD_FINAL_MAX_M * 1e6:.0f} µm).")
+           f"(limit {PEAK_FACTOR * tol * 1e6:.0f} µm), final error {final * 1e6:.0f} µm "
+           f"(limit {tol * 1e6:.0f} µm, the task tolerance).")
     if saturated:
         msg += f" {sat_text}."
     elif not ok:
-        msg += " " + _sag_breakdown(robot, sim, pose)
-    result = CheckResult(check="hold_still", passed=ok, value=final, limit=HOLD_FINAL_MAX_M,
+        contrib = sim.lever_errors(pose) if not final_ok else sim.peak_contrib  # steady vs transient
+        msg += " " + _compliance_advice(robot, contrib, not final_ok, spec.control, catalog)
+    result = CheckResult(check="hold_still", passed=ok, value=final, limit=tol,
                          message=_with_cause(msg, cause), cause=cause)
     return result, robot, sim
 
 
-def _sag_breakdown(robot: SimRobot, sim: _Sim, pose: np.ndarray) -> str:
-    """Which joints' position loops let the tool sag, from final joint error x lever arm."""
-    jacp = np.zeros((3, robot.model.nv))
-    mujoco.mj_jacSite(robot.model, sim.data, jacp, None, robot.site)
-    err = np.abs(sim.q() - pose)
-    contrib = np.linalg.norm(jacp[:, robot.dadr], axis=0) * err
-    order = np.argsort(-contrib)[:2]
-    parts = [f"{robot.joints[i].name} ({robot.motors[i].motor_id}, Kp {robot.motors[i].kp:.3g} Nm/rad) "
-             f"{contrib[i] * 1e6:.0f} µm" for i in order if contrib[i] > 0]
-    return "Sag by joint position-loop stiffness: " + ", ".join(parts) + "."
-
-
 def hold_still(spec: RobotSpec, req: Requirements, catalog: dict[str, Motor] | None = None,
                payload_mass_error: float = DEFAULT_PAYLOAD_MASS_ERROR) -> SimRun:
+    catalog = _catalog(catalog)
     result, robot, sim = _hold(spec, req, catalog, payload_mass_error)
     ideal = _hold(spec, req, catalog, 0.0)[0] if payload_mass_error else None
     return SimRun("hold_still", result, robot, np.array(sim.frames), ideal=ideal, **_view(req))

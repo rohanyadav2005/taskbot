@@ -8,7 +8,7 @@ Rules:
 - Each failure may name a cause:
   - saturated: a joint needed more torque than its motor has; use a stronger motor, or shorter or lighter outer links.
   - speed_limited: the motor is too slow, so it runs out of torque at speed; use a faster motor or a different gear ratio.
-  - compliance: the error happened without any motor saturating, so a stronger motor will not help; it is a control or stiffness problem.
+  - compliance: the error happened without any motor saturating, so the joints' position loops are too soft for the required precision; the message ranks the fixes for this design: a stiffer motor (higher Kp) on the joint that sags most, setting "control": "pid", shorter or lighter outer links, or bringing the load closer to the base.
   - unreachable: the target is outside what the arm can reach; lengthen links or add a joint.
 - In "description", add one line explaining what you changed and why.
 Current spec: {spec}

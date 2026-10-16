@@ -111,14 +111,14 @@ def test_repair_prompt_lists_each_failure_on_its_own_line(desk_req):
 def test_cli_fake_backend_runs_full_loop_and_writes_report(tmp_path, capsys):
     from taskbot import cli
 
-    # R1 fails the torque checks; the fake swaps in the geared NEMA17, which then passes every
-    # static check and carry_payload but sags in hold_still (cause: compliance). The fake only
-    # swaps motors for torque failures, so it can't fix that, and the run honestly fails.
+    # R1 fails the torque checks; the fake swaps in the geared NEMA17, which passes every
+    # static check but strays more than 3x the canned 5 mm tolerance from its planned path
+    # (cause: compliance). The fake only swaps motors for torque failures, so the run fails.
     assert cli.main(["design", "water my plants", "--backend", "fake", "--out", str(tmp_path),
                      "--no-record"]) == 2
     out = capsys.readouterr().out
-    assert "Rounds: R1 2 fail  R2 1 fail  R3 1 fail  R4 1 fail  R5 1 fail" in out
-    assert "FAIL [hold_still]" in out and "Cause: compliance" in out
+    assert "Rounds: R1 2 fail  R2 2 fail  R3 2 fail  R4 2 fail  R5 2 fail" in out
+    assert "FAIL [reach_targets]" in out and "Cause: compliance" in out
     assert (tmp_path / "fake_arm_4dof" / "report.md").exists()
 
 
