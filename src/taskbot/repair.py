@@ -109,7 +109,10 @@ PROGRESS_LABELS = {
     "top_speed": ("top speed", 1, "m/s"),
     "tip_over": ("stability margin", 1000, "mm"),
     "traction": ("traction force needed", 1, "N"),
+    "self_collision": ("share of colliding poses", 100, "%"),
+    "joint_limits": ("narrowest joint range", 180 / 3.141592653589793, "°"),
 }
+SAME_WITHIN = 0.02  # a change under 2% of the gap to the limit counts as no change
 
 
 def _worst(results: list[CheckResult], check: str) -> CheckResult | None:
@@ -121,7 +124,9 @@ def _worst(results: list[CheckResult], check: str) -> CheckResult | None:
 
 def _fmt(check: str, value: float) -> str:
     label, scale, unit = PROGRESS_LABELS.get(check, ("value", 1, ""))
-    return f"{value * scale:.3g} {unit}".strip() if unit != "cm" else f"{value * scale:.1f} cm"
+    if unit in ("cm", "%", "°"):
+        return f"{value * scale:.1f}{'' if unit == '°' else ' '}{unit}".replace(" %", "%")
+    return f"{value * scale:.3g} {unit}".strip()
 
 
 def progress_lines(previous: list[CheckResult], current: list[CheckResult]) -> list[str]:
@@ -133,7 +138,8 @@ def progress_lines(previous: list[CheckResult], current: list[CheckResult]) -> l
             continue
         label = PROGRESS_LABELS.get(check, ("value",))[0]
         gap_before, gap_now = abs(before.value - before.limit), abs(now.value - now.limit)
-        if abs(gap_now - gap_before) <= 1e-3 * max(gap_before, 1e-9):
+        same_text = _fmt(check, before.value) == _fmt(check, now.value)
+        if same_text or abs(gap_now - gap_before) <= SAME_WITHIN * max(gap_before, 1e-9):
             verdict = "your last change didn't affect this"
         elif gap_now > gap_before:
             verdict = "your last change made this worse"

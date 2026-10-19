@@ -40,9 +40,16 @@ def test_underpowered_spec_fails_static_torque():
     assert re.fullmatch(
         r"shoulder_pitch needs [\d.]+ Nm at full extension with 1\.25 kg payload; "
         r"motor mg996r is rated 0\.36 Nm \(80% limit 0\.288 Nm\)\. "
-        r"Choose a motor rated above [\d.]+ Nm, or shorten/lighten .*",
+        r"Biggest loads on shoulder_pitch: payload 1\.25 kg -> [\d.]+ Nm; .*",
         shoulder.message,
     )
+    # 1.25 kg this far out is more than the strongest catalog motor can hold.
+    assert "No catalog motor is strong enough: the strongest, xm540_w270" in shoulder.message
+    assert "these requirements are beyond the motor catalog" in shoulder.message
+    # A load a catalog motor can hold gets the cheapest motor that does.
+    light = by_joint(checks.static_torque(spec, req(payload_kg=0.25), model))["shoulder_pitch"]
+    assert not light.passed and re.search(r"Use a motor rated above [\d.]+ Nm \(the cheapest is \w+", light.message)
+    assert "beyond the motor catalog" not in light.message
 
 
 def test_torque_matches_mujoco_gravity_with_arm_horizontal(desk_req):
@@ -131,7 +138,7 @@ def test_narrow_joint_range_fails_unless_requirements_allow_it():
     d["modules"][1]["segments"][3]["joint"].update(lower=-0.5, upper=0.5)
     spec, model = compile_(d)
     (r,) = checks.joint_limits(spec, req(), model)
-    assert not r.passed and "wrist_pitch spans 57° (needs >= 90°)" in r.message
+    assert not r.passed and "wrist_pitch spans 57.30° (-0.5 to 0.5 rad) but needs at least 90° (1.571 rad)" in r.message
     (r,) = checks.joint_limits(spec, req(min_joint_range_rad=0.9), model)
     assert r.passed
 

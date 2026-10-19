@@ -10,7 +10,7 @@ Rules:
 - Arms: total arm reach (sum of link lengths along the chain) must be at least reach_m. Choose motors near the base to carry the most load: the shoulder motor must hold payload + all outer links + outer motors at full extension. Estimate this torque yourself and pick a motor with rated torque above it.
 - Wheeled bases: the wheel motors must climb max_incline_deg with the whole robot and payloads and still reach speed_m_s (no-load speed x wheel radius, with margin). Keep the centre of mass low and inside the wheels: a wide track and long wheelbase resist tipping, especially with an arm reaching out. Differential drive needs a caster.
 - Prefer the cheapest design that meets the requirements; stay under max_budget_usd if given.
-- Use PLA for links under 0.25 m and aluminium for longer ones.
+- Keep the arm light and no longer than the task needs: holding torque grows with every kg and every cm, and the strongest catalog motor holds only a few Nm. Use slim links (about 0.03 x 0.03 m), PLA under 0.25 m and aluminium for longer ones. A fixed_base of about 0.15 x 0.15 m, 0.03 m high, in aluminium is enough.
 - Give every part a clear name (shoulder_link, elbow_joint, etc.).
 - In "description", explain your key choices in 2-3 sentences.
 Schema: {schema}
