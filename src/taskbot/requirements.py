@@ -49,7 +49,8 @@ class Requirements(BaseModel):
     reach_m: PositiveFloat | None = Field(
         default=None, description="Arm types only: required reach including the 10% margin.")
     payload_kg: NonNegativeFloat = Field(
-        description="Mass held by the gripper, including the 25% margin (0 for mobile).")
+        description="Mass the gripper holds while working (e.g. a watering can and its water, not "
+        "the plants), including the 25% margin (0 for mobile).")
     workspace: Workspace | None = Field(
         default=None, description="Arm types only. For a mobile_manipulator, in the robot frame: "
         "origin on the ground under the chassis centre, x forward, z up.")
@@ -65,7 +66,8 @@ class Requirements(BaseModel):
     travel_distance_m: PositiveFloat | None = Field(
         default=None, description="Mobile types, optional: distance it must cover per charge.")
     gripper_kind: Literal["parallel", "suction"] | None = Field(
-        default=None, description="Required when gripper_needed is true; null otherwise."
+        default=None, description="Required when gripper_needed is true; null otherwise. parallel: "
+        "holds objects, tools or containers; suction: flat, smooth, light items only."
     )
     max_budget_usd: PositiveFloat | None = None
     position_tolerance_m: float = Field(

@@ -262,6 +262,65 @@ def _tool_cloud(arm: _Arm, n: int, seed: int) -> tuple[np.ndarray, np.ndarray, m
     return qs, pts, data
 
 
+def _and(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def chain_diagnosis(spec: RobotSpec, req: Requirements) -> list[str]:
+    """Plain-language reasons, from the joint layout alone, why the arm can't reach.
+
+    Convention: every link extends along its own +z, so a joint about z twists the link
+    after it about its own length, and a revolute joint about x or y bends the arm.
+    Detects: no joint that bends the arm (the tool stays on the base axis); a single
+    bending joint (the tool moves on a sphere around it); and links too short for
+    reach_m even fully stretched out. Empty if none applies.
+    """
+    segments = [s for m in spec.modules if isinstance(m, ArmChain) for s in m.segments]
+    if not segments or req.reach_m is None:
+        return []
+    joints = [s.joint for s in segments]
+    lengths = [s.link.length for s in segments]
+    gripper = next((m for m in spec.modules if isinstance(m, Gripper)), None)
+    tool = tool_length_m(gripper)
+    n = len(joints)
+    bends = [i for i, j in enumerate(joints) if j.type != "prismatic" and j.axis in ("x", "y")]
+    slides_out = [j for j in joints if j.type == "prismatic" and j.axis in ("x", "y")]
+    fix = ("A reaching arm needs a base yaw joint (axis z) followed by pitch joints (axis y) at the "
+           "shoulder and elbow.")
+    if not bends and not slides_out:
+        if all(j.axis == "z" and j.type != "prismatic" for j in joints):
+            return [f"All {n} joints rotate about their own link (axis z) and links point along z, "
+                    "so the arm can only spin in place: the tool can never leave the base axis. " + fix]
+        return [f"None of the {n} joints bends the arm: joints about z only twist a link about its "
+                "own length and prismatic joints along z only slide along it, so the tool can never "
+                "leave the base axis. " + fix]
+    notes = []
+    mount = next((m.mount_xy_m for m in spec.modules if isinstance(m, ArmChain) and m.mount_xy_m), None)
+    offset = float(np.hypot(*mount)) if mount else 0.0
+    if bends:
+        first = bends[0]
+        stroke = sum(max(abs(j.lower), abs(j.upper)) for j in joints[first:] if j.type == "prismatic")
+        links = sum(lengths[first:])
+        if len(bends) == 1 and not stroke:
+            name = joints[first].name
+            notes.append(
+                f"Only one joint bends the arm ({name}, axis {joints[first].axis}); everything after it is "
+                f"rigid or only twists, so the tool moves on a sphere of radius {links + tool:.3g} m around "
+                f"{name}: it can't reach targets nearer to or farther from that point. Add an elbow pitch "
+                f"joint (axis y) partway along the arm.")
+        horizontal = offset + links + tool + stroke
+        if not slides_out and horizontal < req.reach_m:
+            parts = f"{links:.3g} m of links from {joints[first].name} (the first joint that bends the arm) onwards"
+            parts += f" + {tool:.3g} m of gripper" if tool else ""
+            parts += f" + {stroke:.3g} m of prismatic stroke" if stroke else ""
+            parts += f" + {offset:.3g} m arm mount offset" if offset else ""
+            notes.append(
+                f"The arm is too short: {parts} = {horizontal:.3g} m at full stretch, but the task needs "
+                f"reach_m = {req.reach_m:.3g} m. Lengthen the links after {joints[first].name} by at least "
+                f"{req.reach_m - horizontal + REACH_TOLERANCE_M:.3g} m in total.")
+    return notes
+
+
 def reach(
     spec: RobotSpec, req: Requirements, model: mujoco.MjModel,
     catalog: dict[str, Motor] | None = None,
@@ -271,7 +330,11 @@ def reach(
     Samples REACH_SAMPLES random configurations, then refines the nearest few
     with IK, since random samples alone are too sparse for a 1 cm tolerance.
     The reach target is reach_m from the base's vertical axis, at mid-workspace height.
+    Failure messages start with chain_diagnosis (why the joint layout can't reach, if it
+    can be told without sampling). workspace_corners' value is the worst corner miss.
     """
+    diagnosis = " ".join(chain_diagnosis(spec, req))
+    lead = f"{diagnosis} " if diagnosis else ""
     arm = _Arm.of(spec, model)
     qs, pts, data = _tool_cloud(arm, REACH_SAMPLES, seed=0)
     ws = req.workspace
@@ -281,15 +344,16 @@ def reach(
     target = np.array([req.reach_m, 0.0, z_mid])
     miss = _closest(arm, data, qs, pts, target)
     ok = miss <= REACH_TOLERANCE_M
-    msg = (
+    msg = ("" if ok else lead) + (
         f"tool {'reaches' if ok else 'cannot reach'} {req.reach_m:.3g} m from the base axis at "
         f"z = {z_mid:.3g} m (closest miss {miss * 100:.1f} cm, tolerance "
         f"{REACH_TOLERANCE_M * 100:.0f} cm); farthest sampled tool position is "
         f"{farthest:.3g} m from the base axis."
     )
-    if not ok:
+    if not ok and not diagnosis:
         msg += " Lengthen the links or add a joint, then re-check torque."
-    results = [CheckResult(check="reach", passed=ok, value=miss, limit=REACH_TOLERANCE_M, message=msg)]
+    results = [CheckResult(check="reach", passed=ok, value=miss, limit=REACH_TOLERANCE_M, message=msg,
+                           cause=None if ok else "unreachable")]
 
     corners = sorted({(x, y, z) for x in (ws.x_min, ws.x_max) for y in (ws.y_min, ws.y_max)
                       for z in (ws.z_min, ws.z_max)})
@@ -298,12 +362,14 @@ def reach(
     if failed:
         listed = "; ".join(f"({c[0]:.3g}, {c[1]:.3g}, {c[2]:.3g}) misses by {m * 100:.1f} cm"
                            for c, m in failed)
-        msg = (f"{len(failed)} of {len(corners)} workspace corners unreachable: {listed}. "
-               "Lengthen links, raise or lower the base, or add a joint.")
+        msg = (f"{lead}{len(failed)} of {len(corners)} workspace corners unreachable: {listed}."
+               + ("" if diagnosis else " Lengthen links, raise or lower the base, or add a joint."))
     else:
         msg = f"all {len(corners)} workspace corners reachable within {REACH_TOLERANCE_M * 100:.0f} cm."
-    results.append(CheckResult(check="workspace_corners", passed=not failed,
-                               value=float(len(failed)), limit=0.0, message=msg))
+    worst = max(m for _, m in misses)
+    results.append(CheckResult(check="workspace_corners", passed=not failed, value=worst,
+                               limit=REACH_TOLERANCE_M, message=msg,
+                               cause="unreachable" if failed else None))
     return results
 
 

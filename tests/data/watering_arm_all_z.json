@@ -1,0 +1,18 @@
+{
+  "name": "WateringArm",
+  "description": "Round 5 of the first real-model run (qwen2.5:7b-instruct via Ollama, 'water the three plants on my windowsill'), rebuilt from the run summary: every joint about z, links along z, so the arm only spins. Joint names, axes, motors, link names, lengths and materials are from the summary; link shapes/radii, joint limits (90° ranges) and the base size (steel, about 10.9 kg) are reconstructed.",
+  "modules": [
+    {"kind": "fixed_base", "name": "base", "footprint_m": [0.3, 0.3], "height_m": 0.0155, "material": "steel"},
+    {"kind": "arm_chain", "name": "arm", "segments": [
+      {"joint": {"name": "shoulder", "type": "revolute", "axis": "z", "lower": -0.7854, "upper": 0.7854, "motor_id": "xm540_w270"},
+       "link": {"name": "shoulder_link", "shape": "cylinder", "radius_m": 0.02, "length_m": 0.3, "material": "aluminium"}},
+      {"joint": {"name": "elbow", "type": "revolute", "axis": "z", "lower": -0.7854, "upper": 0.7854, "motor_id": "xm540_w270"},
+       "link": {"name": "elbow_link", "shape": "cylinder", "radius_m": 0.02, "length_m": 0.3, "material": "aluminium"}},
+      {"joint": {"name": "wrist", "type": "revolute", "axis": "z", "lower": -0.7854, "upper": 0.7854, "motor_id": "xm540_w270"},
+       "link": {"name": "wrist_link", "shape": "cylinder", "radius_m": 0.02, "length_m": 0.3, "material": "aluminium"}},
+      {"joint": {"name": "gripper_mount", "type": "revolute", "axis": "z", "lower": -0.7854, "upper": 0.7854, "motor_id": "xm540_w270"},
+       "link": {"name": "gripper_link", "shape": "cylinder", "radius_m": 0.02, "length_m": 0.3, "material": "aluminium"}}
+    ]},
+    {"kind": "gripper", "name": "SuctionGripper", "gripper_type": "suction", "max_opening_m": 0.04, "grip_force_n": 10.0}
+  ]
+}

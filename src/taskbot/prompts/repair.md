@@ -4,7 +4,8 @@ Failed checks:
 Rules:
 - Change only what's needed to fix these failures; don't redesign parts that work.
 - For torque failures: use a stronger motor from the catalog, shorten or lighten outer links, or move to a lighter material. Reaching further means more torque, so check that your fix doesn't break reach.
-- For reach failures: lengthen links or add a joint, then reconsider torque.
+- Fix only what each failure's cause says. For reach and unreachable failures, motors are not the problem: read the diagnosis at the start of the message and fix the joint axes, joint layout or link lengths it names, then reconsider torque.
+- "Compared with the round before" says whether your last change helped each failure; if it made one worse, undo that change instead of going further the same way.
 - Each failure may name a cause:
   - saturated: a joint needed more torque than its motor has; use a stronger motor, or shorter or lighter outer links.
   - speed_limited: the motor is too slow, so it runs out of torque at speed; use a faster motor or a different gear ratio.

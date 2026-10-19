@@ -83,7 +83,7 @@ def test_reach_passes_for_arm_that_is_long_enough(desk_req):
     spec, model = compile_(example_dict("arm_4dof"))
     reach, corners = checks.reach(spec, desk_req, model)
     assert reach.passed and reach.value <= 0.01
-    assert corners.passed and corners.value == 0
+    assert corners.passed and corners.value <= corners.limit == 0.01  # worst corner miss, m
 
 
 def test_reach_fails_and_names_unreachable_corners():
@@ -92,7 +92,7 @@ def test_reach_fails_and_names_unreachable_corners():
     assert not reach.passed
     assert "cannot reach 0.5 m" in reach.message and "Lengthen" in reach.message
     assert not corners.passed
-    assert corners.value >= 1
+    assert corners.value > corners.limit == 0.01 and corners.cause == "unreachable"
     assert re.search(r"\(0\.25, 0\.1, 0\.2\) misses by [\d.]+ cm", corners.message)
 
 
