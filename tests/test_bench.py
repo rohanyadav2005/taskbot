@@ -247,6 +247,17 @@ def test_resume_after_a_crash_mid_file(tmp_path):
     assert len(calls) == 1
 
 
+def test_report_paths_use_forward_slashes(fake_run, tmp_path):
+    run_dir, _, recs = fake_run
+    assert recs["mobile_office_box"].report.startswith("out/mobile_office_box/")
+    assert all("\\" not in (r.report or "") for r in recs.values())
+    # State saved on Windows by an older version had backslashes; resuming fixes them.
+    old = Record("p1", "mobile", "main", "p", "done", False,
+                 report="out\\p1\\office_rover\\report.md")
+    (tmp_path / "results.jsonl").write_text(json.dumps(vars(old)) + "\n", encoding="utf-8")
+    assert bench._load_state(tmp_path / "results.jsonl")["p1"].report == "out/p1/office_rover/report.md"
+
+
 def test_resume_refuses_a_different_model(tmp_path):
     (p,) = by_id("oos_coffee_drone")
     run_bench([p], tmp_path / "run", fake_factory(), RunMeta(**vars(FAKE_META)))

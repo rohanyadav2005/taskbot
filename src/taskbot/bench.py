@@ -288,7 +288,8 @@ def _score_result(rec: Record, p: BenchPrompt, result, run_dir: Path) -> None:
     rec.requirements_valid = True
     rec.robot_type = req.robot_type
     rec.rejected = result.rejected
-    rec.report = str((result.out_dir / "report.md").relative_to(run_dir))
+    # Forward slashes on every OS: this goes into Markdown links and the CSV.
+    rec.report = (result.out_dir / "report.md").relative_to(run_dir).as_posix()
     type_ok, misses = score_expectations(req, p.expect)
     if p.expect.should_reject:
         rec.rejection_correct = result.rejected
@@ -331,6 +332,8 @@ def _load_state(path: Path) -> dict[str, Record]:
         for line in path.read_text("utf-8").splitlines():
             if line.strip():
                 d = json.loads(line)
+                if d.get("report"):  # state written on Windows before reports used forward slashes
+                    d["report"] = d["report"].replace("\\", "/")
                 state[d["id"]] = Record(**d)  # later lines win
     return state
 
