@@ -162,3 +162,23 @@ def test_cli_runs_the_pipeline_on_openai_compat_and_records_usage(tmp_path, monk
         if f.is_file():
             assert KEY not in f.read_text(encoding="utf-8", errors="ignore")
     assert KEY not in captured.out + captured.err
+
+
+def test_reply_cut_off_at_the_token_limit_is_a_truncation_error():
+    from taskbot.llm import LLMTruncatedError
+
+    def cut(body):
+        return {"body": {"choices": [{"message": {"content": '{"x": 1, "y'}, "finish_reason": "length"}],
+                         "usage": {"prompt_tokens": 900, "completion_tokens": 4096}}}
+
+    with MockOpenAI([cut]) as m:
+        c = client(m.url)
+        with pytest.raises(LLMTruncatedError, match="cut off at the token limit after 4096 tokens"):
+            c.complete_json("sys", "u", Point)
+    assert len(m.requests) == 1 and c.usage.json_retries == 0  # not retried as bad JSON
+
+
+def test_timeout_defaults_for_local_and_remote_urls(monkeypatch):
+    monkeypatch.delenv("TASKBOT_TIMEOUT_S", raising=False)
+    assert OpenAICompatClient(model="m", base_url="http://localhost:11434/v1").timeout_s == 600
+    assert OpenAICompatClient(model="m", base_url="https://openrouter.ai/api/v1").timeout_s == 120

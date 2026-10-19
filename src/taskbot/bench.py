@@ -11,8 +11,10 @@ when the same command (same --name) is run again. The report is
 bench/results/<name>.md and .csv, where <name> defaults to <date>_<backend>_<model>.
 
 A prompt "passes" when an in-scope task ends with a design that passes every check and
-sim test, or an out-of-scope task is rejected without a design. Expectations about the
-extracted requirements (robot type, reach, payload, tolerance) are scored separately.
+sim test, or an out-of-scope task is rejected without a design. A "strict pass" also
+needs every expectation about the extracted requirements (robot type, reach, payload,
+tolerance, terrain) met: a design that passes checks for the wrong requirements is a
+pass but not a strict pass.
 """
 
 from __future__ import annotations
@@ -200,6 +202,7 @@ class Record:
     status: str
     should_reject: bool
     passed: bool = False
+    strict_pass: bool = False
     rejected: bool | None = None
     rejection_correct: bool | None = None
     requirements_valid: bool | None = None
@@ -280,6 +283,7 @@ def run_one(p: BenchPrompt, client: LLMClient, run_dir: Path, catalog, meta: Run
     rec.tokens_in, rec.tokens_out = u.input_tokens, u.output_tokens
     rec.json_retries, rec.rate_limit_waits = u.json_retries, u.rate_limit_waits
     rec.time_s = round(time.monotonic() - start, 2)
+    rec.strict_pass = bool(rec.passed and rec.expectations_met)
     return rec
 
 
@@ -334,6 +338,7 @@ def _load_state(path: Path) -> dict[str, Record]:
                 d = json.loads(line)
                 if d.get("report"):  # state written on Windows before reports used forward slashes
                     d["report"] = d["report"].replace("\\", "/")
+                d.setdefault("strict_pass", bool(d.get("passed") and d.get("expectations_met")))  # older runs
                 state[d["id"]] = Record(**d)  # later lines win
     return state
 
@@ -397,7 +402,7 @@ def _outcome(r: Record) -> str:
 
 # --------------------------------------------------------------------------- reports
 
-CSV_FIELDS = ["id", "split", "category", "status", "passed", "rejected", "should_reject",
+CSV_FIELDS = ["id", "split", "category", "status", "passed", "strict_pass", "rejected", "should_reject",
               "rejection_correct", "requirements_valid", "valid_spec", "robot_type",
               "robot_type_correct", "expectations_met", "expectation_failures", "rounds",
               "final_failures", "unfixed_count", "tokens_in", "tokens_out", "json_retries",
@@ -414,7 +419,8 @@ def write_csv(records: list[Record], path: Path, run_name: str) -> None:
         w.writeheader()
         for r in records:
             row = {k: getattr(r, k) for k in CSV_FIELDS if hasattr(r, k)}
-            row |= {k: _yn(getattr(r, k)) for k in ("passed", "rejected", "should_reject", "rejection_correct",
+            row |= {k: _yn(getattr(r, k)) for k in ("passed", "strict_pass", "rejected", "should_reject",
+                                                     "rejection_correct",
                                                      "requirements_valid", "valid_spec", "robot_type_correct",
                                                      "expectations_met")}
             row["expectation_failures"] = "; ".join(r.expectation_failures)
@@ -431,8 +437,8 @@ def _pct(n: int, d: int) -> str:
 
 
 def _rate_table(records: list[Record]) -> list[str]:
-    lines = ["| Category | Scored | Passed | Robot type correct | Expectations met | Avg rounds to pass |",
-             "|---|---|---|---|---|---|"]
+    lines = ["| Category | Scored | Passed | Strict pass | Robot type correct | Expectations met | Avg rounds to pass |",
+             "|---|---|---|---|---|---|---|"]
     for cat in CATEGORIES:
         rs = [r for r in records if r.category == cat and r.scored]
         if not rs:
@@ -441,6 +447,7 @@ def _rate_table(records: list[Record]) -> list[str]:
         passed_rounds = [r.rounds for r in rs if r.passed and r.rounds]
         avg = f"{sum(passed_rounds) / len(passed_rounds):.2f}" if passed_rounds else "–"
         lines.append(f"| {cat} | {len(rs)} | {_pct(sum(r.passed for r in rs), len(rs))} | "
+                     f"{_pct(sum(r.strict_pass for r in rs), len(rs))} | "
                      f"{_pct(sum(bool(r.robot_type_correct) for r in typed), len(typed))} | "
                      f"{_pct(sum(bool(r.expectations_met) for r in rs), len(rs))} | {avg} |")
     return lines
@@ -460,14 +467,17 @@ def render_markdown(records: list[Record], meta: RunMeta, run_name: str) -> str:
             f"{status.get(ERROR, 0)} errors and {status.get(RATE_LIMITED, 0)} rate-limited "
             "(not counted; rerun the same command to retry them).", "",
             "A prompt passes when an in-scope task ends with a design passing every check and "
-            "simulation test, or an out-of-scope task is rejected without a design.", ""]
+            "simulation test, or an out-of-scope task is rejected without a design. A strict pass also "
+            "meets every expectation about the extracted requirements.", ""]
     out += ["## Summary", ""]
     if meta.is_fake:
         out += ["No headline pass rate: the fake backend's answers are scripted.", ""]
     else:
         passed_rounds = [r.rounds for r in main if r.passed and r.rounds]
         out += [f"- **Overall pass rate (main prompts): {_pct(sum(r.passed for r in main), len(main))}**",
-                f"- Holdout pass rate (reported separately): {_pct(sum(r.passed for r in hold), len(hold))}"
+                f"- **Strict pass rate (main prompts): {_pct(sum(r.strict_pass for r in main), len(main))}**",
+                f"- Holdout pass rate (reported separately): {_pct(sum(r.passed for r in hold), len(hold))}, "
+                f"strict {_pct(sum(r.strict_pass for r in hold), len(hold))}"
                 + ("" if any(r.split == "holdout" for r in records) else " — not run (use --split all)"),
                 "- Average rounds to pass: "
                 + (f"{sum(passed_rounds) / len(passed_rounds):.2f}" if passed_rounds else "–"), ""]
@@ -569,7 +579,8 @@ def compare(old_csv: Path, new_csv: Path, allow_different_models: bool = False) 
     lines = [f"# Compare {Path(old_csv).name} → {Path(new_csv).name}", "",
              f"Old: {', '.join(' / '.join(w) for w in who[0])}; new: {', '.join(' / '.join(w) for w in who[1])}",
              f"Scored in both: {len(both)}. Pass: {sum(o[k]['passed'] == 'y' for k in both)} → "
-             f"{sum(n[k]['passed'] == 'y' for k in both)}.", ""]
+             f"{sum(n[k]['passed'] == 'y' for k in both)}. Strict pass: "
+             f"{sum(o[k].get('strict_pass') == 'y' for k in both)} → {sum(n[k].get('strict_pass') == 'y' for k in both)}.", ""]
 
     def section(title, keys, fmt):
         lines.extend([f"## {title} ({len(keys)})", ""] + ([fmt(k) for k in keys] or ["None."]) + [""])

@@ -387,3 +387,32 @@ def test_cli_end_to_end_with_fake_backend(tmp_path, capsys):
 
 def test_bench_run_script_exists():
     assert (BENCH / "run.py").read_text(encoding="utf-8").count("taskbot.bench import main") == 1
+
+
+# --------------------------------------------------------------------------- strict pass
+
+
+def test_strict_pass_needs_the_expectations_met(tmp_path):
+    """The fake M3-screws arm passes its checks, but with the canned 5 mm tolerance and 0.25 kg
+    payload it misses the prompt's expectations: a pass, not a strict pass."""
+    prompts = by_id("hard_arm_m3_screws", "mobile_office_box", "oos_coffee_drone")
+    recs = {r.id: r for r in run_bench(prompts, tmp_path / "run", fake_factory(), RunMeta(**vars(FAKE_META)),
+                                       simulate=False)}
+    m3 = recs["hard_arm_m3_screws"]
+    assert m3.passed and not m3.expectations_met and not m3.strict_pass
+    assert recs["mobile_office_box"].strict_pass and recs["oos_coffee_drone"].strict_pass
+    rows = [Record(**{**vars(r), "backend": "openai_compat", "model": "m"}) for r in recs.values()]
+    text = bench.render_markdown(rows, RunMeta("openai_compat", "m", "p", "real"), "real")
+    assert "**Overall pass rate (main prompts): 3/3 (100%)**" in text
+    assert "**Strict pass rate (main prompts): 2/3 (67%)**" in text
+    assert "| hard_arm | 1 | 1/1 (100%) | 0/1 (0%) |" in text
+    bench.write_csv(rows, tmp_path / "x.csv", "real")
+    row = next(csv.DictReader((tmp_path / "x.csv").open(newline="", encoding="utf-8")))
+    assert (row["id"], row["passed"], row["strict_pass"]) == ("hard_arm_m3_screws", "y", "n")
+
+
+def test_older_state_without_strict_pass_is_derived(tmp_path):
+    d = vars(Record("a", "mobile", "main", "p", "done", False, passed=True, expectations_met=True))
+    del d["strict_pass"]
+    (tmp_path / "results.jsonl").write_text(json.dumps(d) + "\n", encoding="utf-8")
+    assert bench._load_state(tmp_path / "results.jsonl")["a"].strict_pass is True

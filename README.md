@@ -10,6 +10,23 @@ pytest
 python -m taskbot.view examples/arm_4dof.json      # opens the MuJoCo viewer
 ```
 
+## Project rules
+
+These apply to every change (`CLAUDE.md` repeats them for coding agents):
+
+- Python 3.11+, package `taskbot` under `src/`, tests with pytest under `tests/`.
+- The LLM only writes JSON matching the Pydantic schema. All geometry, mass and inertia come
+  from deterministic code.
+- SI units everywhere.
+- Every check returns `CheckResult{check, passed, value, limit, cause, message}`, with a message
+  specific enough for an LLM to fix: name the part, give the numbers, say what to change.
+- Controllers come from motor datasheets and fixed documented presets. Never tune gains,
+  tolerances or test settings, or loosen a check, to make a design pass.
+- Values from memory rather than a source are marked unverified.
+- Small tested steps; don't build beyond the current task.
+- Read and write text files as UTF-8 explicitly, and write paths into reports and CSVs with
+  forward slashes, so everything works on Windows too.
+
 ## Design a robot from a prompt
 
 ```bash
@@ -49,8 +66,19 @@ Configured with three environment variables: `TASKBOT_BASE_URL`, `TASKBOT_MODEL`
 `TASKBOT_API_KEY` (optional; local Ollama needs none). JSON mode (`response_format:
 json_object`) is requested; a provider that rejects it gets plain requests and the reply
 is left to Pydantic validation and retries (`TASKBOT_JSON_MODE=0` turns it off up front).
-`TASKBOT_TIMEOUT_S` sets the per-request timeout (default 120 s). It is also in the web
-app's backend list.
+`TASKBOT_TIMEOUT_S` sets the per-request timeout (default 600 s for a local URL such as
+`localhost`, 120 s for a remote API). It is also in the web app's backend list. A reply cut off
+at the provider's output limit (`finish_reason: length`) stops the run with a clear error
+instead of a JSON retry.
+
+**Context length with Ollama.** The design and repair prompts carry the schema, the motor
+catalog, the spec and the round history: several thousand tokens. Ollama's default context
+window is smaller than that in many versions, and it silently drops the *start* of a prompt
+that doesn't fit, which is where the schema and catalog are. The native backend
+(`--backend ollama`) sets `num_ctx` itself (`TASKBOT_NUM_CTX`, default 16384), refuses a prompt
+that may not fit, and stops with an error if Ollama reports a full context. Through `/v1`
+(`openai_compat`) the server's setting applies: start it with a larger context, e.g.
+`OLLAMA_CONTEXT_LENGTH=16384 ollama serve` (recent Ollama versions; from memory, unverified).
 
 Set the key without putting it in your shell history: `read -rs TASKBOT_API_KEY && export TASKBOT_API_KEY`.
 
@@ -83,7 +111,9 @@ the holdout score separately, average rounds to pass, out-of-scope rejection acc
 common failing checks and causes, links to each prompt's report, and an **Unfixed failures**
 section with the exact messages the model was given and didn't fix, grouped by cause.
 A prompt passes when an in-scope task ends with a design passing every check and sim, or an
-out-of-scope task is rejected.
+out-of-scope task is rejected. A **strict pass** also meets every expectation about the
+extracted requirements (robot type, reach, payload, tolerance, terrain): a design that passes
+its checks for the wrong requirements is a pass, not a strict pass. Both rates are reported.
 
 The run's state is in `bench/results/<name>/results.jsonl`. If it stops (rate limit, crash,
 Ctrl-C), run the same command again to continue; on a later day add `--name <name>`.
@@ -92,12 +122,11 @@ Rate-limited and errored prompts are retried on resume; finished ones are not.
 Start with a small slice, then the full set, then the holdout:
 
 ```bash
-# Ollama (local, no key)
+# Ollama (local, no key): the native backend, which sets the context length itself
 ollama pull qwen2.5:7b-instruct
-export TASKBOT_BASE_URL=http://localhost:11434/v1 TASKBOT_MODEL=qwen2.5:7b-instruct
-python bench/run.py --backend openai_compat --limit 5
-python bench/run.py --backend openai_compat                 # all 40 (resumes the 5 above)
-python bench/run.py --backend openai_compat --split all     # + the 10 holdout prompts
+python bench/run.py --backend ollama --model qwen2.5:7b-instruct --limit 5
+python bench/run.py --backend ollama --model qwen2.5:7b-instruct              # all 40 (resumes)
+python bench/run.py --backend ollama --model qwen2.5:7b-instruct --split all  # + 10 holdout
 
 # A free API tier (Groq shown; see the presets above), one prompt at a time
 export TASKBOT_BASE_URL=https://api.groq.com/openai/v1 TASKBOT_MODEL=llama-3.3-70b-versatile

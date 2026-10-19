@@ -278,3 +278,61 @@ def test_cli_reports_llm_errors(monkeypatch, tmp_path, capsys):
     assert cli.main(["design", "x", "--backend", "anthropic", "--out", str(tmp_path)]) == 1
     assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
     assert not any(tmp_path.iterdir())
+
+
+def _ollama_reply(sent, **extra):
+    def fake_urlopen(req, timeout):
+        sent["body"] = json.loads(req.data)
+        sent["timeout"] = timeout
+        reply = {"message": {"role": "assistant", "content": json.dumps(REQ)},
+                 "prompt_eval_count": 1200, "eval_count": 300, "done_reason": "stop"} | extra
+        return io.BytesIO(json.dumps(reply).encode())
+    return fake_urlopen
+
+
+def test_ollama_sets_num_ctx_and_counts_tokens(monkeypatch):
+    sent = {}
+    monkeypatch.delenv("TASKBOT_NUM_CTX", raising=False)
+    monkeypatch.delenv("TASKBOT_TIMEOUT_S", raising=False)
+    monkeypatch.setattr("urllib.request.urlopen", _ollama_reply(sent))
+    client = OllamaClient(model="m", host="localhost:11434")
+    client.complete_json("s", "u", Requirements)
+    assert sent["body"]["options"]["num_ctx"] == 16384
+    assert sent["timeout"] == 600.0  # local model: the long default
+    assert (client.usage.input_tokens, client.usage.output_tokens) == (1200, 300)
+    monkeypatch.setenv("TASKBOT_NUM_CTX", "32768")
+    OllamaClient(model="m").complete_json("s", "u", Requirements)
+    assert sent["body"]["options"]["num_ctx"] == 32768
+
+
+def test_ollama_refuses_a_prompt_that_may_not_fit(monkeypatch):
+    from taskbot.llm import LLMTruncatedError
+
+    sent = {}
+    monkeypatch.setattr("urllib.request.urlopen", _ollama_reply(sent))
+    client = OllamaClient(model="m", num_ctx=1000)
+    with pytest.raises(LLMTruncatedError, match="may not fit num_ctx 1000"):
+        client.complete_json("x" * 3500, "u", Requirements)
+    assert sent == {}  # never sent
+
+
+@pytest.mark.parametrize("extra", [{"done_reason": "length"},
+                                   {"prompt_eval_count": 15900, "eval_count": 484}])
+def test_ollama_full_context_is_a_truncation_error(monkeypatch, extra):
+    from taskbot.llm import LLMTruncatedError
+
+    monkeypatch.setattr("urllib.request.urlopen", _ollama_reply({}, **extra))
+    with pytest.raises(LLMTruncatedError, match="filled its 16384-token context"):
+        OllamaClient(model="m", num_ctx=16384).complete_json("s", "u", Requirements)
+
+
+def test_default_timeout_depends_on_the_url(monkeypatch):
+    from taskbot.llm import default_timeout_s
+
+    monkeypatch.delenv("TASKBOT_TIMEOUT_S", raising=False)
+    assert default_timeout_s("http://localhost:11434/v1") == 600
+    assert default_timeout_s("http://127.0.0.1:8000/v1") == 600
+    assert default_timeout_s("localhost:11434") == 600
+    assert default_timeout_s("https://api.groq.com/openai/v1") == 120
+    monkeypatch.setenv("TASKBOT_TIMEOUT_S", "45")
+    assert default_timeout_s("http://localhost:11434/v1") == 45

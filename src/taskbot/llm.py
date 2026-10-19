@@ -35,6 +35,10 @@ DEFAULT_MAX_RETRIES = 3          # JSON validation retries per complete_json cal
 DEFAULT_RATE_LIMIT_RETRIES = 4   # waits after a rate-limit error, per model call
 DEFAULT_BACKOFF_S = 2.0          # first wait; doubles each time (Retry-After wins if given)
 MAX_BACKOFF_S = 60.0
+DEFAULT_TIMEOUT_S = 120.0        # remote APIs
+DEFAULT_LOCAL_TIMEOUT_S = 600.0  # a model on this machine (CPU inference can be slow)
+DEFAULT_NUM_CTX = 16384          # native Ollama context window (Ollama's own default is small)
+CHARS_PER_TOKEN_MIN = 3.0        # conservative: real prompts average more characters per token
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
 DEFAULT_OLLAMA_MODEL = "qwen2.5:7b-instruct"
 
@@ -49,6 +53,10 @@ class LLMRateLimitError(LLMError):
     def __init__(self, message: str, retry_after_s: float | None = None):
         super().__init__(message)
         self.retry_after_s = retry_after_s
+
+
+class LLMTruncatedError(LLMError):
+    """The prompt didn't fit the context window, or the reply was cut off at the token limit."""
 
 
 class LLMOutputError(LLMError):
@@ -164,6 +172,19 @@ def extract_json(text: str) -> Any:
         raise ValueError(f"invalid JSON: {exc}") from exc
 
 
+def is_local_url(url: str) -> bool:
+    host = (urllib.parse.urlsplit(url if "://" in url else f"http://{url}").hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or host.endswith(".local")
+
+
+def default_timeout_s(url: str) -> float:
+    """TASKBOT_TIMEOUT_S if set, else 600 s for a model on this machine, 120 s for a remote API."""
+    env = os.environ.get("TASKBOT_TIMEOUT_S")
+    if env:
+        return float(env)
+    return DEFAULT_LOCAL_TIMEOUT_S if is_local_url(url) else DEFAULT_TIMEOUT_S
+
+
 def describe_error(exc: ValueError) -> str:
     if isinstance(exc, ValidationError):
         lines = []
@@ -238,14 +259,16 @@ class OllamaClient(LLMClient):
         self,
         model: str | None = None,
         host: str | None = None,
-        timeout_s: float = 300.0,
+        timeout_s: float | None = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        num_ctx: int | None = None,
     ):
         super().__init__(max_retries)
         self.model = model or os.environ.get("TASKBOT_MODEL", DEFAULT_OLLAMA_MODEL)
         host = host or os.environ.get("OLLAMA_HOST", "http://localhost:11434")
         self.host = (host if "://" in host else f"http://{host}").rstrip("/")
-        self.timeout_s = timeout_s
+        self.timeout_s = timeout_s or default_timeout_s(self.host)
+        self.num_ctx = num_ctx or int(os.environ.get("TASKBOT_NUM_CTX", DEFAULT_NUM_CTX))
         self.usage.model = self.model
 
     def _chat(self, system: str, messages: list[Message], schema: type[BaseModel]) -> str:
@@ -254,8 +277,14 @@ class OllamaClient(LLMClient):
             "messages": [{"role": "system", "content": system}, *messages],
             "format": "json",
             "stream": False,
-            "options": {"temperature": 0.2},
+            "options": {"temperature": 0.2, "num_ctx": self.num_ctx},
         }
+        chars = sum(len(m["content"]) for m in body["messages"])
+        if chars / CHARS_PER_TOKEN_MIN > self.num_ctx:
+            # Ollama would silently drop the start of the prompt: the schema and catalog.
+            raise LLMTruncatedError(
+                f"the prompt is {chars} characters (up to ~{chars / CHARS_PER_TOKEN_MIN:.0f} tokens) and may "
+                f"not fit num_ctx {self.num_ctx}; Ollama would cut its start. Raise TASKBOT_NUM_CTX.")
         req = urllib.request.Request(
             f"{self.host}/api/chat",
             data=json.dumps(body).encode(),
@@ -270,8 +299,14 @@ class OllamaClient(LLMClient):
             content = payload["message"]["content"]
         except (KeyError, TypeError) as exc:
             raise LLMError(f"unexpected Ollama response: {payload!r:.200}") from exc
-        self.usage.input_tokens += int(payload.get("prompt_eval_count") or 0)
-        self.usage.output_tokens += int(payload.get("eval_count") or 0)
+        prompt_n, reply_n = int(payload.get("prompt_eval_count") or 0), int(payload.get("eval_count") or 0)
+        self.usage.input_tokens += prompt_n
+        self.usage.output_tokens += reply_n
+        if payload.get("done_reason") == "length" or prompt_n + reply_n >= self.num_ctx:
+            raise LLMTruncatedError(
+                f"Ollama filled its {self.num_ctx}-token context ({prompt_n} prompt + {reply_n} reply "
+                f"tokens, done_reason {payload.get('done_reason')!r}): the prompt or reply was cut off. "
+                "Raise TASKBOT_NUM_CTX.")
         return content
 
 
@@ -284,11 +319,16 @@ class OpenAICompatClient(LLMClient):
         TASKBOT_MODEL      e.g. qwen2.5:7b-instruct
         TASKBOT_API_KEY    optional (local Ollama needs none); sent as a Bearer token only
         TASKBOT_JSON_MODE  "0" to never ask for JSON mode
-        TASKBOT_TIMEOUT_S  per request, default 120
+        TASKBOT_TIMEOUT_S  per request; default 600 s for a local URL, 120 s otherwise
 
     JSON mode (response_format json_object) is requested by default; if the provider
     rejects that parameter, it is dropped for the rest of the run and the reply is left
     to Pydantic validation and the usual retries.
+
+    A reply cut off at the token limit (finish_reason "length") raises LLMTruncatedError.
+    The prompt's own context window is the server's business: for Ollama's /v1 endpoint
+    set OLLAMA_CONTEXT_LENGTH before `ollama serve`, or use the native ollama backend,
+    which sets num_ctx itself.
     """
 
     provider = "openai_compat"
@@ -314,7 +354,7 @@ class OpenAICompatClient(LLMClient):
         self._api_key = (api_key if api_key is not None else os.environ.get("TASKBOT_API_KEY")) or None
         self.json_mode = (json_mode if json_mode is not None
                           else os.environ.get("TASKBOT_JSON_MODE", "1") != "0")
-        self.timeout_s = timeout_s or float(os.environ.get("TASKBOT_TIMEOUT_S", "120"))
+        self.timeout_s = timeout_s or default_timeout_s(self.base_url)
         host = urllib.parse.urlsplit(self.base_url).netloc or self.base_url
         self.usage = Usage(f"openai_compat ({host})", self.model)
 
@@ -362,12 +402,18 @@ class OpenAICompatClient(LLMClient):
             raise LLMError(f"can't reach {url}: {self._redact(str(exc.reason))}") from None
         try:
             payload = json.loads(raw)
-            content = payload["choices"][0]["message"]["content"] or ""
+            choice = payload["choices"][0]
+            content = choice["message"]["content"] or ""
         except (json.JSONDecodeError, KeyError, IndexError, TypeError):
             raise LLMError(f"unexpected response from {url}: {self._redact(raw.decode('utf-8', 'replace'))[:200]}") from None
         u = payload.get("usage") or {}
         self.usage.input_tokens += int(u.get("prompt_tokens") or 0)
         self.usage.output_tokens += int(u.get("completion_tokens") or 0)
+        if choice.get("finish_reason") == "length":
+            raise LLMTruncatedError(
+                f"the reply from {self.model} was cut off at the token limit after "
+                f"{u.get('completion_tokens', '?')} tokens (finish_reason 'length'), so its JSON is incomplete. "
+                "Use a model or provider with a larger output limit.")
         return content
 
 
