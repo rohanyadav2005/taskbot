@@ -318,7 +318,7 @@ def test_fake_mobile_runs_fail_round_one_and_pass_round_two(tmp_path, prompt, fi
     assert result.passed and len(rounds) == 2
     assert {r.check for r in rounds[0].failures} == first_failures
     assert any(e.startswith("  FAIL tip_over (cause: unstable)") for e in events) == ("tip_over" in first_failures)
-    report = (result.out_dir / "report.md").read_text()
+    report = (result.out_dir / "report.md").read_text(encoding="utf-8")
     assert "battery_mass_kg not given" in report
     if "toys" in prompt:
         assert "run with the wheeled base fixed in place" in report
@@ -332,7 +332,7 @@ def test_out_of_scope_stops_without_a_design(tmp_path):
     assert code == 3
     (out,) = tmp_path.iterdir()
     assert sorted(p.name for p in out.iterdir()) == ["report.md", "requirements.json", "run.json"]
-    report = (out / "report.md").read_text()
+    report = (out / "report.md").read_text(encoding="utf-8")
     assert "OUT OF SCOPE: no design was made" in report and "fly" in report
 
 

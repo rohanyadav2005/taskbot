@@ -64,7 +64,7 @@ def test_out_of_scope_prompts_must_be_rejected_and_cover_the_cases():
 
 def write_yaml(tmp_path, text, name="prompts.yaml"):
     path = tmp_path / name
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -233,7 +233,7 @@ def test_resume_reruns_only_unfinished_prompts(tmp_path):
     second = run_bench(prompts, run_dir, second_factory, RunMeta(**vars(FAKE_META)))
     assert len(calls) == 1  # only the rate-limited prompt ran again
     assert [r.status for r in second] == ["done", "done", "no_fake_response"] and second[1].passed
-    lines = (run_dir / "results.jsonl").read_text().splitlines()
+    lines = (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 4  # 3 + the re-run; the last line for an id wins
 
 
@@ -288,7 +288,7 @@ def test_runner_records_rate_limited_prompt_from_http_429(tmp_path):
 def test_fake_report_has_the_warning_and_no_headline_rate(fake_run, tmp_path):
     _, _, recs = fake_run
     md, csv_path = bench.write_reports(list(recs.values()), RunMeta(**vars(FAKE_META)), tmp_path)
-    text = md.read_text()
+    text = md.read_text(encoding="utf-8")
     assert FAKE_WARNING in "\n".join(text.splitlines()[:5])
     assert "Overall pass rate" not in text and "No headline pass rate" in text
     assert "2 with no fake response (not counted)" in text
@@ -317,7 +317,7 @@ def test_csv_has_one_row_per_prompt(fake_run, tmp_path):
     _, _, recs = fake_run
     path = tmp_path / "x.csv"
     bench.write_csv(list(recs.values()), path, "test_run")
-    rows = {r["id"]: r for r in csv.DictReader(path.open())}
+    rows = {r["id"]: r for r in csv.DictReader(path.open(newline="", encoding="utf-8"))}
     assert set(rows) == set(recs)
     stuck = rows["mobile_laundry_basket"]
     assert stuck["passed"] == "n" and stuck["rounds"] == "5" and "wheel_torque:saturated" in stuck["final_failures"]
@@ -365,9 +365,9 @@ def test_cli_end_to_end_with_fake_backend(tmp_path, capsys):
     assert bench.main(args) == 0
     err = capsys.readouterr().err
     assert "WARNING: FAKE BACKEND" in err and "2 prompts" in err
-    md = (tmp_path / "cli.md").read_text()
+    md = (tmp_path / "cli.md").read_text(encoding="utf-8")
     assert md.startswith("# TaskBot benchmark: fake / scripted") and FAKE_WARNING in md
-    meta = json.loads((tmp_path / "cli" / "meta.json").read_text())
+    meta = json.loads((tmp_path / "cli" / "meta.json").read_text(encoding="utf-8"))
     assert meta["backend"] == "fake" and meta["model"] == "scripted"
     # Rerunning the same command resumes: nothing left to do.
     assert bench.main(args) == 0
@@ -375,4 +375,4 @@ def test_cli_end_to_end_with_fake_backend(tmp_path, capsys):
 
 
 def test_bench_run_script_exists():
-    assert (BENCH / "run.py").read_text().count("taskbot.bench import main") == 1
+    assert (BENCH / "run.py").read_text(encoding="utf-8").count("taskbot.bench import main") == 1

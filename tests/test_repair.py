@@ -84,13 +84,13 @@ def test_write_outputs_keeps_every_round_and_diffs_them(desk_req, tmp_path):
         assert (out / name).exists(), name
     for n in (1, 2):
         rnd = out / "rounds" / f"round_{n}"
-        RobotSpec.model_validate_json((rnd / "spec.json").read_text())
-        results = json.loads((rnd / "checks.json").read_text())
+        RobotSpec.model_validate_json((rnd / "spec.json").read_text(encoding="utf-8"))
+        results = json.loads((rnd / "checks.json").read_text(encoding="utf-8"))
         assert {"check", "passed", "value", "limit", "message", "cause"} == set(results[0])
-    assert RobotSpec.model_validate_json((out / "spec.json").read_text()).model_dump() == \
+    assert RobotSpec.model_validate_json((out / "spec.json").read_text(encoding="utf-8")).model_dump() == \
         outcome.final.spec.model_dump()
 
-    report = (out / "report.md").read_text()
+    report = (out / "report.md").read_text(encoding="utf-8")
     assert report.startswith("# Design report: arm_4dof\n\n**PASSED: every check passed in round 2 of 5.**")
     assert '-            "motor_id": "mg996r"' in report
     assert '+            "motor_id": "xm540_w270"' in report
@@ -128,4 +128,4 @@ def test_cli_exit_code_2_when_design_never_passes(tmp_path, monkeypatch):
     monkeypatch.setattr(fake, "TORQUE_SAFETY_FRACTION", 1e-6)  # fake repair finds no motor strong enough
     assert cli.main(["design", "x", "--backend", "fake", "--out", str(tmp_path),
                      "--max-rounds", "2", "--no-record"]) == 2
-    assert "FAILED" in (tmp_path / "fake_arm_4dof" / "report.md").read_text()
+    assert "FAILED" in (tmp_path / "fake_arm_4dof" / "report.md").read_text(encoding="utf-8")

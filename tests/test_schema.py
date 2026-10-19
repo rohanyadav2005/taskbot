@@ -14,7 +14,7 @@ def arm(d):
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.stem)
 def test_examples_validate(path):
-    spec = RobotSpec.model_validate_json(path.read_text())
+    spec = RobotSpec.model_validate_json(path.read_text(encoding="utf-8"))
     assert spec.modules[0].kind == "fixed_base"
     assert spec.modules[-1].kind == "gripper"
 
@@ -22,7 +22,7 @@ def test_examples_validate(path):
 def test_examples_cover_2_4_6_dof():
     dofs = {}
     for p in EXAMPLES:
-        spec = RobotSpec.model_validate_json(p.read_text())
+        spec = RobotSpec.model_validate_json(p.read_text(encoding="utf-8"))
         dofs[p.stem] = sum(len(m.segments) for m in spec.modules if m.kind == "arm_chain")
     assert dofs == {"arm_2dof": 2, "arm_4dof": 4, "arm_6dof": 6}
 

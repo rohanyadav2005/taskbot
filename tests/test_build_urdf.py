@@ -23,7 +23,7 @@ CATALOG = load_motor_catalog()
 
 
 def load(path) -> RobotSpec:
-    return RobotSpec.model_validate_json(path.read_text())
+    return RobotSpec.model_validate_json(path.read_text(encoding="utf-8"))
 
 
 def urdf_tree(path):

@@ -23,7 +23,7 @@ from taskbot.requirements import Requirements, extract_requirements
 from taskbot.schema import RobotSpec, load_motor_catalog
 
 CATALOG = load_motor_catalog()
-SPEC = json.loads((EXAMPLES_DIR / "arm_2dof.json").read_text())
+SPEC = json.loads((EXAMPLES_DIR / "arm_2dof.json").read_text(encoding="utf-8"))
 REQ = {
     "task_summary": "Move a 200 g cup 30 cm across a desk.",
     "robot_type": "arm",
@@ -262,9 +262,9 @@ def test_cli_design_with_fake_backend_writes_outputs(tmp_path, capsys):
             "--no-sim", "--no-record"]
     assert cli.main(argv) == 0
     out_dir = tmp_path / "fake_arm_4dof"
-    req = Requirements.model_validate_json((out_dir / "requirements.json").read_text())
+    req = Requirements.model_validate_json((out_dir / "requirements.json").read_text(encoding="utf-8"))
     assert req.task_summary == "pick up a cup"
-    RobotSpec.model_validate_json((out_dir / "spec.json").read_text())
+    RobotSpec.model_validate_json((out_dir / "spec.json").read_text(encoding="utf-8"))
     assert etree.fromstring((out_dir / "robot.urdf").read_bytes()).tag == "robot"
     summary = capsys.readouterr().out
     assert "pick up a cup" in summary and "shoulder_pitch" in summary

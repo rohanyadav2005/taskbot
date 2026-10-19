@@ -153,12 +153,12 @@ def test_cli_runs_the_pipeline_on_openai_compat_and_records_usage(tmp_path, monk
                      "--backend", "openai_compat", "--out", str(tmp_path), "--no-sim", "--no-record"])
     assert code == 0
     (out,) = tmp_path.iterdir()
-    run = json.loads((out / "run.json").read_text())
+    run = json.loads((out / "run.json").read_text(encoding="utf-8"))
     assert run["model"] == "mock-model" and run["provider"].startswith("openai_compat")
     assert run["calls"] == 2 and run["total_tokens"] == 300 and run["json_retries"] == 0
-    assert "## LLM usage" in (out / "report.md").read_text()
+    assert "## LLM usage" in (out / "report.md").read_text(encoding="utf-8")
     captured = capsys.readouterr()
     for f in out.rglob("*"):
         if f.is_file():
-            assert KEY not in f.read_text(errors="ignore")
+            assert KEY not in f.read_text(encoding="utf-8", errors="ignore")
     assert KEY not in captured.out + captured.err

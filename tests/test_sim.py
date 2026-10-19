@@ -219,7 +219,7 @@ def test_write_outputs_saves_gifs_and_links_them(two_round_outcome, tmp_path, mo
     out = write_outputs(outcome, tmp_path, CATALOG)
     for name in ("reach_targets", "carry_payload", "hold_still"):
         assert (out / "sim" / f"{name}.gif").exists()
-    text = (out / "report.md").read_text()
+    text = (out / "report.md").read_text(encoding="utf-8")
     assert "## Simulation recordings (round 2)" in text
     assert (out / "rounds" / "round_2" / "sim_ideal.json").exists()
     assert "![carry_payload](sim/carry_payload.gif)" in text

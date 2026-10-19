@@ -18,7 +18,7 @@ EXAMPLES = sorted(EXAMPLES_DIR.glob("*.json"))
 @pytest.fixture
 def spec_dict():
     """A fresh, mutable copy of the 2-DOF example to break in tests."""
-    return json.loads((EXAMPLES_DIR / "arm_2dof.json").read_text())
+    return json.loads((EXAMPLES_DIR / "arm_2dof.json").read_text(encoding="utf-8"))
 
 
 DESK_REQ = {
@@ -56,7 +56,7 @@ def desk_req():
 
 
 def example_dict(name: str) -> dict:
-    return json.loads((EXAMPLES_DIR / f"{name}.json").read_text())
+    return json.loads((EXAMPLES_DIR / f"{name}.json").read_text(encoding="utf-8"))
 
 
 def with_motor(spec: dict, joint_name: str, motor_id: str) -> dict:
