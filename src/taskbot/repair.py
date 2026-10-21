@@ -97,8 +97,8 @@ def format_failures(failures: list[CheckResult]) -> str:
 # --------------------------------------------------------------------------- progress
 
 REACH_CHECKS = {"reach", "workspace_corners"}
-MOTOR_NOTE = ("Motor changes won't help this failure: reach depends only on the joint axes, the "
-              "joint layout and the link lengths.")
+MOTOR_NOTE = ("Motor changes won't help this failure. Reach depends only on the joint axes, the link "
+              "lengths and the base height.")
 # check -> (what its value measures, scale, unit) for progress lines; others use the raw value.
 PROGRESS_LABELS = {
     "reach": ("reach miss", 100, "cm"),

@@ -57,7 +57,7 @@ def reach_results(d: dict, req: Requirements = WATERING):
 
 def test_all_z_arm_from_the_real_run_is_diagnosed_first():
     reach, corners = reach_results(ALL_Z)
-    lead = ("All 4 joints rotate about their own link (axis z) and links point along z, so the arm can "
+    lead = ("All 4 joints rotate about their own link (axis z) and the links point along z, so the arm can "
             "only spin in place: the tool can never leave the base axis. A reaching arm needs a base yaw "
             "joint (axis z) followed by pitch joints (axis y) at the shoulder and elbow.")
     for r in (reach, corners):
@@ -91,7 +91,8 @@ def test_single_pitch_joint_at_the_base_moves_the_tool_on_a_sphere():
 def test_too_short_arm_states_both_numbers():
     spec = spec_of(example_dict("arm_4dof"))
     req = WATERING.model_copy(update={"reach_m": 0.5, "gripper_kind": "parallel"})
-    (note,) = chain_diagnosis(spec, req)
+    note, height = chain_diagnosis(spec, req)
+    assert height.startswith("The tool can only get between")  # its top, 0.435 m, is under z_max 0.5 m
     # upper_arm 0.13 + forearm 0.12 + wrist 0.04 after shoulder_pitch, plus the parallel gripper.
     from taskbot.build_urdf import tool_length_m
     gripper = spec.modules[-1]
@@ -162,14 +163,16 @@ def test_repair_loop_replays_the_real_run_with_progress_and_history():
 
 def test_prompts_carry_the_new_guidance():
     design = load_prompt("design")
-    assert "A z-axis joint after a vertical link only spins it in place" in design
+    assert "A z-axis joint after an upright link only twists it in place" in design
     assert "base_yaw (axis z) -> turret 0.05 m; shoulder_pitch (axis y)" in design
     req = load_prompt("requirements")
     assert "for watering plants it is the water and its container" in req
     assert "potted desk plant weighs" not in req
     assert "There is no fixed-tool or holder option" in req
+    assert "Desk-scale robots should be light: assume PLA or aluminium" in req
     repair = load_prompt("repair")
-    assert "motors are not the problem" in repair
+    assert ("Fix only what each failure's cause points to. Reach and workspace failures are about joint axes, "
+            "link lengths and base height, not motors.") in repair
 
 
 @pytest.mark.parametrize("axis", ["x", "y"])
@@ -178,3 +181,54 @@ def test_bending_about_x_or_y_counts_as_pitch(axis):
     segments(d)[1]["joint"]["axis"] = axis
     segments(d)[2]["joint"]["axis"] = axis
     assert chain_diagnosis(spec_of(d), WATERING) == []
+
+
+def watering(**changes) -> Requirements:
+    return Requirements(**(WATERING.model_dump() | changes))
+
+
+def yaw_pitch_pitch(base_height: float = 0.03, l1: float = 0.2, l2: float = 0.2) -> dict:
+    d = example_dict("arm_4dof")
+    d["modules"][0]["height_m"] = base_height
+    segs = segments(d)[:3]
+    segs[1]["link"]["size_m"][2], segs[2]["link"]["size_m"][2] = l1, l2
+    segments(d)[:] = segs
+    return d
+
+
+def test_normal_yaw_pitch_pitch_arm_gets_no_diagnosis():
+    req = watering(**{
+        "reach_m": 0.35, "gripper_kind": "parallel",
+        "workspace": {"x_min": 0.15, "x_max": 0.3, "y_min": -0.1, "y_max": 0.1, "z_min": 0.05, "z_max": 0.3}})
+    assert chain_diagnosis(spec_of(yaw_pitch_pitch()), req) == []
+
+
+def test_workspace_above_the_arm_states_the_reachable_heights():
+    req = watering(**{
+        "reach_m": 0.3, "gripper_kind": "parallel",
+        "workspace": {"x_min": 0.1, "x_max": 0.2, "y_min": -0.1, "y_max": 0.1, "z_min": 0.1, "z_max": 0.9}})
+    (note,) = chain_diagnosis(spec_of(yaw_pitch_pitch()), req)
+    # base top 0.03 + turret 0.05 = shoulder at 0.08; links 0.4 + gripper 0.065 above and below it.
+    assert note.startswith("The tool can only get between z = -0.385 m and z = 0.545 m: the arm starts on the "
+                           "base top at 0.03 m and shoulder_pitch (the first joint that bends it) is at 0.08 m.")
+    assert "to reach z = 0.9 m, raise the base or lengthen the links by at least 0.355 m" in note
+    _, corners = checks.reach(spec_of(yaw_pitch_pitch()), req, build_model(spec_of(yaw_pitch_pitch())))
+    assert not corners.passed and corners.message.startswith("The tool can only get between")
+
+
+def test_floor_below_a_tall_base_states_the_reachable_heights():
+    req = watering(**{
+        "reach_m": 0.3, "gripper_kind": "parallel",
+        "workspace": {"x_min": 0.1, "x_max": 0.2, "y_min": -0.1, "y_max": 0.1, "z_min": 0.0, "z_max": 0.8}})
+    (note,) = chain_diagnosis(spec_of(yaw_pitch_pitch(base_height=0.6)), req)
+    assert "between z = 0.185 m and z = 1.11 m" in note
+    assert "to reach z = 0 m, lower the base or shoulder_pitch" in note and "by at least 0.185 m" in note
+
+
+def test_reach_message_no_longer_sends_the_model_to_the_motors():
+    spec = spec_of(example_dict("arm_2dof"))
+    req = watering(**{"reach_m": 0.5, "gripper_kind": "parallel"})
+    reach, corners = checks.reach(spec, req, build_model(spec))
+    for r in (reach, corners):
+        assert "torque" not in r.message and "motor" not in r.message
+    assert MOTOR_NOTE.startswith("Motor changes won't help this failure.")

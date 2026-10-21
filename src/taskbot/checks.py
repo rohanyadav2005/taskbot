@@ -368,8 +368,10 @@ def chain_diagnosis(spec: RobotSpec, req: Requirements) -> list[str]:
     Convention: every link extends along its own +z, so a joint about z twists the link
     after it about its own length, and a revolute joint about x or y bends the arm.
     Detects: no joint that bends the arm (the tool stays on the base axis); a single
-    bending joint (the tool moves on a sphere around it); and links too short for
-    reach_m even fully stretched out. Empty if none applies.
+    bending joint (the tool moves on a sphere around it); links too short for reach_m
+    even fully stretched out; and a workspace higher or lower than the tool can get from
+    where the arm starts (bounds that ignore joint limits, so they never fire falsely).
+    Empty if none applies.
     """
     segments = [s for m in spec.modules if isinstance(m, ArmChain) for s in m.segments]
     if not segments or req.reach_m is None:
@@ -385,7 +387,7 @@ def chain_diagnosis(spec: RobotSpec, req: Requirements) -> list[str]:
            "shoulder and elbow.")
     if not bends and not slides_out:
         if all(j.axis == "z" and j.type != "prismatic" for j in joints):
-            return [f"All {n} joints rotate about their own link (axis z) and links point along z, "
+            return [f"All {n} joints rotate about their own link (axis z) and the links point along z, "
                     "so the arm can only spin in place: the tool can never leave the base axis. " + fix]
         return [f"None of the {n} joints bends the arm: joints about z only twist a link about its "
                 "own length and prismatic joints along z only slide along it, so the tool can never "
@@ -413,9 +415,40 @@ def chain_diagnosis(spec: RobotSpec, req: Requirements) -> list[str]:
             notes.append(
                 f"The arm is too short: {parts} = {horizontal:.3g} m at full stretch, but the task needs "
                 f"reach_m = {req.reach_m:.3g} m. Lengthen the links after {joints[first].name} by about "
-                f"{req.reach_m - horizontal + REACH_TOLERANCE_M:.3g} m in total, and no more: every extra "
-                "centimetre adds holding torque.")
+                f"{req.reach_m - horizontal + REACH_TOLERANCE_M:.3g} m in total, and no more.")
+        notes += _height_notes(spec, req, joints, lengths, first, tool)
     return notes
+
+
+def _base_top_m(spec: RobotSpec) -> float:
+    """Height of the arm's first joint above the floor: the top of the base it stands on."""
+    base = spec.base
+    return base.height_m if hasattr(base, "height_m") else base.chassis_top_m
+
+
+def _height_notes(spec, req, joints, lengths, first, tool) -> list[str]:
+    """The tool can't go higher than the arm standing straight up, or lower than the first
+    bending joint minus everything after it: if the workspace is outside that, say so."""
+    ws = req.workspace
+    if ws is None:
+        return []
+    top = _base_top_m(spec)
+    z_stroke = sum(max(abs(j.lower), abs(j.upper)) for j in joints if j.type == "prismatic")
+    pivot = top + sum(lengths[:first])
+    z_hi = top + sum(lengths) + tool + z_stroke
+    z_lo = pivot - (sum(lengths[first:]) + tool + z_stroke)
+    fixes = []
+    if ws.z_max > z_hi + REACH_TOLERANCE_M:
+        fixes.append(f"to reach z = {ws.z_max:.3g} m, raise the base or lengthen the links by at least "
+                     f"{ws.z_max - z_hi:.3g} m")
+    if ws.z_min < z_lo - REACH_TOLERANCE_M:
+        fixes.append(f"to reach z = {ws.z_min:.3g} m, lower the base or {joints[first].name} (shorter links "
+                     f"before it), or lengthen the links after it, by at least {z_lo - ws.z_min:.3g} m")
+    if not fixes:
+        return []
+    return [f"The tool can only get between z = {z_lo:.3g} m and z = {z_hi:.3g} m: the arm starts on the base "
+            f"top at {top:.3g} m and {joints[first].name} (the first joint that bends it) is at {pivot:.3g} m. "
+            f"The workspace needs z = {ws.z_min:.3g} to {ws.z_max:.3g} m: " + "; ".join(fixes) + "."]
 
 
 def reach(
@@ -448,7 +481,7 @@ def reach(
         f"{farthest:.3g} m from the base axis."
     )
     if not ok and not diagnosis:
-        msg += " Lengthen the links or add a joint, then re-check torque."
+        msg += " Lengthen the links or add a joint."
     results = [CheckResult(check="reach", passed=ok, value=miss, limit=REACH_TOLERANCE_M, message=msg,
                            cause=None if ok else "unreachable")]
 

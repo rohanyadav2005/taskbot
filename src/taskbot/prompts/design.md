@@ -4,7 +4,7 @@ Rules:
   - "arm": a fixed_base, then arm_chain(s), then usually a gripper.
   - "mobile": a wheeled_base only.
   - "mobile_manipulator": a wheeled_base, then an arm_chain (with mount_xy_m on the chassis top), then usually a gripper.
-- Arm geometry: each link extends along its own +z from the joint that drives it, and the next joint sits at its tip, so at zero angles the arm stands straight up. A joint with axis z twists the link after it about its own length (yaw); a joint with axis y bends the arm (pitch). A z-axis joint after a vertical link only spins it in place: only pitch joints move the tool away from the base axis.
+- Arm geometry: each link extends along its own +z from the joint that drives it, and the next joint sits at its tip, so at zero angles the arm stands straight up. A joint with axis z twists the link after it about its own length (yaw); a joint with axis y bends the arm (pitch). A z-axis joint after an upright link only twists it in place: only pitch joints move the tool away from the base axis.
   Example 3-DOF arm: base_yaw (axis z) -> turret 0.05 m; shoulder_pitch (axis y) -> upper_arm 0.2 m; elbow_pitch (axis y) -> forearm 0.2 m. It reaches about upper_arm + forearm + gripper from the base axis.
 - Motors: arm joints and grippers need a motor whose "modes" include "position"; wheels need "velocity".
 - Arms: total arm reach (sum of link lengths along the chain) must be at least reach_m. Choose motors near the base to carry the most load: the shoulder motor must hold payload + all outer links + outer motors at full extension. Estimate this torque yourself and pick a motor with rated torque above it.
