@@ -253,7 +253,9 @@ beat, using the same numbers as the checks:
 
 A `Requirements` validator also rejects a workspace whose corners are farther than `reach_m` from
 any plausible shoulder position (on the base axis 0.03–0.15 m up for an arm; on a 0.05–0.4 m
-chassis top over the workspace for a mobile manipulator), so the JSON retry fixes it.
+chassis top over the workspace for a mobile manipulator), and one that reaches into the robot's own
+base (|x| and |y| under 0.08 m below z = 0.1 m): the workspace is where the targets are, relative to
+the base, never a box centred on it. The JSON retry fixes both.
 
 If the gate fails, the requirements go back to the requirements step once, with the numbers and
 "keep them realistic for the described scene, don't just shrink them to fit". If they are still
@@ -266,6 +268,16 @@ The repair loop also stops early:
 - when the model sends back an earlier round's design (every number within 1%) for the second
   time (stop reason "repeating designs"). After the first repeat it is told which round it repeats
   and how that round failed.
+
+The final design is the best round, not necessarily the last: fewest failing checks, then the
+smallest total normalised shortfall (|value − limit| / |limit|). When a round is worse than the best
+one, the next repair starts again from the best design, and the message says so ("Round 5 was worse
+than round 4 (4 failures vs 2). Starting again from round 4's design.").
+
+`self_collision` failures list verified fixes: the shortest riser (the link before the first pitch
+joint), a narrower range on one side of that joint, or a smaller fixed base, each found by
+re-running the same collision sampling on the changed design and offered only if it passes,
+smallest relative change first.
 
 Repair messages also call out a description that claims motor, link or material changes the spec
 doesn't have, and explain the trade-off when reach and torque fail together (keep the length,

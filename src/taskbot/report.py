@@ -40,11 +40,15 @@ def verdict(outcome: RepairOutcome) -> str:
                 f"stopped after round {n}. Do not build it as is.")
     if outcome.passed:
         return f"PASSED: every check passed in round {n} of {outcome.max_rounds}."
-    failed = len(outcome.final.failures)
+    final = outcome.final
+    failed = len(final.failures)
     why = (f"the loop stopped early ({outcome.stop_reason})" if outcome.stop_reason
            else f"it did not pass after {n} rounds, the maximum")
+    which = ("The last design" if final.number == n else
+             f"The best design, from round {final.number} (fewest failing checks, then the smallest "
+             f"shortfall), is the final one and")
     return (f"FAILED: no design passed all checks; {why}. "
-            f"The last design still fails {failed} check(s), listed below. Do not build it as is.")
+            f"{which} still fails {failed} check(s), listed below. Do not build it as is.")
 
 
 def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | None = None) -> str:

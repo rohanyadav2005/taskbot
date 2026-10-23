@@ -18,6 +18,10 @@ from taskbot.prompts import load_prompt
 ARM_SHOULDER_Z_M = (0.03, 0.15)
 MOBILE_SHOULDER_Z_M = (0.05, 0.4)
 WORKSPACE_REACH_TOLERANCE_M = 0.01
+# The robot's own base occupies |x|, |y| < BASE_HALF_WIDTH_M below BASE_REGION_TOP_M; a workspace
+# reaching into that region would ask the tool to go through the base (design convention).
+BASE_HALF_WIDTH_M = 0.08
+BASE_REGION_TOP_M = 0.1
 
 
 def farthest_corner(robot_type: str, ws) -> tuple[tuple[float, float, float], float, str]:
@@ -142,6 +146,21 @@ class Requirements(BaseModel):
                 f"({where}), but reach_m is {self.reach_m:.3g} m. The workspace is only the region the "
                 "tool must reach: make reach_m and the workspace agree, keeping both realistic for the "
                 "scene in the task.")
+        return self
+
+    @model_validator(mode="after")
+    def _workspace_clear_of_base(self) -> Requirements:
+        ws = self.workspace
+        if ws is None:
+            return self
+        b = BASE_HALF_WIDTH_M
+        if ws.x_min < b and ws.x_max > -b and ws.y_min < b and ws.y_max > -b and ws.z_min < BASE_REGION_TOP_M:
+            raise ValueError(
+                f"the workspace (x {ws.x_min:g} to {ws.x_max:g}, y {ws.y_min:g} to {ws.y_max:g}, z {ws.z_min:g} to "
+                f"{ws.z_max:g} m) includes the robot's own base (|x| and |y| under {b:g} m, z under "
+                f"{BASE_REGION_TOP_M:g} m). The workspace is where the targets are, relative to the base, never a "
+                "box centred on it: e.g. plants in a row in front of the robot are at x from about 0.15 to 0.35 m, "
+                "y across the row, z from just above the sill to the pot tops.")
         return self
 
     @property

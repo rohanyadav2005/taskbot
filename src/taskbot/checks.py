@@ -6,6 +6,7 @@ joint_limits, joint_speed, torque_at_speed, budget, mass. `run_checks` builds th
 
 from __future__ import annotations
 
+import json
 import math
 from collections import Counter
 from collections.abc import Callable
@@ -541,16 +542,9 @@ def reach(
 # --------------------------------------------------------------------------- self collision
 
 
-def self_collision(
-    spec: RobotSpec, req: Requirements, model: mujoco.MjModel,
-    catalog: dict[str, Motor] | None = None,
-) -> list[CheckResult]:
-    """Fraction of random in-limit poses (tool inside the workspace) where links interpenetrate.
-
-    Adjacent links (parent/child bodies) are skipped: they meet at the joint by
-    construction. MuJoCo skips most of these itself, but not for bodies welded
-    to the world such as the fixed base, so we filter them here.
-    """
+def _collision_rate(spec: RobotSpec, req: Requirements, model: mujoco.MjModel):
+    """(fraction, region text, pair counts) over COLLISION_SAMPLES random in-limit poses, judged on
+    the poses with the tool in the workspace when there are enough of them."""
     arm = _Arm.of(spec, model)
     data = mujoco.MjData(model)
     rng = np.random.default_rng(1)
@@ -582,11 +576,24 @@ def self_collision(
             pairs.update(hit)
 
     if in_ws >= 20:
-        frac, region = colliding_in_ws / in_ws, f"{in_ws} sampled poses with the tool in the workspace"
-    else:  # too few samples land in the workspace to judge it; fall back to all poses
-        frac = colliding_all / COLLISION_SAMPLES
-        region = f"all {COLLISION_SAMPLES} sampled poses (only {in_ws} put the tool in the workspace)"
-        pairs = pairs_all
+        return colliding_in_ws / in_ws, f"{in_ws} sampled poses with the tool in the workspace", pairs
+    # too few samples land in the workspace to judge it; fall back to all poses
+    return (colliding_all / COLLISION_SAMPLES,
+            f"all {COLLISION_SAMPLES} sampled poses (only {in_ws} put the tool in the workspace)", pairs_all)
+
+
+def self_collision(
+    spec: RobotSpec, req: Requirements, model: mujoco.MjModel,
+    catalog: dict[str, Motor] | None = None,
+) -> list[CheckResult]:
+    """Fraction of random in-limit poses (tool inside the workspace) where links interpenetrate.
+
+    Adjacent links (parent/child bodies) are skipped: they meet at the joint by
+    construction. MuJoCo skips most of these itself, but not for bodies welded
+    to the world such as the fixed base, so we filter them here. On failure, the message
+    lists fixes that were verified by re-running the same sampling on the changed design.
+    """
+    frac, region, pairs = _collision_rate(spec, req, model)
     ok = frac <= COLLISION_MAX_FRACTION
     msg = f"links collide in {frac:.1%} of {region} (limit {COLLISION_MAX_FRACTION:.0%})."
     if pairs:
@@ -595,8 +602,113 @@ def self_collision(
     if not ok:
         msg += " " + (_base_collision_advice(spec, pairs) or
                       "Narrow the joint ranges that fold links into each other, or change link lengths.")
+        msg += " " + _verified_collision_fixes(spec, req, catalog)
     return [CheckResult(check="self_collision", passed=ok, value=frac,
                         limit=COLLISION_MAX_FRACTION, message=msg)]
+
+
+# Verified self-collision fixes: each candidate is rebuilt and re-sampled.
+RISER_MAX_EXTRA_M = 0.3
+BASE_MIN_SIDE_M = 0.05
+SEARCH_STEPS = 8
+
+
+def _passes(spec_dict: dict, req: Requirements, catalog) -> float | None:
+    """Collision fraction of a changed design if it passes self_collision, else None."""
+    try:
+        spec = RobotSpec.model_validate(spec_dict)
+    except ValueError:
+        return None
+    frac, _, _ = _collision_rate(spec, req, build_model(spec, catalog))
+    return frac if frac <= COLLISION_MAX_FRACTION else None
+
+
+def _search(make, lo: float, hi: float, req, catalog, smallest: bool, step: float):
+    """The value in [lo, hi] closest to `lo` (smallest=True) or `hi` whose design passes, by
+    bisection, rounded to `step` away from the failing side and re-checked: (value, fraction)."""
+    good, bad = (hi, lo) if smallest else (lo, hi)
+    if _passes(make(good), req, catalog) is None:
+        return None
+    for _ in range(SEARCH_STEPS):
+        mid = (good + bad) / 2
+        if _passes(make(mid), req, catalog) is not None:
+            good = mid
+        else:
+            bad = mid
+    safe_end = hi if smallest else lo  # the end that passed: round towards it
+    value = math.ceil(good / step) * step if safe_end > good else math.floor(good / step) * step
+    value = min(max(value, min(lo, hi)), max(lo, hi))
+    frac = _passes(make(value), req, catalog)
+    return None if frac is None else (value, frac)
+
+
+def _verified_collision_fixes(spec: RobotSpec, req: Requirements, catalog) -> str:
+    base = spec.model_dump(exclude_none=True)
+    arm = next(i for i, m in enumerate(base["modules"]) if m["kind"] == "arm_chain")
+    segs = base["modules"][arm]["segments"]
+    bends = [i for i, s in enumerate(segs) if s["joint"]["type"] != "prismatic" and s["joint"]["axis"] in ("x", "y")]
+    fixes = []  # (relative change, text)
+
+    def changed(edit):
+        d = json.loads(json.dumps(base))
+        edit(d)
+        return d
+
+    if bends and bends[0] >= 1:  # a riser: the link before the first bending joint
+        link = segs[bends[0] - 1]["link"]
+        key = ("size_m", 2) if link["shape"] == "box" else ("length_m", None)
+        now = link["size_m"][2] if key[1] is not None else link["length_m"]
+
+        def riser(v, i=bends[0] - 1):
+            def edit(d):
+                lk = d["modules"][arm]["segments"][i]["link"]
+                if key[1] is None:
+                    lk["length_m"] = v
+                else:
+                    lk["size_m"][2] = v
+            return changed(edit)
+        found = _search(riser, now, now + RISER_MAX_EXTRA_M, req, catalog, smallest=True, step=0.005)
+        if found:
+            v, frac = found
+            name = "length_m" if key[1] is None else "size_m z (its length)"
+            fixes.append(((v - now) / max(now, 0.05),
+                          f"set {link['name']} {name} to at least {v:.3g} m (collisions {frac:.1%})"))
+    if bends and segs[bends[0]]["joint"]["type"] == "revolute":
+        j = segs[bends[0]]["joint"]
+        need = req.min_joint_range_rad
+        span = j["upper"] - j["lower"]
+
+        def limit(field):
+            def make(v, i=bends[0]):
+                return changed(lambda d: d["modules"][arm]["segments"][i]["joint"].__setitem__(field, v))
+            return make
+        if span > need:
+            for field, lo, hi, smallest, word in (("lower", j["lower"], j["upper"] - need, True, "or higher"),
+                                                  ("upper", j["lower"] + need, j["upper"], False, "or lower")):
+                found = _search(limit(field), lo, hi, req, catalog, smallest=smallest, step=0.05)
+                if found:
+                    v, frac = found
+                    fixes.append((abs(v - j[field]) / span,
+                                  f"set {j['name']} {field} to {v:.3g} rad {word} (collisions {frac:.1%})"))
+    b = base["modules"][0]
+    if b["kind"] == "fixed_base":
+        fx, fy = b["footprint_m"]
+
+        def shrink(s):
+            return changed(lambda d: d["modules"][0].__setitem__("footprint_m", [fx * s, fy * s]))
+        lo = max(BASE_MIN_SIDE_M / min(fx, fy), 0.0)
+        if lo < 1:
+            found = _search(shrink, 1.0, lo, req, catalog, smallest=True, step=0.01)
+            if found:
+                s_, frac = found
+                fixes.append((1 - s_, f"make the base footprint {fx * s_:.3g} x {fy * s_:.3g} m or smaller "
+                                      f"(collisions {frac:.1%})"))
+    if not fixes:
+        return ("No single change to the riser length, the first pitch joint's range or the base size "
+                f"brought collisions under {COLLISION_MAX_FRACTION:.0%} in the same sampling.")
+    fixes.sort(key=lambda f: f[0])
+    return ("Verified fixes, each re-checked with the same sampling, smallest change first: "
+            + "; or ".join(t for _, t in fixes) + ".")
 
 
 def _base_collision_advice(spec: RobotSpec, pairs: Counter) -> str | None:

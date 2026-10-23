@@ -12,6 +12,10 @@ against each other.
 
 The loop stops early when a check says no design can pass (cause "infeasible"), or when
 the model sends back an earlier design for the second time.
+
+The final design is the best round (fewest failing checks, then the smallest total
+normalised shortfall), not necessarily the last. When a round is worse than the best one,
+the next repair starts again from the best design.
 """
 
 from __future__ import annotations
@@ -93,7 +97,33 @@ class RepairOutcome:
 
     @property
     def final(self) -> Round:
+        """The best round: what gets saved and reported as the design."""
+        return best_round(self.rounds)
+
+    @property
+    def last(self) -> Round:
         return self.rounds[-1]
+
+
+def failed_checks(rnd: Round) -> int:
+    return len({r.check for r in rnd.failures})
+
+
+def round_rank(rnd: Round) -> tuple[int, float]:
+    """(failing checks, total normalised shortfall): lower is better. A failure's shortfall is
+    |value - limit| / |limit| (limit floored at 1e-3); failures without numbers count 1."""
+    short = 0.0
+    for r in rnd.failures:
+        if r.value is None or r.limit is None:
+            short += 1.0
+        else:
+            short += abs(r.value - r.limit) / max(abs(r.limit), 1e-3)
+    return failed_checks(rnd), short
+
+
+def best_round(rounds: list[Round]) -> Round:
+    """Lowest rank; the later round on a tie."""
+    return min(rounds, key=lambda r: (round_rank(r), -r.number))
 
 
 def format_failures(failures: list[CheckResult]) -> str:
@@ -291,10 +321,11 @@ def false_claims(old: RobotSpec, new: RobotSpec) -> list[str]:
 
 
 def repair_prompt(spec: RobotSpec, req: Requirements, failures: list[CheckResult],
-                  rounds: list[Round] | None = None) -> str:
-    """`rounds`: every round so far (the last one produced `failures`), for progress, history,
-    repeats and claims."""
-    text = format_failures(failures)
+                  rounds: list[Round] | None = None, note: str | None = None) -> str:
+    """`rounds`: every round so far, for progress, history, repeats and claims. `spec` and
+    `failures` are the design being repaired (the best round's, after a worse round).
+    `note` leads the failure list (e.g. that the loop went back to the best design)."""
+    text = (f"{note}\n" if note else "") + format_failures(failures)
     if failures and all(r.check in REACH_CHECKS or r.cause == "unreachable" for r in failures):
         text += "\n" + MOTOR_NOTE
     elif (any(r.check in REACH_CHECKS for r in failures)
@@ -382,10 +413,17 @@ def repair_loop(
                 break
         if rnd.passed or number == max_rounds:
             break
-        emit(f"Asking the model to repair {len(rnd.failures)} failure(s)...")
+        start, note = rnd, None
+        best = best_round(outcome.rounds)
+        if round_rank(rnd) > round_rank(best):
+            start = best
+            note = (f"Round {rnd.number} was worse than round {best.number} ({failed_checks(rnd)} failures vs "
+                    f"{failed_checks(best)}). Starting again from round {best.number}'s design.")
+            emit("  " + note)
+        emit(f"Asking the model to repair {len(start.failures)} failure(s)...")
         try:
             spec = client.complete_json(
-                system, repair_prompt(spec, req, rnd.failures, outcome.rounds), RobotSpec,
+                system, repair_prompt(start.spec, req, start.failures, outcome.rounds, note), RobotSpec,
                 context={"motor_ids": set(supported_motors(catalog))},
             )
         except LLMOutputError as exc:  # the model's fault; network/rate-limit errors propagate

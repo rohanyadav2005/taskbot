@@ -24,7 +24,8 @@ ALL_Z = json.loads((Path(__file__).parent / "data" / "watering_arm_all_z.json").
 # The requirements of that run (from its summary and corner list).
 WATERING = Requirements(
     task_summary="water the three plants on my windowsill", robot_type="arm", reach_m=0.5, payload_kg=0.5,
-    workspace={"x_min": -0.2, "x_max": 0.2, "y_min": -0.2, "y_max": 0.2, "z_min": 0.05, "z_max": 0.5},
+    # z_min 0.1, not the run's 0.05: a workspace around the base below 0.1 m is now rejected.
+    workspace={"x_min": -0.2, "x_max": 0.2, "y_min": -0.2, "y_max": 0.2, "z_min": 0.1, "z_max": 0.5},
     dof_min=3, gripper_needed=True, gripper_kind="suction", position_tolerance_m=0.01,
     tolerance_reason="1 cm is enough to water a plant", assumptions=[])
 
