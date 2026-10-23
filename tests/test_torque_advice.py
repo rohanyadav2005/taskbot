@@ -20,7 +20,8 @@ HEAVY = json.loads((Path(__file__).parent / "data" / "watering_arm_heavy.json").
 # The run's requirements: 0.5 kg (a 0.4 kg watering can + 25%) at 0.5 m.
 RUN_REQ = dict(
     task_summary="water the three plants on my windowsill", robot_type="arm", reach_m=0.5, payload_kg=0.5,
-    workspace={"x_min": -0.2, "x_max": 0.2, "y_min": -0.2, "y_max": 0.2, "z_min": 0.1, "z_max": 0.6},
+    # z_max 0.5, not the run's 0.6: with reach_m 0.5 a 0.6 m corner is now (rightly) rejected.
+    workspace={"x_min": -0.2, "x_max": 0.2, "y_min": -0.2, "y_max": 0.2, "z_min": 0.1, "z_max": 0.5},
     dof_min=3, gripper_needed=True, gripper_kind="parallel", position_tolerance_m=0.01,
     tolerance_reason="1 cm is enough to water a plant", assumptions=[])
 
@@ -91,12 +92,12 @@ def test_self_collision_with_the_base_explains_why():
             "0.05 m above the base top, and the base is 0.3 x 0.3 m") in r.message
 
 
-def test_joint_range_just_under_90_degrees_shows_the_decimal():
+def test_joint_range_typed_as_rounded_90_degrees_passes():
+    """-0.785 to 0.785 rad is 89.95°: short only by rounding, within the 0.5° allowance (Task 6.4)."""
     d = json.loads(json.dumps(HEAVY))
     d["modules"][1]["segments"][2]["joint"] |= {"lower": -0.785, "upper": 0.785}
     (r,) = run(checks.joint_limits, d=d)
-    assert not r.passed
-    assert "elbow_pitch spans 89.95° (-0.785 to 0.785 rad) but needs at least 90° (1.571 rad)" in r.message
+    assert r.passed
 
 
 @pytest.mark.parametrize("check, before, now, text", [

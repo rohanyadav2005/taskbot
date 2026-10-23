@@ -13,9 +13,9 @@ from taskbot.prompts import load_prompt
 
 # Where an arm's shoulder (its first bending joint) can plausibly be, for checking that the
 # workspace fits within reach_m. Design conventions, not measured data: a fixed arm's shoulder
-# is on the base axis, on a base and turret 0.03-0.3 m tall; a mobile manipulator's is on the
+# is on the base axis, on a base and turret 0.03-0.15 m tall; a mobile manipulator's is on the
 # chassis top (0.05-0.4 m) anywhere over the workspace.
-ARM_SHOULDER_Z_M = (0.03, 0.3)
+ARM_SHOULDER_Z_M = (0.03, 0.15)
 MOBILE_SHOULDER_Z_M = (0.05, 0.4)
 WORKSPACE_REACH_TOLERANCE_M = 0.01
 

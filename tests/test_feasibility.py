@@ -44,8 +44,8 @@ def test_workspace_beyond_reach_is_rejected_with_the_numbers():
     with pytest.raises(ValidationError) as err:
         Requirements(**RUN)
     msg = str(err.value)
-    assert "workspace corner (-0.2, -0.2, 1.5) is 1.23 m from the nearest plausible shoulder position" in msg
-    assert "on the base axis 0.3 m up" in msg and "but reach_m is 0.8 m" in msg
+    assert "workspace corner (-0.2, -0.2, 1.5) is 1.38 m from the nearest plausible shoulder position" in msg
+    assert "on the base axis 0.15 m up" in msg and "but reach_m is 0.8 m" in msg
     assert "make reach_m and the workspace agree" in msg
 
 
@@ -53,7 +53,7 @@ def test_json_retry_sends_the_workspace_error_back():
     fake = FakeClient({"Requirements": [RUN, CUP]})
     req = fake.complete_json("sys", TASK, Requirements)
     assert req.reach_m == 0.4 and fake.usage.json_retries == 1
-    assert "1.23 m from the nearest plausible shoulder position" in fake.calls[1][1][-1]["content"]
+    assert "1.38 m from the nearest plausible shoulder position" in fake.calls[1][1][-1]["content"]
 
 
 def test_mobile_manipulator_workspace_is_measured_from_the_chassis_top():

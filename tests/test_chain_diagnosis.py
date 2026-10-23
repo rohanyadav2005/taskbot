@@ -205,7 +205,7 @@ def test_normal_yaw_pitch_pitch_arm_gets_no_diagnosis():
 
 def test_workspace_above_the_arm_states_the_reachable_heights():
     req = watering(**{
-        "reach_m": 0.65, "gripper_kind": "parallel",
+        "reach_m": 0.8, "gripper_kind": "parallel",
         "workspace": {"x_min": 0.1, "x_max": 0.2, "y_min": -0.1, "y_max": 0.1, "z_min": 0.1, "z_max": 0.9}})
     note = next(n for n in chain_diagnosis(spec_of(yaw_pitch_pitch()), req) if n.startswith("The tool can only"))
     # base top 0.03 + turret 0.05 = shoulder at 0.08; links 0.4 + gripper 0.065 above and below it.
@@ -218,7 +218,7 @@ def test_workspace_above_the_arm_states_the_reachable_heights():
 
 def test_floor_below_a_tall_base_states_the_reachable_heights():
     req = watering(**{
-        "reach_m": 0.56, "gripper_kind": "parallel",
+        "reach_m": 0.7, "gripper_kind": "parallel",
         "workspace": {"x_min": 0.1, "x_max": 0.2, "y_min": -0.1, "y_max": 0.1, "z_min": 0.0, "z_max": 0.8}})
     note = next(n for n in chain_diagnosis(spec_of(yaw_pitch_pitch(base_height=0.6)), req)
                 if n.startswith("The tool can only"))

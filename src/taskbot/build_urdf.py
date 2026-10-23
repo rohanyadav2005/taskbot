@@ -88,6 +88,19 @@ def cylinder_inertia(mass: float, radius: float, length: float) -> np.ndarray:
     return np.diag([i_xy, i_xy, mass * radius * radius / 2.0])
 
 
+def tube_inertia(mass: float, outer: float, inner: float, length: float) -> np.ndarray:
+    """Hollow cylinder (thick-walled tube) with its axis along z."""
+    r2 = outer * outer + inner * inner
+    i_xy = mass / 12.0 * (3 * r2 + length * length)
+    return np.diag([i_xy, i_xy, mass * r2 / 2.0])
+
+
+def hollow_tube(material: str, outer: float, wall: float, length: float, com) -> Body:
+    inner = outer - wall
+    m = DENSITY_KG_M3[material] * np.pi * (outer * outer - inner * inner) * length
+    return Body(m, np.asarray(com, float), tube_inertia(m, outer, inner, length), material)
+
+
 def solid_box(material: str, size, com) -> Body:
     x, y, z = size
     m = DENSITY_KG_M3[material] * x * y * z
@@ -148,6 +161,9 @@ def _arm_link_draft(link: Link) -> _LinkDraft:
     if link.shape == "box":
         body = solid_box(link.material, link.size_m, centre)
         geom = _box_geom(link.size_m)
+    elif link.shape == "tube":  # collision/visual shape is the outer cylinder
+        body = hollow_tube(link.material, link.radius_m, link.wall, L, centre)
+        geom = _cyl_geom(link.radius_m, L)
     else:
         body = solid_cylinder(link.material, link.radius_m, L, centre)
         geom = _cyl_geom(link.radius_m, L)

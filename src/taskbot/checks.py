@@ -28,7 +28,15 @@ from taskbot.feasibility import (
     needed_reach_m,
     strongest_position_motor,
 )
-from taskbot.schema import ArmChain, Gripper, Motor, RobotSpec, load_motor_catalog, supported_motors
+from taskbot.schema import (
+    TUBE_WALL_DEFAULT_M,
+    ArmChain,
+    Gripper,
+    Motor,
+    RobotSpec,
+    load_motor_catalog,
+    supported_motors,
+)
 
 if TYPE_CHECKING:  # requirements imports the LLM layer; only needed for annotations
     from taskbot.requirements import Requirements
@@ -93,6 +101,11 @@ class CheckResult(BaseModel):
 
 TORQUE_SAFETY_FRACTION = 0.8  # use at most 80% of a motor's rated torque
 REACH_TOLERANCE_M = 0.01
+# joint_limits: ranges typed with rounded numbers (0 to 1.57 for 90°) count; this allows for
+# rounding only, it is not a physical tolerance. Ranges short by less than JOINT_RANGE_EXACT_HINT
+# get the exact value to write.
+JOINT_RANGE_ROUNDING_RAD = math.radians(0.5)
+JOINT_RANGE_EXACT_HINT_RAD = math.radians(2.0)
 REACH_SAMPLES = 2000
 COLLISION_SAMPLES = 500
 COLLISION_MAX_FRACTION = 0.05
@@ -242,7 +255,10 @@ def _link_desc(link) -> str:
     if link.shape == "box":
         x, y, z = link.size_m
         return f"{link.material} box {x:.3g} x {y:.3g} x {z:.3g} m"
-    return f"{link.material} cylinder r {link.radius_m:.3g} m x {link.length_m:.3g} m"
+    if link.shape == "tube":
+        return (f"{link.material} tube r {link.radius_m:.3g} m, {link.wall * 1000:.3g} mm wall x "
+                f"{link.length_m:.3g} m")
+    return f"{link.material} solid rod r {link.radius_m:.3g} m x {link.length_m:.3g} m"
 
 
 def stretch_m(spec: RobotSpec) -> float | None:
@@ -272,6 +288,27 @@ def torque_floor(spec: RobotSpec, req: Requirements, catalog: dict[str, Motor]) 
     return holding_torque_floor_nm(req.payload_kg, mass, tool, lever), desc, lever
 
 
+def _tube_swaps(loads: list[tuple[str, float]], links: dict) -> list[tuple[str, float, float]]:
+    """(link, mass now, mass as a default-wall tube) for solid links among the loads: same
+    length and material, outer radius = the rod's radius or half the box's smaller side.
+    Masses include whatever else the link body carries (its motor)."""
+    from taskbot.build_urdf import _arm_link_draft, hollow_tube
+
+    out = []
+    for name, mass in loads:
+        link = links.get(name)
+        if link is None or link.shape == "tube":
+            continue
+        outer = link.radius_m if link.shape == "cylinder" else min(link.size_m[:2]) / 2
+        if outer <= TUBE_WALL_DEFAULT_M:
+            continue
+        solid = _arm_link_draft(link).bodies[0].mass
+        tube = hollow_tube(link.material, outer, TUBE_WALL_DEFAULT_M, link.length, np.zeros(3)).mass
+        if tube < 0.8 * solid:
+            out.append((name, mass, mass - solid + tube))
+    return out
+
+
 def _torque_advice(spec, req, joint, need, loads, motors, floor) -> str:
     """What to change when a revolute joint can't hold the arm out straight."""
     links = {s.link.name: s.link for m in spec.modules if isinstance(m, ArmChain) for s in m.segments}
@@ -281,6 +318,10 @@ def _torque_advice(spec, req, joint, need, loads, motors, floor) -> str:
         what = f" ({_link_desc(links[name])}, with the motor mounted on it)" if name in links else ""
         parts.append(f"{name}{what} {mass:.3g} kg -> {tau:.3g} Nm")
     text = f"Biggest loads on {joint.name}: " + "; ".join(parts) + "."
+    tubes = _tube_swaps([(name, mass) for name, mass, _ in top], links)
+    if tubes:
+        text += (f" Use tubes (shape \"tube\", {TUBE_WALL_DEFAULT_M * 1000:g} mm wall) instead of solid links: "
+                 + ", ".join(f"{n} would drop from {a:.3g} kg to {b:.3g} kg" for n, a, b in tubes) + ".")
     strongest = strongest_position_motor(motors)
     usable = TORQUE_SAFETY_FRACTION * strongest.rated_torque_nm
     if need > usable:
@@ -588,16 +629,21 @@ def joint_limits(
     spec: RobotSpec, req: Requirements, model: mujoco.MjModel,
     catalog: dict[str, Motor] | None = None,
 ) -> list[CheckResult]:
-    """Every revolute joint needs a valid range of at least req.min_joint_range_rad."""
+    """Every revolute joint needs a valid range of at least req.min_joint_range_rad, within
+    JOINT_RANGE_ROUNDING_RAD: a typed-rounding allowance (1.57 for pi/2), not a physical one."""
     arm = _Arm.of(spec, model)
     revolute = [j for j in arm.joints if j.type == "revolute"]
     need = req.min_joint_range_rad
     problems = []
     for j in revolute:
         span = j.upper - j.lower
-        if span < need:
-            problems.append(f"{j.name} spans {np.degrees(span):.2f}° ({j.lower:.4g} to {j.upper:.4g} rad) but "
-                            f"needs at least {np.degrees(need):.0f}° ({need:.4g} rad)")
+        if span < need - JOINT_RANGE_ROUNDING_RAD:
+            text = (f"{j.name} spans {np.degrees(span):.2f}° ({j.lower:.4g} to {j.upper:.4g} rad) but "
+                    f"needs at least {np.degrees(need):.0f}° ({need:.4g} rad)")
+            if need - span < JOINT_RANGE_EXACT_HINT_RAD:
+                text += (f": set upper to {j.lower + need:.4f} or more (or lower to {j.upper - need:.4f} "
+                         "or less)")
+            problems.append(text)
         elif span > 2 * np.pi + 1e-9 or max(abs(j.lower), abs(j.upper)) > 2 * np.pi + 1e-9:
             problems.append(f"{j.name} range [{j.lower:.3g}, {j.upper:.3g}] rad exceeds ±2π; "
                             "use type 'continuous' for unlimited rotation")

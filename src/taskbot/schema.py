@@ -191,18 +191,27 @@ class Joint(_Strict):
         return self
 
 
+TUBE_WALL_DEFAULT_M = 0.002  # a common wall for small aluminium and printed tubes
+TUBE_WALL_MIN_M = 0.001      # thinner than this isn't a practical desk-scale arm tube
+
+
 class Link(_Strict):
-    """A rigid link. Its mass is computed from shape, size and material."""
+    """A rigid link. Its mass is computed from shape, size and material.
+    box: solid; cylinder: solid rod; tube: hollow round tube (outer radius_m, wall_thickness_m)."""
 
     name: Name
-    shape: Literal["box", "cylinder"]
+    shape: Literal["box", "cylinder", "tube"]
     size_m: Vec3 | None = Field(
         default=None, description="Box only: (x, y, z); z is the length along the link."
     )
-    radius_m: PositiveFloat | None = Field(default=None, description="Cylinder only.")
+    radius_m: PositiveFloat | None = Field(
+        default=None, description="Cylinder: radius. Tube: outer radius.")
     length_m: PositiveFloat | None = Field(
-        default=None, description="Cylinder only: length along the link's z axis."
+        default=None, description="Cylinder and tube: length along the link's z axis."
     )
+    wall_thickness_m: float | None = Field(
+        default=None, ge=TUBE_WALL_MIN_M,
+        description=f"Tube only: wall thickness, default {TUBE_WALL_DEFAULT_M} m, at least {TUBE_WALL_MIN_M} m.")
     material: Material
 
     @model_validator(mode="after")
@@ -216,10 +225,22 @@ class Link(_Strict):
         else:
             if self.radius_m is None or self.length_m is None or self.size_m is not None:
                 raise ValueError(
-                    f"link '{self.name}' is a cylinder: give radius_m and length_m "
+                    f"link '{self.name}' is a {self.shape}: give radius_m and length_m "
                     "and no size_m"
                 )
+        if self.shape != "tube" and self.wall_thickness_m is not None:
+            raise ValueError(f"link '{self.name}': wall_thickness_m is for shape 'tube' only")
+        if self.shape == "tube" and self.wall >= self.radius_m:
+            raise ValueError(f"link '{self.name}': wall_thickness_m ({self.wall:g} m) must be less than "
+                             f"radius_m ({self.radius_m:g} m)")
         return self
+
+    @property
+    def wall(self) -> float | None:
+        """Tube wall thickness (the default if not given); None for solid shapes."""
+        if self.shape != "tube":
+            return None
+        return self.wall_thickness_m if self.wall_thickness_m is not None else TUBE_WALL_DEFAULT_M
 
     @property
     def length(self) -> float:

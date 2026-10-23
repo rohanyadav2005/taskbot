@@ -232,6 +232,9 @@ requirements with assumptions; the controller table; and downloads of `spec.json
 * A wheeled base's frame is on the ground under the chassis centre, x forward, z up; an arm's
   `mount_xy_m` places its first joint on the chassis top.
 * Each link extends along its own +z from the joint that drives it; the next joint is at its tip.
+* Link shapes: `box` (solid), `cylinder` (solid rod) and `tube` (hollow round tube: outer `radius_m`,
+  `wall_thickness_m` default 2 mm, at least 1 mm). Tube mass and inertia use the hollow-cylinder
+  formulas; its collision shape is the outer cylinder.
 * A joint's motor is mounted on the parent link at the joint.
 * URDF effort/velocity limits are the motor's stall torque and no-load speed.
   Prismatic joints assume a 10 mm rack-and-pinion radius.
@@ -249,7 +252,7 @@ beat, using the same numbers as the checks:
   and wheels) against the best wheel motor on four driven wheels at the required speed.
 
 A `Requirements` validator also rejects a workspace whose corners are farther than `reach_m` from
-any plausible shoulder position (on the base axis 0.03–0.3 m up for an arm; on a 0.05–0.4 m
+any plausible shoulder position (on the base axis 0.03–0.15 m up for an arm; on a 0.05–0.4 m
 chassis top over the workspace for a mobile manipulator), so the JSON retry fixes it.
 
 If the gate fails, the requirements go back to the requirements step once, with the numbers and
@@ -276,7 +279,7 @@ stronger motors near the base, lighter outer links).
 | `reach` | Tool reaches `reach_m` from the base axis at mid-workspace height, within 1 cm |
 | `workspace_corners` | All 8 workspace corners are reachable within 1 cm |
 | `self_collision` | ≤ 5% of random in-limit poses (tool inside the workspace) have non-adjacent links interpenetrating |
-| `joint_limits` | Every revolute joint spans ≥ `min_joint_range_rad` (default 90°) and stays within ±2π |
+| `joint_limits` | Every revolute joint spans ≥ `min_joint_range_rad` (default 90°) and stays within ±2π. Ranges typed with rounded numbers count: a 0.5° allowance (0 to 1.57 rad is 89.95°), for rounding only. A range short by under 2° gets the exact value to write |
 | `joint_speed` | Every planned move can finish within 5 s with no joint above 80% of its no-load speed |
 | `torque_at_speed` | At each move's mid-point (peak speed), every joint's gravity torque is below what its motor gives at that speed |
 | `budget` | Motor prices + rough material cost ≤ `max_budget_usd` |
