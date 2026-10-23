@@ -53,16 +53,25 @@ def test_loop_passing_first_time_makes_no_repair_call(desk_req):
     assert outcome.passed and len(outcome.rounds) == 1 and len(fake.calls) == 1
 
 
+def _longer_wrist(i: int) -> dict:
+    """UNDERPOWERED with the wrist link 5% longer per step: a different design each round."""
+    d = json.loads(json.dumps(UNDERPOWERED))
+    seg = d["modules"][1]["segments"][3]["link"]
+    seg["size_m"][2] = round(seg["size_m"][2] * 1.05 ** i, 4)
+    return d
+
+
 def test_loop_gives_up_after_5_rounds_and_report_says_so(desk_req, tmp_path):
-    fake = FakeClient({"RobotSpec": [UNDERPOWERED] * 5})  # the "repair" never changes anything
+    # Every "repair" changes something (so no repeat is detected) but never the weak shoulder.
+    fake = FakeClient({"RobotSpec": [_longer_wrist(i) for i in range(5)]})
     outcome = repair_loop(fake, desk_req, CATALOG, simulate=False)
-    assert not outcome.passed
+    assert not outcome.passed and outcome.stop_reason is None
     assert len(outcome.rounds) == 5 and len(fake.calls) == 5
     report = render_report(outcome)
     assert "**FAILED: no design passed all checks; it did not pass after 5 rounds" in report
     assert "Do not build it as is." in report
     assert "PASSED" not in report
-    assert report.count("The spec did not change.") == 4
+    assert "The spec did not change." not in report
     assert "Still failing:" in report and "shoulder_pitch needs" in report
 
 

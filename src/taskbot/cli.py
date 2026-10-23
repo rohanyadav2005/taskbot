@@ -77,6 +77,12 @@ def cmd_design(args: argparse.Namespace) -> int:
     except LLMError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    if result.infeasible and result.outcome is None:
+        print(f"INFEASIBLE: no design was made for: {result.requirements.task_summary}")
+        for reason in result.infeasible:
+            print(f"  {reason}")
+        print(f"Saved to {result.out_dir}/ : report.md, requirements.json")
+        return 4
     if result.error is not None:
         print(f"FAILED: the model never produced a valid design for: {result.requirements.task_summary}")
         print(f"  {result.error}")
@@ -89,6 +95,8 @@ def cmd_design(args: argparse.Namespace) -> int:
         print(f"Saved to {result.out_dir}/ : report.md, requirements.json")
         return 3
     print(summarize(result.outcome, catalog, result.out_dir))
+    if result.infeasible:
+        return 4
     return 0 if result.passed else 2
 
 

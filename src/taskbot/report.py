@@ -35,6 +35,9 @@ def _spec_json(rnd: Round) -> str:
 
 def verdict(outcome: RepairOutcome) -> str:
     n = len(outcome.rounds)
+    if outcome.infeasible:
+        return (f"INFEASIBLE: the requirements are beyond the motor catalog, so no design can pass; the loop "
+                f"stopped after round {n}. Do not build it as is.")
     if outcome.passed:
         return f"PASSED: every check passed in round {n} of {outcome.max_rounds}."
     failed = len(outcome.final.failures)
@@ -49,6 +52,8 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
     req = outcome.requirements
     final = outcome.final
     lines = [f"# Design report: {final.spec.name}", "", f"**{verdict(outcome)}**", ""]
+    if outcome.infeasible:
+        lines += _infeasible_lines(outcome.infeasible, req) + [""]
 
     lines += ["## Requirements", ""]
     lines += requirements_rows(req)
@@ -200,13 +205,45 @@ def write_design_failed(req, out_root: Path, error: str) -> Path:
                             "schema), so nothing was checked.", [error], "Requirements")
 
 
+def _infeasible_lines(problems: list[str], req, options: list[str] | None = None) -> list[str]:
+    from taskbot.feasibility import check_feasibility
+    from taskbot.schema import load_motor_catalog
+
+    if options is None:
+        options = check_feasibility(req, load_motor_catalog()).options
+    lines = ["## Why no design can pass", "", *[f"- {_cell(p)}" for p in problems]]
+    if options:
+        lines += ["", "## What would make it possible", "", *[f"- {_cell(o)}" for o in options]]
+    lines += ["", "These are bounds no design can beat (weightless links, chassis and motors), so the "
+              "requirements, or the motor catalog, have to change."]
+    return lines
+
+
+def write_infeasible(req, out_root: Path, feasibility, first=None) -> Path:
+    """out/<task>/{requirements.json, report.md} when the feasibility gate stops the run.
+    `first`: the gate's findings on the requirements' first version, sent back once."""
+    import re
+
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", req.task_summary.lower()).strip("_")[:40] or "infeasible"
+    extra = _infeasible_lines(feasibility.problems, req, feasibility.options)
+    if first is not None:
+        extra += ["", "The first requirements were sent back to the model once with these numbers, and its "
+                  "second version is still infeasible. First version:", "",
+                  *[f"- {_cell(p)}" for p in first.problems]]
+    return _write_no_design(req, out_root, slug,
+                            "INFEASIBLE: no design was made. No robot built from the motor catalog can meet "
+                            "these requirements.", [], "Requirements", extra)
+
+
 def _write_no_design(req, out_root: Path, slug: str, headline: str, reasons: list[str],
-                     req_title: str) -> Path:
+                     req_title: str, extra: list[str] | None = None) -> Path:
     out = unique_dir(out_root, slug)
     out.mkdir(parents=True)
     (out / "requirements.json").write_text(req.model_dump_json(indent=2) + "\n", "utf-8")
-    lines = [f"# Design report: {slug}", "", f"**{headline}**", "", "Why:",
-             *[f"- {_cell(a)}" for a in reasons], "", f"## {req_title}", "", *requirements_rows(req)]
+    lines = [f"# Design report: {slug}", "", f"**{headline}**", ""]
+    if reasons:
+        lines += ["Why:", *[f"- {_cell(a)}" for a in reasons], ""]
+    lines += [*(extra or []), *([""] if extra else []), f"## {req_title}", "", *requirements_rows(req)]
     (out / "report.md").write_text("\n".join(lines) + "\n", "utf-8")
     return out
 

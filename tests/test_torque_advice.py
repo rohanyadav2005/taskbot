@@ -36,7 +36,8 @@ def by_joint(results):
 
 def test_static_torque_names_the_heavy_parts():
     shoulder = by_joint(run(checks.static_torque))["shoulder_pitch"]
-    assert not shoulder.passed and shoulder.cause == "saturated"
+    # The run's requirements are beyond the catalog, so the shoulder's cause is "infeasible".
+    assert not shoulder.passed and shoulder.cause == "infeasible"
     assert ("Biggest loads on shoulder_pitch: wrist_link (aluminium box 0.08 x 0.08 x 0.2 m, with the motor "
             "mounted on it) 3.46 kg -> ") in shoulder.message
     assert "elbow_link (aluminium box 0.08 x 0.08 x 0.3 m" in shoulder.message
@@ -59,8 +60,9 @@ def test_over_long_arm_is_pointed_out():
 def test_requirements_beyond_the_catalog_are_said_once_at_the_shoulder():
     results = by_joint(run(checks.static_torque))
     shoulder = results["shoulder_pitch"]
-    assert ("Even with weightless links and motors, holding 0.5 kg plus the 0.124 kg gripper 0.5 m out needs "
-            "2.98 Nm here, more than any catalog motor allows (2.83 Nm)") in shoulder.message
+    # The floor uses the lightest catalog gripper of the required kind, the same number as the gate.
+    assert ("Even with weightless links and motors, holding 0.5 kg with the lightest parallel gripper (0.0943 kg) "
+            "0.5 m out needs 2.85 Nm here, more than any catalog motor allows (2.83 Nm)") in shoulder.message
     assert "no design change can make this check pass" in shoulder.message
     assert "beyond the motor catalog" not in results["elbow_pitch"].message
 

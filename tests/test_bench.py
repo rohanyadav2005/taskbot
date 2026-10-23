@@ -149,7 +149,9 @@ def test_fake_runner_scores_each_prompt(fake_run):
     assert box.unfixed == [] and (run_dir / box.report).exists()
 
     stuck = recs["mobile_laundry_basket"]
-    assert stuck.status == "done" and not stuck.passed and stuck.rounds == 5
+    # The fake sends the same design back every round: stopped on the second repeat (round 3).
+    assert stuck.status == "done" and not stuck.passed and stuck.rounds == 3
+    assert stuck.stop_reason.startswith("repeating designs: round 3 is the same as round 1")
     unfixed = {u["check"]: u for u in stuck.unfixed}
     assert unfixed["wheel_torque"]["cause"] == "saturated"
     assert "stronger wheel motor" in unfixed["wheel_torque"]["message"]
@@ -331,7 +333,7 @@ def test_csv_has_one_row_per_prompt(fake_run, tmp_path):
     rows = {r["id"]: r for r in csv.DictReader(path.open(newline="", encoding="utf-8"))}
     assert set(rows) == set(recs)
     stuck = rows["mobile_laundry_basket"]
-    assert stuck["passed"] == "n" and stuck["rounds"] == "5" and "wheel_torque:saturated" in stuck["final_failures"]
+    assert stuck["passed"] == "n" and stuck["rounds"] == "3" and "wheel_torque:saturated" in stuck["final_failures"]
     assert rows["oos_coffee_drone"]["rejection_correct"] == "y"
     assert rows["vague_grandma"]["status"] == "no_fake_response"
 

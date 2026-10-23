@@ -204,6 +204,7 @@ class Record:
     passed: bool = False
     strict_pass: bool = False
     rejected: bool | None = None
+    infeasible: bool = False   # stopped: no design from the catalog can meet the requirements
     rejection_correct: bool | None = None
     requirements_valid: bool | None = None
     valid_spec: bool | None = None
@@ -292,6 +293,9 @@ def _score_result(rec: Record, p: BenchPrompt, result, run_dir: Path) -> None:
     rec.requirements_valid = True
     rec.robot_type = req.robot_type
     rec.rejected = result.rejected
+    rec.infeasible = bool(result.infeasible)
+    if result.infeasible:
+        rec.unfixed = [{"check": "feasibility", "cause": "infeasible", "message": m} for m in result.infeasible]
     # Forward slashes on every OS: this goes into Markdown links and the CSV.
     rec.report = (result.out_dir / "report.md").relative_to(run_dir).as_posix()
     type_ok, misses = score_expectations(req, p.expect)
@@ -395,6 +399,8 @@ def _outcome(r: Record) -> str:
         return "rejected (correct)" if r.rejected else "NOT rejected"
     if r.rejected:
         return "wrongly rejected"
+    if r.infeasible:
+        return "infeasible (stopped)"
     if r.valid_spec is False:
         return "invalid spec"
     return f"{'PASS' if r.passed else 'FAIL'} in {r.rounds} round{'s' * (r.rounds != 1)}"
@@ -402,7 +408,7 @@ def _outcome(r: Record) -> str:
 
 # --------------------------------------------------------------------------- reports
 
-CSV_FIELDS = ["id", "split", "category", "status", "passed", "strict_pass", "rejected", "should_reject",
+CSV_FIELDS = ["id", "split", "category", "status", "passed", "strict_pass", "rejected", "infeasible", "should_reject",
               "rejection_correct", "requirements_valid", "valid_spec", "robot_type",
               "robot_type_correct", "expectations_met", "expectation_failures", "rounds",
               "final_failures", "unfixed_count", "tokens_in", "tokens_out", "json_retries",
@@ -419,7 +425,7 @@ def write_csv(records: list[Record], path: Path, run_name: str) -> None:
         w.writeheader()
         for r in records:
             row = {k: getattr(r, k) for k in CSV_FIELDS if hasattr(r, k)}
-            row |= {k: _yn(getattr(r, k)) for k in ("passed", "strict_pass", "rejected", "should_reject",
+            row |= {k: _yn(getattr(r, k)) for k in ("passed", "strict_pass", "rejected", "infeasible", "should_reject",
                                                      "rejection_correct",
                                                      "requirements_valid", "valid_spec", "robot_type_correct",
                                                      "expectations_met")}

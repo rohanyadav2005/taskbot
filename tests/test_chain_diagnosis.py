@@ -166,7 +166,7 @@ def test_prompts_carry_the_new_guidance():
     assert "A z-axis joint after an upright link only twists it in place" in design
     assert "base_yaw (axis z) -> turret 0.05 m; shoulder_pitch (axis y)" in design
     req = load_prompt("requirements")
-    assert "for watering plants it is the water and its container" in req
+    assert "for watering plants it is a cup of 200-300 ml of water plus the cup" in req
     assert "potted desk plant weighs" not in req
     assert "There is no fixed-tool or holder option" in req
     assert "Desk-scale robots should be light: assume PLA or aluminium" in req
@@ -205,22 +205,23 @@ def test_normal_yaw_pitch_pitch_arm_gets_no_diagnosis():
 
 def test_workspace_above_the_arm_states_the_reachable_heights():
     req = watering(**{
-        "reach_m": 0.3, "gripper_kind": "parallel",
+        "reach_m": 0.65, "gripper_kind": "parallel",
         "workspace": {"x_min": 0.1, "x_max": 0.2, "y_min": -0.1, "y_max": 0.1, "z_min": 0.1, "z_max": 0.9}})
-    (note,) = chain_diagnosis(spec_of(yaw_pitch_pitch()), req)
+    note = next(n for n in chain_diagnosis(spec_of(yaw_pitch_pitch()), req) if n.startswith("The tool can only"))
     # base top 0.03 + turret 0.05 = shoulder at 0.08; links 0.4 + gripper 0.065 above and below it.
     assert note.startswith("The tool can only get between z = -0.385 m and z = 0.545 m: the arm starts on the "
                            "base top at 0.03 m and shoulder_pitch (the first joint that bends it) is at 0.08 m.")
     assert "to reach z = 0.9 m, raise the base or lengthen the links by at least 0.355 m" in note
     _, corners = checks.reach(spec_of(yaw_pitch_pitch()), req, build_model(spec_of(yaw_pitch_pitch())))
-    assert not corners.passed and corners.message.startswith("The tool can only get between")
+    assert not corners.passed and "The tool can only get between" in corners.message
 
 
 def test_floor_below_a_tall_base_states_the_reachable_heights():
     req = watering(**{
-        "reach_m": 0.3, "gripper_kind": "parallel",
+        "reach_m": 0.56, "gripper_kind": "parallel",
         "workspace": {"x_min": 0.1, "x_max": 0.2, "y_min": -0.1, "y_max": 0.1, "z_min": 0.0, "z_max": 0.8}})
-    (note,) = chain_diagnosis(spec_of(yaw_pitch_pitch(base_height=0.6)), req)
+    note = next(n for n in chain_diagnosis(spec_of(yaw_pitch_pitch(base_height=0.6)), req)
+                if n.startswith("The tool can only"))
     assert "between z = 0.185 m and z = 1.11 m" in note
     assert "to reach z = 0 m, lower the base or shoulder_pitch" in note and "by at least 0.185 m" in note
 

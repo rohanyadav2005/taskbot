@@ -42,6 +42,9 @@ def _requirements_md(result: PipelineResult) -> str:
 
 
 def _summary_md(result: PipelineResult) -> str:
+    if result.infeasible and result.outcome is None:
+        return ("### INFEASIBLE: no design was made\n\n"
+                + "\n".join(f"- {r}" for r in result.infeasible))
     if result.error is not None:
         return f"### FAILED: the model never produced a valid design\n\n```\n{result.error}\n```"
     if result.outcome is None:

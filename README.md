@@ -46,7 +46,8 @@ joint ranges, budget, mass); once those all pass, it is simulated in MuJoCo
 repair, up to `--max-rounds` (default 5). `report.md` shows each round's results,
 a diff of what changed, the final pass/fail and GIFs of the final round's
 simulations (`sim/*.gif`). Exit code 0 = passed, 2 = never passed.
-`--no-sim` skips simulation; `--no-record` skips the GIFs. Exit code 3 = out of scope (below).
+`--no-sim` skips simulation; `--no-record` skips the GIFs. Exit code 3 = out of scope (below),
+4 = infeasible (below).
 
 Recording needs an OpenGL backend. On a headless Linux machine install one and
 pick it before running, e.g. `apt install libosmesa6` and `export MUJOCO_GL=osmesa`
@@ -215,6 +216,7 @@ requirements with assumptions; the controller table; and downloads of `spec.json
 | `src/taskbot/report.py` | Writes `out/<name>/` and `report.md` |
 | `src/taskbot/cli.py` | `taskbot design "<prompt>"` |
 | `src/taskbot/checks.py` | Engineering checks and `CheckResult` |
+| `src/taskbot/feasibility.py` | Gate between requirements and design: bounds no design can beat |
 | `src/taskbot/mobile_checks.py` | `wheel_torque`, `top_speed`, `tip_over`, `traction` |
 | `src/taskbot/mobile_sim.py` | Driving sims: `drive_straight`, `turn_in_place`, `incline`, `drive_with_arm_extended` |
 | `src/taskbot/pipeline.py` | prompt → requirements → (out-of-scope stop) → repair loop → outputs, shared by CLI and app |
@@ -233,6 +235,38 @@ requirements with assumptions; the controller table; and downloads of `spec.json
 * A joint's motor is mounted on the parent link at the joint.
 * URDF effort/velocity limits are the motor's stall torque and no-load speed.
   Prismatic joints assume a 10 mm rack-and-pinion radius.
+
+## Feasibility gate and loop stops
+
+Between the requirements step and the design step, `feasibility.py` checks bounds no design can
+beat, using the same numbers as the checks:
+
+- **Arm types**: holding torque at the shoulder with weightless links and motors, the payload at
+  the needed reach and the lightest catalog gripper of the required kind just behind it, against
+  the strongest supported motor's usable torque (80% of rated). `static_torque` uses the same floor.
+- **Mobile types**: the slope, rolling resistance and 0.5 m/s² acceleration against the terrain's
+  friction (independent of weight), and the payloads plus four wheel motors (weightless chassis
+  and wheels) against the best wheel motor on four driven wheels at the required speed.
+
+A `Requirements` validator also rejects a workspace whose corners are farther than `reach_m` from
+any plausible shoulder position (on the base axis 0.03–0.3 m up for an arm; on a 0.05–0.4 m
+chassis top over the workspace for a mobile manipulator), so the JSON retry fixes it.
+
+If the gate fails, the requirements go back to the requirements step once, with the numbers and
+"keep them realistic for the described scene, don't just shrink them to fit". If they are still
+infeasible, the run stops without a design: `report.md` says why and what would make it possible
+(the largest payload at this reach, the longest reach with this payload), exit code 4.
+
+The repair loop also stops early:
+- when a check says no design can pass (cause `infeasible`, from `static_torque`), with the same
+  report and exit code 4;
+- when the model sends back an earlier round's design (every number within 1%) for the second
+  time (stop reason "repeating designs"). After the first repeat it is told which round it repeats
+  and how that round failed.
+
+Repair messages also call out a description that claims motor, link or material changes the spec
+doesn't have, and explain the trade-off when reach and torque fail together (keep the length,
+stronger motors near the base, lighter outer links).
 
 ## Check details
 

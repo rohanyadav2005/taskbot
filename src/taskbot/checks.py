@@ -22,6 +22,12 @@ from taskbot.build_urdf import (
     structure_mass_by_material,
     tool_length_m,
 )
+from taskbot.feasibility import (
+    holding_torque_floor_nm,
+    lightest_gripper,
+    needed_reach_m,
+    strongest_position_motor,
+)
 from taskbot.schema import ArmChain, Gripper, Motor, RobotSpec, load_motor_catalog, supported_motors
 
 if TYPE_CHECKING:  # requirements imports the LLM layer; only needed for annotations
@@ -29,7 +35,7 @@ if TYPE_CHECKING:  # requirements imports the LLM layer; only needed for annotat
 
 
 FailureCause = Literal["saturated", "speed_limited", "compliance", "unreachable", "unstable", "slip",
-                       "wrong_type"]
+                       "wrong_type", "infeasible"]
 CAUSE_ADVICE: dict[str, str] = {
     "saturated": "torque limit hit; use a stronger motor, or shorter or lighter outer links",
     "speed_limited": "motor too slow for the move; use a faster motor or a different gear ratio",
@@ -41,7 +47,10 @@ CAUSE_ADVICE: dict[str, str] = {
     "slip": ("the driven wheels would slip; put more weight over them, lower the centre of mass, "
              "or drive all four wheels"),
     "wrong_type": "the design is a different kind of robot than the requirements ask for",
+    "infeasible": ("the requirements are beyond the motor catalog: no design can pass, so the repair "
+                   "loop stops"),
 }
+NO_DESIGN_CAN_PASS = "no design change can make this check pass"
 
 
 class CheckResult(BaseModel):
@@ -200,6 +209,7 @@ def static_torque(
             need = 0.0 if always_vertical else g * float(np.linalg.norm(np.cross(axis, moment)))
             unit, rated = "Nm", motor.rated_torque_nm
         passed = need <= limit
+        cause = "saturated"
         msg = (
             f"{joint.name} needs {need:.3g} {unit} at full extension with {payload:.3g} kg payload; "
             f"motor {motor.id} is rated {rated:.3g} {unit} "
@@ -217,12 +227,14 @@ def static_torque(
                       g * float(np.linalg.norm(np.cross(axis, model.body_mass[b] * (data.xipos[b] - anchor)))))
                      for b in bodies]
             loads.append(("payload", payload, g * float(np.linalg.norm(np.cross(axis, payload * (tool - anchor))))))
-            floor = torque_floor(spec, req, model) if not loaded_seen and req.reach_m is not None else None
+            floor = torque_floor(spec, req, motors) if not loaded_seen and req.reach_m is not None else None
             msg += " " + _torque_advice(spec, req, joint, need, loads, motors, floor)
+            if floor is not None and floor[0] > TORQUE_SAFETY_FRACTION * strongest_position_motor(motors).rated_torque_nm:
+                cause = "infeasible"
         if not always_vertical and joint.type != "prismatic":
             loaded_seen = True
         results.append(CheckResult(check="static_torque", passed=passed, value=need,
-                                   limit=limit, message=msg, cause=None if passed else "saturated"))
+                                   limit=limit, message=msg, cause=None if passed else cause))
     return results
 
 
@@ -249,32 +261,15 @@ def stretch_m(spec: RobotSpec) -> float | None:
             + tool_length_m(gripper) + stroke)
 
 
-def needed_reach_m(req: Requirements) -> float:
-    """Farthest horizontal distance the task needs: reach_m or the farthest workspace corner."""
-    ws = req.workspace
-    corners = max(np.hypot(x, y) for x in (ws.x_min, ws.x_max) for y in (ws.y_min, ws.y_max)) if ws else 0.0
-    return max(req.reach_m or 0.0, float(corners))
-
-
-def strongest_position_motor(catalog: dict[str, Motor]) -> Motor:
-    return max((m for m in supported_motors(catalog).values() if "position" in m.modes),
-               key=lambda m: m.rated_torque_nm)
-
-
-def torque_floor(spec: RobotSpec, req: Requirements, model: mujoco.MjModel) -> tuple[float, float, float]:
-    """(torque, gripper mass, lever): the least holding torque at the first loaded joint of
-    any arm with this gripper that reaches what the task needs, with weightless links and
-    motors: payload at the tool point and the gripper just behind it."""
-    gripper = next((m for m in spec.modules if isinstance(m, Gripper)), None)
+def torque_floor(spec: RobotSpec, req: Requirements, catalog: dict[str, Motor]) -> tuple[float, str, float]:
+    """(torque, gripper description, lever): the least holding torque at the first loaded joint
+    of any arm meeting these requirements: weightless links and motors, the lightest catalog
+    gripper of the required kind (feasibility.lightest_gripper, the same floor as the gate)."""
+    mass, tool, desc = lightest_gripper(req.gripper_kind if req.gripper_needed else None, catalog)
     lever = needed_reach_m(req)
     mount = next((m.mount_xy_m for m in spec.modules if isinstance(m, ArmChain) and m.mount_xy_m), None)
     lever -= float(np.hypot(*mount)) if mount else 0.0
-    g_mass = 0.0
-    if gripper is not None:
-        palm = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"{gripper.name}_palm")
-        g_mass = sum(model.body_mass[b] for b in _subtree(model, palm)) if palm >= 0 else 0.0
-    tool = tool_length_m(gripper)
-    return 9.81 * (req.payload_kg * lever + g_mass * max(lever - tool, 0.0)), g_mass, lever
+    return holding_torque_floor_nm(req.payload_kg, mass, tool, lever), desc, lever
 
 
 def _torque_advice(spec, req, joint, need, loads, motors, floor) -> str:
@@ -304,11 +299,10 @@ def _torque_advice(spec, req, joint, need, loads, motors, floor) -> str:
         text += (f" The arm stretches {stretch:.3g} m but the task needs {needed:.3g} m: shortening the "
                  f"links by about {stretch - needed:.2g} m cuts this torque; holding torque grows with length.")
     if floor is not None and floor[0] > usable:
-        tau, g_mass, lever = floor
-        text += (f" Even with weightless links and motors, holding {req.payload_kg:.3g} kg plus the "
-                 f"{g_mass:.3g} kg gripper {lever:.3g} m out needs {tau:.3g} Nm here, more than any catalog "
-                 f"motor allows ({usable:.3g} Nm): these requirements are beyond the motor catalog, and "
-                 "no design change can make this check pass.")
+        tau, gripper, lever = floor
+        text += (f" Even with weightless links and motors, holding {req.payload_kg:.3g} kg with the {gripper} "
+                 f"{lever:.3g} m out needs {tau:.3g} Nm here, more than any catalog motor allows "
+                 f"({usable:.3g} Nm): these requirements are beyond the motor catalog, and {NO_DESIGN_CAN_PASS}.")
     return text
 
 

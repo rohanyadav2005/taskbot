@@ -6,12 +6,18 @@ once every static check passes.
 Repair requests carry, besides the failures: for each check that also failed last
 round, whether the last change made it better or worse; a compact history of every
 round (what failed, what changed); and, when only reach-type checks fail, a note that
-motors can't fix them.
+motors can't fix them. They also point out a design identical to an earlier round, a
+description claiming changes the spec doesn't have, and reach and torque fixes that pull
+against each other.
+
+The loop stops early when a check says no design can pass (cause "infeasible"), or when
+the model sends back an earlier design for the second time.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -78,7 +84,8 @@ class RepairOutcome:
     requirements: Requirements
     max_rounds: int
     rounds: list[Round] = field(default_factory=list)
-    stop_reason: str | None = None  # set when the loop ended early on an LLM error
+    stop_reason: str | None = None  # set when the loop ended early
+    infeasible: list[str] = field(default_factory=list)  # messages of checks no design can pass
 
     @property
     def passed(self) -> bool:
@@ -197,13 +204,111 @@ def history_lines(rounds: list[Round]) -> list[str]:
     return lines
 
 
+# --------------------------------------------------------------------------- going in circles
+
+SAME_DESIGN_WITHIN = 0.01  # every number within 1%
+REPEATS_BEFORE_STOP = 2
+TORQUE_CHECKS = {"static_torque", "torque_at_speed"}
+CONFLICT_NOTE = (
+    "These failures pull against each other: reach needs the arm this long, torque wants it shorter "
+    "or lighter. Keep the length reach needs and fix torque with stronger motors near the base "
+    "(shoulder, elbow) and lighter outer links (slim PLA, the lightest motors towards the wrist).")
+
+
+def _close(a: Any, b: Any) -> bool:
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(a - b) <= SAME_DESIGN_WITHIN * max(abs(a), abs(b)) + 1e-12
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_close(a[k], b[k]) for k in a)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_close(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+def same_design(a: RobotSpec, b: RobotSpec) -> bool:
+    """Equal apart from name and description, every number within 1%."""
+    skip = {"name", "description"}
+    return _close(a.model_dump(exclude=skip), b.model_dump(exclude=skip))
+
+
+def earlier_twin(rounds: list[Round]) -> Round | None:
+    """The earliest round whose design matches the last round's."""
+    last = rounds[-1]
+    return next((r for r in rounds[:-1] if same_design(r.spec, last.spec)), None)
+
+
+def _failed_checks(rnd: Round) -> str:
+    return ", ".join(dict.fromkeys(f"{r.check}" + (f" ({r.cause})" if r.cause else "") for r in rnd.failures))
+
+
+_CLAIMS = {
+    "motors": re.compile(r"\b(motors?|servos?|actuators?)\b"),
+    "links": re.compile(r"\b(links?|lengthen\w*|shorten\w*|longer|shorter|extend\w*|arm length)\b"),
+    "materials": re.compile(r"\b(pla|alumin(?:i)?um|steel|materials?)\b"),
+}
+
+
+def _sentences(text: str) -> list[str]:
+    return [t.strip() for t in re.split(r"(?<=[.!?])\s+", text or "") if t.strip()]
+
+
+def _motors(spec: RobotSpec) -> dict[str, str]:
+    return {k: v["motor_id"] for k, v in _parts(spec).items() if "motor_id" in v} | \
+        {k: v["wheel_motor_id"] for k, v in _parts(spec).items() if "wheel_motor_id" in v}
+
+
+def false_claims(old: RobotSpec, new: RobotSpec) -> list[str]:
+    """Sentences new in the description that claim motor, link or material changes the spec
+    doesn't have, each as a message for the model."""
+    said = [t for t in _sentences(new.description) if t not in _sentences(old.description)]
+    a, b = _parts(old), _parts(new)
+    links_a = {k: {f: v for f, v in d.items() if f != "material"} for k, d in a.items() if k.startswith("link ")}
+    links_b = {k: {f: v for f, v in d.items() if f != "material"} for k, d in b.items() if k.startswith("link ")}
+    changed = {
+        "motors": _motors(old) != _motors(new),
+        "links": links_a != links_b,
+        "materials": ({k: d.get("material") for k, d in a.items()} != {k: d.get("material") for k, d in b.items()}),
+    }
+    out = []
+    for kind, pattern in _CLAIMS.items():
+        claim = next((t for t in said if pattern.search(t.lower())), None)
+        if claim is None or changed[kind]:
+            continue
+        if kind == "motors":
+            ids = sorted(set(_motors(new).values()))
+            now = (f"every joint still uses {ids[0]}" if len(ids) == 1 else
+                   "the motors are unchanged: " + ", ".join(f"{k.split(' ', 1)[1]} {v}" for k, v in _motors(new).items()))
+            out.append(f'You said "{claim}", but no motor changed: {now}.')
+        elif kind == "links":
+            out.append(f'You said "{claim}", but every link has the same shape and size as before.')
+        else:
+            mats = sorted({d["material"] for k, d in b.items() if k.startswith("link ") and "material" in d})
+            now = f"every link is still {mats[0]}" if len(mats) == 1 else "no link changed material"
+            out.append(f'You said "{claim}", but {now}.')
+    return out
+
+
 def repair_prompt(spec: RobotSpec, req: Requirements, failures: list[CheckResult],
                   rounds: list[Round] | None = None) -> str:
-    """`rounds`: every round so far (the last one produced `failures`), for progress and history."""
+    """`rounds`: every round so far (the last one produced `failures`), for progress, history,
+    repeats and claims."""
     text = format_failures(failures)
     if failures and all(r.check in REACH_CHECKS or r.cause == "unreachable" for r in failures):
         text += "\n" + MOTOR_NOTE
+    elif (any(r.check in REACH_CHECKS for r in failures)
+          and any(r.check in TORQUE_CHECKS and r.cause == "saturated" for r in failures)):
+        text += "\n" + CONFLICT_NOTE
     rounds = rounds or []
+    if len(rounds) >= 2:
+        twin = earlier_twin(rounds)
+        if twin is not None:
+            text += (f"\nThis design is the same as round {twin.number}, which failed with: "
+                     f"{_failed_checks(twin)}. Try a different change.")
+        claims = false_claims(rounds[-2].spec, rounds[-1].spec)
+        if claims:
+            text += "\n" + "\n".join(claims)
     if len(rounds) >= 2:
         progress = progress_lines(rounds[-2].results, rounds[-1].results)
         if progress:
@@ -238,6 +343,7 @@ def repair_loop(
         emit("Designing...")
     spec = initial_spec if initial_spec is not None else design_robot(client, req, catalog)
     system = design_system_prompt(catalog)  # schema + catalog, same as the design step
+    repeats = 0
 
     for number in range(1, max_rounds + 1):
         emit(f"Round {number}: {spec.name}: static checks")
@@ -259,6 +365,21 @@ def repair_loop(
         if len(outcome.rounds) >= 2:
             for line in progress_lines(outcome.rounds[-2].results, rnd.results):
                 emit("  " + line[2:])
+        infeasible = [r.message for r in rnd.failures if r.cause == "infeasible"]
+        if infeasible:
+            outcome.infeasible = infeasible
+            outcome.stop_reason = "the requirements are beyond the motor catalog, so no design can pass"
+            emit(f"Stopping: {outcome.stop_reason}.")
+            break
+        twin = earlier_twin(outcome.rounds) if len(outcome.rounds) >= 2 else None
+        if twin is not None:
+            repeats += 1
+            emit(f"  This design is the same as round {twin.number}.")
+            if repeats >= REPEATS_BEFORE_STOP:
+                outcome.stop_reason = (f"repeating designs: round {number} is the same as round {twin.number} "
+                                       f"({repeats} repeats)")
+                emit(f"Stopping: {outcome.stop_reason}.")
+                break
         if rnd.passed or number == max_rounds:
             break
         emit(f"Asking the model to repair {len(rnd.failures)} failure(s)...")

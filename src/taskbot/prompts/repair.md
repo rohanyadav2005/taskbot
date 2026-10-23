@@ -14,6 +14,7 @@ Rules:
   - unstable: the robot would tip over; widen the track or lengthen the wheelbase, lower or weigh down the base, move the arm mount towards the middle of the wheels, or shorten the reach.
   - slip: the driven wheels would lose grip; put more weight over them, lower the centre of mass, or drive all four wheels.
   - wrong_type: the design is a different kind of robot from the one the requirements ask for; rebuild it as that kind.
+  - infeasible: the requirements are beyond the motor catalog, so no design can pass; the loop stops and reports it.
 - In "description", add one line explaining what you changed and why.
 Current spec: {spec}
 Requirements: {requirements}

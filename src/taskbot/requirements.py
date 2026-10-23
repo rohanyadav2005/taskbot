@@ -11,6 +11,31 @@ from pydantic import BaseModel, ConfigDict, Field, NonNegativeFloat, PositiveFlo
 from taskbot.llm import LLMClient
 from taskbot.prompts import load_prompt
 
+# Where an arm's shoulder (its first bending joint) can plausibly be, for checking that the
+# workspace fits within reach_m. Design conventions, not measured data: a fixed arm's shoulder
+# is on the base axis, on a base and turret 0.03-0.3 m tall; a mobile manipulator's is on the
+# chassis top (0.05-0.4 m) anywhere over the workspace.
+ARM_SHOULDER_Z_M = (0.03, 0.3)
+MOBILE_SHOULDER_Z_M = (0.05, 0.4)
+WORKSPACE_REACH_TOLERANCE_M = 0.01
+
+
+def farthest_corner(robot_type: str, ws) -> tuple[tuple[float, float, float], float, str]:
+    """(corner, its distance from the best plausible shoulder position, where that is)."""
+    corners = [(x, y, z) for x in (ws.x_min, ws.x_max) for y in (ws.y_min, ws.y_max)
+               for z in (ws.z_min, ws.z_max)]
+    lo, hi = MOBILE_SHOULDER_Z_M if robot_type == "mobile_manipulator" else ARM_SHOULDER_Z_M
+    h = min(max((ws.z_min + ws.z_max) / 2, lo), hi)
+    if robot_type == "mobile_manipulator":
+        sx, sy = (ws.x_min + ws.x_max) / 2, (ws.y_min + ws.y_max) / 2
+        where = f"over the workspace centre {h:.3g} m up; a chassis top is {lo:g}-{hi:g} m high"
+    else:
+        sx = sy = 0.0
+        where = f"on the base axis {h:.3g} m up; a base and turret are {lo:g}-{hi:g} m tall"
+    dist = {c: math.dist(c, (sx, sy, h)) for c in corners}
+    far = max(dist, key=dist.get)
+    return far, dist[far], where
+
 OUT_OF_SCOPE_PREFIX = "OUT OF SCOPE:"
 
 
@@ -103,6 +128,20 @@ class Requirements(BaseModel):
                 raise ValueError(f"robot_type 'arm' doesn't move, so {name} must be null")
         if not has_arm and self.gripper_needed:
             raise ValueError("robot_type 'mobile' has no arm, so gripper_needed must be false")
+        return self
+
+    @model_validator(mode="after")
+    def _workspace_within_reach(self) -> Requirements:
+        if self.workspace is None or self.reach_m is None:
+            return self
+        corner, d, where = farthest_corner(self.robot_type, self.workspace)
+        if d > self.reach_m + WORKSPACE_REACH_TOLERANCE_M:
+            c = ", ".join(f"{v:.3g}" for v in corner)
+            raise ValueError(
+                f"workspace corner ({c}) is {d:.3g} m from the nearest plausible shoulder position "
+                f"({where}), but reach_m is {self.reach_m:.3g} m. The workspace is only the region the "
+                "tool must reach: make reach_m and the workspace agree, keeping both realistic for the "
+                "scene in the task.")
         return self
 
     @property

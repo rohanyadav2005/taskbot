@@ -29,7 +29,7 @@ REQ = {
     "robot_type": "arm",
     "reach_m": 0.33,
     "payload_kg": 0.25,
-    "workspace": {"x_min": -0.3, "x_max": 0.3, "y_min": -0.3, "y_max": 0.3, "z_min": 0, "z_max": 0.2},
+    "workspace": {"x_min": 0.1, "x_max": 0.3, "y_min": -0.1, "y_max": 0.1, "z_min": 0, "z_max": 0.2},
     "dof_min": 4,
     "gripper_needed": True,
     "gripper_kind": "parallel",
