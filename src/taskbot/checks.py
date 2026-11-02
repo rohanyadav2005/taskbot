@@ -181,47 +181,74 @@ def _subtree(model: mujoco.MjModel, root: int) -> list[int]:
     return out
 
 
-def static_torque(
-    spec: RobotSpec, req: Requirements, model: mujoco.MjModel,
-    catalog: dict[str, Motor] | None = None,
-) -> list[CheckResult]:
-    """Worst-case holding torque per arm joint, arm straight and horizontal, payload at the tool.
+@dataclass
+class JointLoad:
+    """One arm joint's worst-case holding load: chain straight and horizontal, payload at the tool."""
 
-    With the chain straight, each joint's gravity moment is largest when the
-    outboard chain is horizontal: tau = g * |a x (sum m_k (c_k - p))| over the
-    outboard masses (links, motors, gripper, payload). Joints whose axis stays
-    vertical whatever the joints before them do (a base yaw) carry no gravity load.
+    joint: object                # schema.Joint
+    need: float                  # Nm (revolute) or N (prismatic)
+    unit: str
+    always_vertical: bool        # its axis stays vertical: gravity puts no load on it
+    loads: list[tuple[str, float, float]]  # (body or "payload", kg, Nm) for revolute joints
+
+
+def holding_loads(spec: RobotSpec, req: Requirements, model: mujoco.MjModel) -> list[JointLoad]:
+    """The holding torque each arm joint needs, shared by static_torque and the sizer.
+
+    With the chain straight, each joint's gravity moment is largest when the outboard chain
+    is horizontal: tau = g * |a x (sum m_k (c_k - p))| over the outboard masses (links,
+    motors, gripper, payload). Joints whose axis stays vertical whatever the joints before
+    them do (a base yaw) carry no gravity load. Prismatic joints lift everything outboard.
     """
-    motors = _catalog(catalog)
     arm = _Arm.of(spec, model)
     data = mujoco.MjData(model)
     mujoco.mj_kinematics(model, data)  # qpos = 0: chain straight up
     g = float(np.linalg.norm(model.opt.gravity))
     tool = arm.tool_pos(data)
     payload = req.payload_kg
-
-    results = []
+    out = []
     always_vertical = True
-    loaded_seen = False  # the first joint that carries gravity (the shoulder) gets the feasibility note
     for joint, jid in zip(arm.joints, arm.jnt_ids):
-        motor = motors[joint.motor_id]
         axis = data.xaxis[jid]
         anchor = data.xanchor[jid]
         bodies = _subtree(model, model.jnt_bodyid[jid])
-        mass = sum(model.body_mass[b] for b in bodies) + payload
-        moment = sum(model.body_mass[b] * (data.xipos[b] - anchor) for b in bodies)
-        moment = moment + payload * (tool - anchor)
-
         vertical = abs(axis[2]) > 0.999
         always_vertical = always_vertical and vertical and joint.type != "prismatic"
-        limit = TORQUE_SAFETY_FRACTION * motor.rated_torque_nm
         if joint.type == "prismatic":
-            need = g * mass  # worst case: axis vertical, lifting everything outboard
-            limit /= LINEAR_DRIVE_RADIUS_M
-            unit, rated = "N", motor.rated_torque_nm / LINEAR_DRIVE_RADIUS_M
-        else:
-            need = 0.0 if always_vertical else g * float(np.linalg.norm(np.cross(axis, moment)))
-            unit, rated = "Nm", motor.rated_torque_nm
+            mass = sum(model.body_mass[b] for b in bodies) + payload
+            out.append(JointLoad(joint, g * mass, "N", False, []))
+            continue
+        loads = [(model.body(b).name, float(model.body_mass[b]),
+                  g * float(np.linalg.norm(np.cross(axis, model.body_mass[b] * (data.xipos[b] - anchor)))))
+                 for b in bodies]
+        loads.append(("payload", payload, g * float(np.linalg.norm(np.cross(axis, payload * (tool - anchor))))))
+        moment = sum(model.body_mass[b] * (data.xipos[b] - anchor) for b in bodies) + payload * (tool - anchor)
+        need = 0.0 if always_vertical else g * float(np.linalg.norm(np.cross(axis, moment)))
+        out.append(JointLoad(joint, need, "Nm", always_vertical, loads))
+    return out
+
+
+def usable_torque(motor: Motor, joint_type: str = "revolute") -> float:
+    """What a motor may be loaded with: TORQUE_SAFETY_FRACTION of rated (as force for prismatic)."""
+    limit = TORQUE_SAFETY_FRACTION * motor.rated_torque_nm
+    return limit / LINEAR_DRIVE_RADIUS_M if joint_type == "prismatic" else limit
+
+
+def static_torque(
+    spec: RobotSpec, req: Requirements, model: mujoco.MjModel,
+    catalog: dict[str, Motor] | None = None,
+) -> list[CheckResult]:
+    """Worst-case holding torque per arm joint (holding_loads) against TORQUE_SAFETY_FRACTION
+    of the motor's rated torque."""
+    motors = _catalog(catalog)
+    payload = req.payload_kg
+    results = []
+    loaded_seen = False  # the first joint that carries gravity (the shoulder) gets the feasibility note
+    for jl in holding_loads(spec, req, model):
+        joint, need, unit = jl.joint, jl.need, jl.unit
+        motor = motors[joint.motor_id]
+        limit = usable_torque(motor, joint.type)
+        rated = motor.rated_torque_nm / LINEAR_DRIVE_RADIUS_M if joint.type == "prismatic" else motor.rated_torque_nm
         passed = need <= limit
         cause = "saturated"
         msg = (
@@ -229,7 +256,7 @@ def static_torque(
             f"motor {motor.id} is rated {rated:.3g} {unit} "
             f"({TORQUE_SAFETY_FRACTION:.0%} limit {limit:.3g} {unit})."
         )
-        if always_vertical:
+        if jl.always_vertical:
             msg += " Its axis stays vertical, so gravity puts no load on it."
         elif not passed and joint.type == "prismatic":
             msg += (
@@ -237,15 +264,11 @@ def static_torque(
                 "or shorten/lighten the links and motors outboard of this joint."
             )
         elif not passed:
-            loads = [(model.body(b).name, model.body_mass[b],
-                      g * float(np.linalg.norm(np.cross(axis, model.body_mass[b] * (data.xipos[b] - anchor)))))
-                     for b in bodies]
-            loads.append(("payload", payload, g * float(np.linalg.norm(np.cross(axis, payload * (tool - anchor))))))
             floor = torque_floor(spec, req, motors) if not loaded_seen and req.reach_m is not None else None
-            msg += " " + _torque_advice(spec, req, joint, need, loads, motors, floor)
+            msg += " " + _torque_advice(spec, req, joint, need, jl.loads, motors, floor)
             if floor is not None and floor[0] > TORQUE_SAFETY_FRACTION * strongest_position_motor(motors).rated_torque_nm:
                 cause = "infeasible"
-        if not always_vertical and joint.type != "prismatic":
+        if not jl.always_vertical and joint.type != "prismatic":
             loaded_seen = True
         results.append(CheckResult(check="static_torque", passed=passed, value=need,
                                    limit=limit, message=msg, cause=None if passed else cause))
@@ -818,32 +841,64 @@ def joint_speed(
 # --------------------------------------------------------------------------- torque at speed
 
 
-def torque_at_speed(
-    spec: RobotSpec, req: Requirements, model: mujoco.MjModel,
-    catalog: dict[str, Motor] | None = None,
-) -> list[CheckResult]:
-    """For each planned move, each joint's gravity torque (with payload) at mid-move, where
-    a minimum-jerk move reaches its peak speed, must be below what the motor can give at
-    that speed (its torque-speed model, taskbot.sim.motor)."""
+@dataclass
+class SpeedLoad:
+    """One arm joint's worst planned move: gravity torque at mid-move, where a minimum-jerk
+    move peaks, against what its motor gives at that speed."""
+
+    index: int
+    joint: object         # schema.Joint
+    motor: object         # sim.motor.MotorModel
+    gravity: float        # Nm (or N)
+    speed: float          # rad/s (or m/s) at mid-move
+    available: float      # the motor's torque at that speed
+    move: object          # sim.plan.PlannedMove
+    duration: float
+
+    @property
+    def ratio(self) -> float:
+        if self.available > 0:
+            return self.gravity / self.available
+        return np.inf if self.gravity > 1e-9 else 0.0
+
+
+def speed_loads(spec: RobotSpec, req: Requirements, catalog: dict[str, Motor] | None = None) -> list[SpeedLoad]:
+    """Each arm joint's worst planned move (sim.plan, the same moves as the sim tests), shared by
+    torque_at_speed and the sizer."""
     from taskbot.sim.control import gravity_torque
     from taskbot.sim.model import build_scene
     from taskbot.sim.plan import plan_moves
 
     robot = build_scene(spec, _catalog(catalog))
     data = mujoco.MjData(robot.model)
-    worst = None  # (ratio, move, joint, gravity, available, speed, duration)
+    worst: dict[int, SpeedLoad] = {}
     for mv in plan_moves(robot, req):
         T = mv.duration(robot.no_load_speed)
         speeds = mv.peak_speed(T)
         robot.set_pose(data, (mv.q0 + mv.q1) / 2)
         gravity = np.abs(gravity_torque(robot, data, req.payload_kg))
         for i, m in enumerate(robot.motors):
-            available = m.drive_limit(speeds[i])
-            ratio = gravity[i] / available if available > 0 else (np.inf if gravity[i] > 1e-9 else 0.0)
-            if worst is None or ratio > worst[0]:
-                worst = (ratio, mv, i, float(gravity[i]), available, float(speeds[i]), T)
-    ratio, mv, i, gravity, available, speed, T = worst
-    j, m = robot.joints[i], robot.motors[i]
+            load = SpeedLoad(i, robot.joints[i], m, float(gravity[i]), float(speeds[i]),
+                             m.drive_limit(speeds[i]), mv, T)
+            if i not in worst or load.ratio > worst[i].ratio:
+                worst[i] = load
+    return [worst[i] for i in sorted(worst)]
+
+
+def torque_at_speed(
+    spec: RobotSpec, req: Requirements, model: mujoco.MjModel,
+    catalog: dict[str, Motor] | None = None,
+) -> list[CheckResult]:
+    """For each planned move, each joint's gravity torque (with payload) at mid-move, where
+    a minimum-jerk move reaches its peak speed, must be below what the motor can give at
+    that speed (its torque-speed model, taskbot.sim.motor). See speed_loads."""
+    loads = speed_loads(spec, req, catalog)
+    w = loads[0]
+    for load in loads[1:]:
+        if load.ratio > w.ratio:
+            w = load
+    ratio, mv, gravity, available, speed, T = w.ratio, w.move, w.gravity, w.available, w.speed, w.duration
+    j, m = w.joint, w.motor
     unit, speed_unit = ("N", "m/s") if j.type == "prismatic" else ("Nm", "rad/s")
     ok = ratio <= 1.0
     detail = (f"{j.name} holds {gravity:.3g} {unit} of gravity (with {req.payload_kg:.3g} kg payload) "
