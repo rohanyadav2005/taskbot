@@ -65,6 +65,8 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
 
     lines += ["## Requirements", ""]
     lines += requirements_rows(req)
+    if getattr(outcome, "design_mode", "llm") == "hybrid":
+        lines += [""] + hybrid_lines(outcome)
     battery = getattr(final.spec.base, "battery_note", None)
     if battery:
         lines += [f"- Design assumption: {battery}"]
@@ -134,6 +136,88 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
     if warnings:
         lines += ["", "Warnings:", *[f"- [{r.check}] {_cell(r.message)}" for r in warnings]]
     return "\n".join(lines) + "\n"
+
+
+# Things a prompt may ask for that TaskBot doesn't model (a deterministic scan of the prompt).
+NOT_MODELLED_WORDS = {
+    "colour": ("red", "green", "blue", "yellow", "black", "white", "orange", "purple", "pink", "colour", "color"),
+    "sensing": ("camera", "sensor", "lidar", "vision", "see", "detect", "scan"),
+    "lights and sound": ("light", "lights", "led", "leds", "sound", "speaker", "voice", "music", "beep"),
+    "connectivity": ("app", "wifi", "bluetooth", "phone", "remote control", "internet"),
+    "display": ("screen", "display"),
+}
+
+
+def _spec_values(spec) -> dict[str, object]:
+    """'part.field' -> value, matching the sizer's provenance keys."""
+    out = {}
+    for m in spec.modules:
+        for seg in getattr(m, "segments", []):
+            for f in ("length_m", "radius_m", "material"):
+                out[f"{seg.link.name}.{f}"] = getattr(seg.link, f)
+            for f in ("lower", "upper", "motor_id"):
+                if getattr(seg.joint, f) is not None:  # continuous joints have no limits
+                    out[f"{seg.joint.name}.{f}"] = getattr(seg.joint, f)
+        for f in ("wheel_radius_m", "track_width_m", "wheelbase_m", "chassis_size_m", "wheel_motor_id",
+                  "footprint_m", "height_m", "max_opening_m", "motor_id"):
+            if hasattr(m, f) and not hasattr(m, "segments"):
+                out[f"{m.name}.{f}"] = getattr(m, f)
+    return out
+
+
+def _fmt_value(v) -> str:
+    if v is None:
+        return "—"
+    if isinstance(v, float):
+        return f"{v:.4g}"
+    if isinstance(v, (tuple, list)):
+        return " x ".join(f"{x:.3g}" for x in v)
+    return str(v)
+
+
+def hybrid_lines(outcome) -> list[str]:
+    """Who chose each number, the sizing and autofix log, and what the prompt asked for that
+    TaskBot applied, approximated or didn't use."""
+    import re
+
+    lines = ["## Who chose what", "",
+             "Design mode **hybrid**: the LLM chose the layout (its DesignIntent); code computed every "
+             "number. A number marked \"sizer, then autofix\" was changed by an automatic fix after sizing.", ""]
+    intent = outcome.intents[-1] if outcome.intents else None
+    if intent is not None:
+        lines += ["| Choice | Value | Chosen by |", "|---|---|---|"]
+        for f in ("robot_type", "arm_layout", "gripper", "link_material", "drive", "caster", "arm_mount"):
+            v = getattr(intent, f)
+            if v is not None:
+                lines.append(f"| {f} | {v} | LLM (intent) |")
+        lines += ["", f"Rationale: {_cell(intent.rationale)}", ""]
+        if len(outcome.intents) > 1:
+            lines += [f"The LLM revised its intent {len(outcome.intents) - 1} time(s); this is the last.", ""]
+    final = outcome.final.spec
+    now, sized = _spec_values(final), _spec_values(outcome.sized_spec) if outcome.sized_spec else {}
+    lines += ["| Number | Value | Chosen by |", "|---|---|---|"]
+    for key, value in now.items():
+        who = outcome.provenance.get(key, "sizer")
+        if key in sized and sized[key] != value:
+            who = "sizer, then autofix"
+        lines.append(f"| {key} | {_fmt_value(value)} | {who} |")
+    lines += ["", "## Sizing and automatic fixes", ""] + ([f"- {_cell(s)}" for s in outcome.steps] or ["None."])
+    applied = [f"robot type: {outcome.requirements.robot_type}"]
+    if intent is not None:
+        applied += [f"layout: {intent.arm_layout}" if intent.arm_layout else f"drive: {intent.drive}",
+                    f"gripper: {intent.gripper}"]
+    approx = [outcome.approximate] if getattr(outcome, "approximate", None) else []
+    words = set(re.findall(r"[a-z]+", (outcome.prompt or outcome.requirements.task_summary).lower()))
+    text = (outcome.prompt or outcome.requirements.task_summary).lower()
+    unused = [f"\"{w}\" ({topic})" for topic, ws in NOT_MODELLED_WORDS.items() for w in ws
+              if (w in words if " " not in w else w in text)]
+    if intent is not None:
+        unused += [f"{n} (from the intent)" for n in intent.not_modelled]
+    lines += ["", "## From the prompt", "",
+              "- Applied: " + "; ".join(applied),
+              "- Approximated: " + ("; ".join(approx) if approx else "nothing"),
+              "- Not applied (TaskBot doesn't model it): " + ("; ".join(dict.fromkeys(unused)) or "nothing")]
+    return lines
 
 
 def controller_table_lines(spec) -> list[str]:

@@ -1,8 +1,18 @@
 # TaskBot
 
-Text-to-robot design with an LLM in the loop: plain-English task → measurable
-requirements → module JSON (Pydantic schema) → deterministic URDF →
-engineering checks and MuJoCo tests → plain-language feedback to the LLM.
+Text-to-robot design with an LLM in the loop. The LLM chooses; code sizes:
+
+```
+task (plain English)
+  └─ LLM ──► Requirements (measurable; validators + feasibility gate)
+              └─ LLM ──► DesignIntent (layout, gripper, drive: no numbers)
+                          └─ sizer (code) ──► RobotSpec (every number) ──► URDF
+                                └─ checks + MuJoCo sims ──► autofix (code, ≤ 5 rounds)
+                                      └─ still failing? ──► LLM revises the intent (≤ 3 times)
+```
+
+The older `--design-mode llm` (the LLM writes the whole spec and repairs it from the check
+messages) is kept for comparison.
 
 ```bash
 pip install -e ".[dev]"
@@ -15,8 +25,9 @@ python -m taskbot.view examples/arm_4dof.json      # opens the MuJoCo viewer
 These apply to every change (`CLAUDE.md` repeats them for coding agents):
 
 - Python 3.11+, package `taskbot` under `src/`, tests with pytest under `tests/`.
-- The LLM only writes JSON matching the Pydantic schema. All geometry, mass and inertia come
-  from deterministic code.
+- The LLM chooses the layout; code sizes every number. The LLM only writes JSON matching a
+  Pydantic schema; in the default (hybrid) mode that is a DesignIntent with no numbers in it, and
+  all lengths, heights, joint limits, motors, geometry, mass and inertia come from deterministic code.
 - SI units everywhere.
 - Every check returns `CheckResult{check, passed, value, limit, cause, message}`, with a message
   specific enough for an LLM to fix: name the part, give the numbers, say what to change.
@@ -40,10 +51,42 @@ taskbot design "..." --backend ollama --model qwen2.5:7b-instruct   # local, nee
 taskbot design "..." --backend fake                                   # offline, canned output
 ```
 
+**Design modes.** `--design-mode hybrid` (the default): the LLM writes a `DesignIntent`
+(`taskbot/intent.py`, prompt `prompts/intent.md`): robot type, arm layout (`yaw_pitch_pitch`,
+`yaw_pitch_pitch_pitch`, `yaw_pitch_pitch_wristroll`), gripper, link material policy, drive, caster
+and arm mount. `taskbot/sizing.py` computes every number (below), every static check runs on the
+result, then the sims; `taskbot/autofix.py` applies fixes with known numbers (a stronger motor,
+the missing length, a verified collision fix, a wider joint range) for up to 5 rounds, and only
+then is the LLM asked for a different intent (at most 3 times). `--nearest` builds the nearest
+feasible design when none fits (relaxed payload, then reach), labelled APPROXIMATE and never a
+pass. `--design-mode llm`: the LLM writes the whole spec and repairs it from the check messages,
+up to `--max-rounds` (default 5). The mode is recorded in `run.json`, `report.md` and the
+benchmark CSV.
+
+**What the sizer computes** (`taskbot/sizing.py`):
+- arm: a riser at mid-workspace height, raised until `self_collision` passes (the same verified
+  search as the collision fixes); upper arm and forearm reaching the farthest target from the
+  shoulder ×1.05, split so the nearest target lies inside the inner radius; hollow tube links
+  (radius from length and payload, 2 mm wall; PLA under 0.25 m, aluminium above, unless the
+  intent says otherwise); joint limits from IK over the workspace targets widened by 15°, at
+  least the required range, the shoulder clipped so the upper arm can't swing into the base;
+  base yaw and wrist roll continuous;
+- motors from the tip inward (outer motors load inner joints) with `checks.holding_loads` and
+  `checks.speed_loads`, the checks' own functions: the cheapest supported motor with usable
+  torque (80% of rated) ≥ 1.25 × the holding torque and enough torque at the planned peak speed,
+  else the cheapest that passes without the margin; repeated until the choice stops changing;
+- mobile bases: the cheapest wheel motor and smallest radius with `wheel_torque` margin and
+  `top_speed`, verified with the `drive_straight` and `incline` sims; the smallest chassis
+  passing `tip_over` and `traction`.
+
+Every sized design is checked; the sizer returns a design that passes every static check, or a
+reason ("infeasible", with the largest payload at this reach and the longest reach with this
+payload, exit code 4). The report lists who chose each number (LLM intent, sizer, or sizer then
+autofix), every sizing and autofix step, and what the prompt asked for that TaskBot didn't use.
+
 The design is checked (static torque, reach, workspace corners, self-collision,
 joint ranges, budget, mass); once those all pass, it is simulated in MuJoCo
-(`reach_targets`, `carry_payload`, `hold_still`). Failures go back to the LLM for
-repair, up to `--max-rounds` (default 5). `report.md` shows each round's results,
+(`reach_targets`, `carry_payload`, `hold_still`). `report.md` shows each round's results,
 a diff of what changed, the final pass/fail and GIFs of the final round's
 simulations (`sim/*.gif`). Exit code 0 = passed, 2 = never passed.
 `--no-sim` skips simulation; `--no-record` skips the GIFs. Exit code 3 = out of scope (below),
@@ -223,6 +266,10 @@ requirements with assumptions; the controller table; and downloads of `spec.json
 | `src/taskbot/fake.py` | Offline fake backend with canned arm, mobile and mobile-manipulator runs (`data/fake/`) |
 | `src/taskbot/export3d.py` | Final robot → GLB for the app's 3D view |
 | `src/taskbot/app.py` | Gradio app (`taskbot-app`) |
+| `src/taskbot/intent.py` | `DesignIntent`: the LLM's choices in hybrid mode (no numbers) |
+| `src/taskbot/sizing.py` | Sizer: intent + requirements + catalog → every number of the `RobotSpec` |
+| `src/taskbot/autofix.py` | Deterministic fixes for failures with a known number |
+| `src/taskbot/hybrid.py` | The hybrid loop: intent → size → check → autofix → revised intent |
 | `src/taskbot/bench.py`, `bench/` | Evaluation benchmark: prompts, runner, reports, compare |
 | `examples/` | 2-, 4- and 6-DOF arms |
 
@@ -379,6 +426,19 @@ than the requirements.
 Physics runs at 1 ms.
 
 ## Known limits / future work
+
+- **The sizer's rules are simple.** Link radius is a rule of thumb from length and payload, with
+  no stiffness or deflection check; the fixed base and gripper sizes are fixed defaults; the
+  upper arm and forearm are split evenly, which suits the workspace corners but isn't optimised
+  for torque. The motor search only picks among catalog motors: when none can carry the load
+  the result is "infeasible", not a redesign of the requirements.
+- **Three arm layouts.** No SCARA, prismatic or 6-DOF layouts in hybrid mode yet (the llm mode
+  can still write them); adding one is a list in `ARM_LAYOUTS` and a name in `intent.ArmLayout`.
+- **Wheel sizing is verified by simulation,** because the static `wheel_torque` estimate passed
+  designs that saturated in the driving sims near the motor's top speed; that makes sizing a
+  mobile base take seconds rather than milliseconds.
+- **Autofix covers known numeric fixes only.** Compliance (soft position loops) and tipping are
+  left to a revised intent; the hybrid loop has not been run on a real model yet.
 
 - **No velocity feedforward.** Joints track moves with the motors' factory position loops plus
   gravity feedforward only, so they run behind the planned timing (back-EMF drag ÷ Kp). That lag

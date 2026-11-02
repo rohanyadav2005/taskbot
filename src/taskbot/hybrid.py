@@ -35,6 +35,8 @@ class HybridOutcome(RepairOutcome):
     approximate: str | None = None                          # requirement relaxed (--nearest)
     infeasible_options: list[str] = field(default_factory=list)
     sized_for: Requirements | None = None                   # the relaxed requirements, if approximate
+    sized_spec: RobotSpec | None = None                     # what the sizer made from the last intent
+    prompt: str = ""                                        # the user's words, for the report
 
     @property
     def passed(self) -> bool:  # an approximate design never counts as a pass
@@ -97,13 +99,10 @@ def hybrid_loop(client: LLMClient, req: Requirements, catalog: dict[str, Motor],
             out.approximate, out.sized_for, target = sized.approximate, sized.requirements, sized.requirements
             emit(f"APPROXIMATE: relaxed {sized.approximate}")
         spec = sized.spec
+        out.sized_spec = spec
         results = check(spec, target)
         fixed = autofix_loop(spec, target, catalog, lambda s: check(s, target), results=results, on_event=emit)
         out.steps += fixed.steps
-        if fixed.steps:
-            for key in out.provenance:
-                if any(key.split(".")[0] in s for s in fixed.steps):
-                    out.provenance[key] = "sizer, then autofix"
         failures = [r for r in fixed.results if not r.passed]
         if not failures:
             break

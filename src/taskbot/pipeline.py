@@ -100,6 +100,7 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
             from taskbot.hybrid import hybrid_loop
 
             outcome = hybrid_loop(client, req, catalog, simulate=simulate, nearest=nearest, on_event=on_event)
+            outcome.prompt = prompt
         else:
             outcome = repair_loop(client, req, catalog, max_rounds=max_rounds, simulate=simulate,
                                   on_event=on_event)

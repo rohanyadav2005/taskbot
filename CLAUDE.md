@@ -1,14 +1,17 @@
 # TaskBot: notes for coding agents
 
-Text-to-robot design with an LLM in the loop: an LLM extracts requirements and writes a JSON
-spec; deterministic code builds the URDF, runs engineering checks and MuJoCo sims, and sends
-failures back to the LLM until the design passes or runs out of rounds. See README.md.
+Text-to-robot design with an LLM in the loop: an LLM extracts requirements and chooses a
+DesignIntent (layout, gripper, drive); deterministic code sizes every number (taskbot/sizing.py),
+builds the URDF, runs engineering checks and MuJoCo sims, applies known numeric fixes
+(taskbot/autofix.py), and asks the LLM for a different intent only when those run out. The older
+"llm" design mode (the LLM writes the whole spec) is kept for comparison. See README.md.
 
 ## Project rules
 
 - Python 3.11+, package `taskbot` under `src/`, tests with pytest under `tests/`.
-- The LLM only writes JSON matching the Pydantic schema. All geometry, mass and inertia come
-  from deterministic code.
+- The LLM chooses the layout; code sizes every number. The LLM only writes JSON matching a
+  Pydantic schema; in the default (hybrid) mode that is a DesignIntent with no numbers in it, and
+  all lengths, heights, joint limits, motors, geometry, mass and inertia come from deterministic code.
 - SI units everywhere.
 - Every check returns `CheckResult{check, passed, value, limit, cause, message}`, with a message
   specific enough for an LLM to fix: name the part, give the numbers, say what to change.
