@@ -666,6 +666,17 @@ def _search(make, lo: float, hi: float, req, catalog, smallest: bool, step: floa
 
 
 def _verified_collision_fixes(spec: RobotSpec, req: Requirements, catalog) -> str:
+    fixes = verified_collision_fixes(spec, req, catalog)
+    if not fixes:
+        return ("No single change to the riser length, the first pitch joint's range or the base size "
+                f"brought collisions under {COLLISION_MAX_FRACTION:.0%} in the same sampling.")
+    return ("Verified fixes, each re-checked with the same sampling, smallest change first: "
+            + "; or ".join(t for _, t, _ in fixes) + ".")
+
+
+def verified_collision_fixes(spec: RobotSpec, req: Requirements, catalog) -> list[tuple[float, str, dict]]:
+    """(relative change, text, changed spec dict) for each fix that passes self_collision when
+    re-sampled, smallest change first. Used in the message and by autofix."""
     base = spec.model_dump(exclude_none=True)
     arm = next(i for i, m in enumerate(base["modules"]) if m["kind"] == "arm_chain")
     segs = base["modules"][arm]["segments"]
@@ -695,7 +706,7 @@ def _verified_collision_fixes(spec: RobotSpec, req: Requirements, catalog) -> st
             v, frac = found
             name = "length_m" if key[1] is None else "size_m z (its length)"
             fixes.append(((v - now) / max(now, 0.05),
-                          f"set {link['name']} {name} to at least {v:.3g} m (collisions {frac:.1%})"))
+                          f"set {link['name']} {name} to at least {v:.3g} m (collisions {frac:.1%})", riser(v)))
     if bends and segs[bends[0]]["joint"]["type"] == "revolute":
         j = segs[bends[0]]["joint"]
         need = req.min_joint_range_rad
@@ -712,7 +723,8 @@ def _verified_collision_fixes(spec: RobotSpec, req: Requirements, catalog) -> st
                 if found:
                     v, frac = found
                     fixes.append((abs(v - j[field]) / span,
-                                  f"set {j['name']} {field} to {v:.3g} rad {word} (collisions {frac:.1%})"))
+                                  f"set {j['name']} {field} to {v:.3g} rad {word} (collisions {frac:.1%})",
+                                  limit(field)(v)))
     b = base["modules"][0]
     if b["kind"] == "fixed_base":
         fx, fy = b["footprint_m"]
@@ -725,13 +737,9 @@ def _verified_collision_fixes(spec: RobotSpec, req: Requirements, catalog) -> st
             if found:
                 s_, frac = found
                 fixes.append((1 - s_, f"make the base footprint {fx * s_:.3g} x {fy * s_:.3g} m or smaller "
-                                      f"(collisions {frac:.1%})"))
-    if not fixes:
-        return ("No single change to the riser length, the first pitch joint's range or the base size "
-                f"brought collisions under {COLLISION_MAX_FRACTION:.0%} in the same sampling.")
+                                      f"(collisions {frac:.1%})", shrink(s_)))
     fixes.sort(key=lambda f: f[0])
-    return ("Verified fixes, each re-checked with the same sampling, smallest change first: "
-            + "; or ".join(t for _, t in fixes) + ".")
+    return fixes
 
 
 def _base_collision_advice(spec: RobotSpec, pairs: Counter) -> str | None:
