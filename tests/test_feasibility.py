@@ -100,6 +100,7 @@ def _pipeline(tmp_path, requirements: list, designs: list | None = None):
     fake = FakeClient({"Requirements": requirements, "RobotSpec": designs or []})
     events = []
     result = run_pipeline(fake, TASK, CATALOG, tmp_path, max_rounds=1, simulate=False, record=False,
+                          design_mode="llm",
                           on_event=events.append)
     return result, fake, events
 

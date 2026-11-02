@@ -73,7 +73,8 @@ def cmd_design(args: argparse.Namespace) -> int:
         client = get_client(args.backend, args.model, catalog)
         result = run_pipeline(client, args.prompt, catalog, args.out, max_rounds=args.max_rounds,
                               simulate=not args.no_sim, record=not args.no_record,
-                              on_event=lambda line: print(line, file=sys.stderr))
+                              on_event=lambda line: print(line, file=sys.stderr),
+                              design_mode=args.design_mode, nearest=args.nearest)
     except LLMError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -96,7 +97,15 @@ def cmd_design(args: argparse.Namespace) -> int:
         return 3
     print(summarize(result.outcome, catalog, result.out_dir))
     if result.infeasible:
+        print("INFEASIBLE: no design from the motor catalog can meet these requirements.")
+        for reason in result.infeasible:
+            print(f"  {reason}")
+        for option in getattr(result.outcome, "infeasible_options", []):
+            print(f"  What would work: {option}")
         return 4
+    if result.approximate:
+        print(f"APPROXIMATE: relaxed {result.approximate}; not a pass.")
+        return 2
     return 0 if result.passed else 2
 
 
@@ -112,6 +121,12 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS)
     d.add_argument("--no-sim", action="store_true", help="static checks only")
     d.add_argument("--no-record", action="store_true", help="don't render simulation GIFs")
+    d.add_argument("--design-mode", choices=("hybrid", "llm"), default="hybrid",
+                   help="hybrid (default): the LLM chooses the layout, code sizes every number; "
+                        "llm: the LLM writes the whole spec (the older mode, for comparison)")
+    d.add_argument("--nearest", action="store_true",
+                   help="hybrid only: if no design can meet the requirements, build the nearest feasible "
+                        "one (relaxed payload or reach), labelled APPROXIMATE; never a pass")
     args = parser.parse_args(argv)
     return cmd_design(args)
 

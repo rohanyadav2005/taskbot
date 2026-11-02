@@ -71,7 +71,7 @@ def _collect(result: PipelineResult) -> dict:
             "controller": controller, "summary": _summary_md(result)}
 
 
-def design(prompt: str, backend: str, record: bool, max_rounds: int = 5):
+def design(prompt: str, backend: str, record: bool, max_rounds: int = 5, design_mode: str = "hybrid"):
     """Generator for the Design button: yields (log, summary, model3d, gifs, requirements,
     controller, files) as the run progresses."""
     log: list[str] = []
@@ -91,7 +91,7 @@ def design(prompt: str, backend: str, record: bool, max_rounds: int = 5):
     def work():
         try:
             box["result"] = run_pipeline(client, prompt, catalog, OUT_ROOT, max_rounds=max_rounds,
-                                         record=record, on_event=events.put)
+                                         record=record, on_event=events.put, design_mode=design_mode)
         except Exception as exc:  # shown in the log rather than crashing the UI
             box["error"] = f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=3)}"
         finally:
@@ -127,6 +127,9 @@ def build_app():
                 backend = gr.Radio(list(BACKENDS[::-1]), value="fake", label="Backend",
                                    info="openai_compat reads TASKBOT_BASE_URL, TASKBOT_MODEL and "
                                         "TASKBOT_API_KEY from the environment")
+                mode = gr.Radio(["hybrid", "llm"], value="hybrid", label="Design mode",
+                                info="hybrid: the LLM chooses the layout, code sizes every number; "
+                                     "llm: the LLM writes the whole spec")
                 record = gr.Checkbox(value=False, label="Record simulation GIFs (slow without a GPU)")
                 go = gr.Button("Design", variant="primary")
         summary = gr.Markdown()
@@ -145,7 +148,8 @@ def build_app():
         # Gradio 6's Model3D drops its lazily loaded viewer when a generator re-sends the
         # same value on completion, leaving the panel blank.
         glb = gr.State(None)
-        go.click(design, inputs=[prompt, backend, record],
+        go.click(lambda p, b, r, m: (yield from design(p, b, r, design_mode=m)),
+                 inputs=[prompt, backend, record, mode],
                  outputs=[log, summary, glb, gifs, requirements, controller, files]
                  ).then(lambda path: path, inputs=glb, outputs=model)
     return app

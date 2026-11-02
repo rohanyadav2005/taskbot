@@ -150,7 +150,7 @@ def test_cli_runs_the_pipeline_on_openai_compat_and_records_usage(tmp_path, monk
         monkeypatch.setenv("TASKBOT_MODEL", "mock-model")
         monkeypatch.setenv("TASKBOT_API_KEY", KEY)
         code = main(["design", "a robot that carries a 2 kg box across my office",
-                     "--backend", "openai_compat", "--out", str(tmp_path), "--no-sim", "--no-record"])
+                     "--backend", "openai_compat", "--design-mode", "llm", "--out", str(tmp_path), "--no-sim", "--no-record"])
     assert code == 0
     (out,) = tmp_path.iterdir()
     run = json.loads((out / "run.json").read_text(encoding="utf-8"))

@@ -312,7 +312,7 @@ def test_fake_mobile_runs_fail_round_one_and_pass_round_two(tmp_path, prompt, fi
 
     events = []
     catalog = supported_motors(CATALOG)
-    result = run_pipeline(fake_client(catalog), prompt, catalog, tmp_path, record=False,
+    result = run_pipeline(fake_client(catalog), prompt, catalog, tmp_path, record=False, design_mode="llm",
                           on_event=events.append)
     rounds = result.outcome.rounds
     assert result.passed and len(rounds) == 2
@@ -355,7 +355,7 @@ def test_app_design_runs_with_the_fake_backend(tmp_path, monkeypatch):
     from taskbot import app
 
     monkeypatch.setattr(app, "OUT_ROOT", tmp_path)
-    yields = list(app.design("a robot that carries a 2 kg box across my office", "fake", False))
+    yields = list(app.design("a robot that carries a 2 kg box across my office", "fake", False, design_mode="llm"))
     log, summary, glb, gifs, requirements, controller, files = yields[-1]
     assert len(yields) > 3  # the log streamed
     assert "Round 1" in log and "FAIL wheel_torque (cause: speed_limited)" in log

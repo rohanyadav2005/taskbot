@@ -38,6 +38,10 @@ def verdict(outcome: RepairOutcome) -> str:
     if outcome.infeasible:
         return (f"INFEASIBLE: the requirements are beyond the motor catalog, so no design can pass; the loop "
                 f"stopped after round {n}. Do not build it as is.")
+    approx = getattr(outcome, "approximate", None)
+    if approx and outcome.rounds[-1].passed:
+        return (f"APPROXIMATE: no design can meet the requirements as written; this is the nearest feasible "
+                f"design, which passes every check with {approx}. It is not a pass.")
     if outcome.passed:
         return f"PASSED: every check passed in round {n} of {outcome.max_rounds}."
     final = outcome.final
@@ -57,7 +61,7 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
     final = outcome.final
     lines = [f"# Design report: {final.spec.name}", "", f"**{verdict(outcome)}**", ""]
     if outcome.infeasible:
-        lines += _infeasible_lines(outcome.infeasible, req) + [""]
+        lines += _infeasible_lines(outcome.infeasible, req, getattr(outcome, "infeasible_options", None) or None) + [""]
 
     lines += ["## Requirements", ""]
     lines += requirements_rows(req)

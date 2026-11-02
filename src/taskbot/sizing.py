@@ -17,8 +17,10 @@ The LLM chooses (taskbot.intent); code sizes every number:
               the planned peak speed is at least 1.25 x the gravity torque there
               (checks.speed_loads), repeated until the selection stops changing.
     mobile    the cheapest wheel motor and smallest wheel radius passing wheel_torque with
-              1.25 x margin and top_speed; the smallest chassis passing tip_over and traction
-              (all with the mobile checks' own functions).
+              1.25 x margin and top_speed (the mobile checks' own functions) and verified with
+              the drive_straight and incline sims, which the static estimate alone doesn't
+              guarantee near the motor's top speed; the smallest chassis passing tip_over and
+              traction.
 
 Every design is checked with every static check before it is returned: the result is a
 SizedDesign that passes them, or a SizingFailure that says why ("infeasible": no catalog
@@ -330,9 +332,11 @@ def _base_dict(intent: DesignIntent, scale: float, r: float, motor: str, caster:
 
 
 def _size_base(intent, req, catalog, arm: _Arm | None, steps: list[str]) -> tuple[dict | None, str | None]:
-    """The cheapest wheel motor and smallest radius with wheel_torque margin and top_speed, on
-    the smallest chassis that passes tip_over and traction. (base dict, failure reason)."""
+    """The cheapest wheel motor and smallest radius with wheel_torque margin and top_speed, that
+    drives straight and climbs the incline in simulation, on the smallest chassis that passes
+    tip_over and traction. (base dict, failure reason)."""
     from taskbot.mobile_checks import tip_over, traction
+    from taskbot.mobile_sim import drive_straight, incline
 
     caster = bool(intent.caster) if intent.drive == "differential" else False
     if intent.drive == "differential" and not caster:
@@ -358,9 +362,13 @@ def _size_base(intent, req, catalog, arm: _Arm | None, steps: list[str]) -> tupl
                 model = build_model(spec, catalog)
                 (wt,), (ts,) = wheel_torque(spec, req, model, catalog), top_speed(spec, req, model, catalog)
                 if wt.value * MOTOR_MARGIN <= wt.limit and ts.passed:
-                    chosen = (b, m, r, wt)
-                    break
-                last = f"wheel_torque with {m.id}: {wt.message}"
+                    sims = [t(spec, req, catalog).result for t in (drive_straight, incline)]
+                    if all(x.passed for x in sims):
+                        chosen = (b, m, r, wt)
+                        break
+                    last = next(x.message for x in sims if not x.passed)
+                else:
+                    last = f"wheel_torque with {m.id}: {wt.message}"
                 r += 0.005
             if chosen:
                 break
@@ -372,7 +380,8 @@ def _size_base(intent, req, catalog, arm: _Arm | None, steps: list[str]) -> tupl
         (tip,), (tr,) = tip_over(spec, req, model, catalog), traction(spec, req, model, catalog)
         if tip.passed and tr.passed:
             steps.append(f"wheels: {m.id}, radius {r:.3g} m (each wheel needs {wt.value:.3g} Nm, it gives "
-                         f"{wt.limit:.3g} Nm at speed; margin {MOTOR_MARGIN}); chassis "
+                         f"{wt.limit:.3g} Nm at speed; margin {MOTOR_MARGIN}; the smallest radius that also "
+                         "drives straight and climbs the incline in simulation); chassis "
                          f"{b['chassis_size_m'][0]:.3g} x {b['chassis_size_m'][1]:.3g} m, the smallest that passes "
                          "tip_over and traction")
             return b, None

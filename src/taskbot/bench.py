@@ -227,6 +227,8 @@ class Record:
     backend: str = ""
     model: str = ""
     provider: str = ""
+    design_mode: str = "hybrid"
+    approximate: str | None = None  # --nearest relaxed this requirement: never a pass
 
     @property
     def scored(self) -> bool:
@@ -240,13 +242,14 @@ class RunMeta:
     provider: str
     name: str
     started: str = ""
+    design_mode: str = "hybrid"
 
     @property
     def is_fake(self) -> bool:
         return self.backend == "fake"
 
 
-def run_one(p: BenchPrompt, client: LLMClient, run_dir: Path, catalog, meta: RunMeta, *,
+def run_one(p: BenchPrompt, client: LLMClient, run_dir: Path, catalog, meta: RunMeta, *, nearest: bool = False,
             max_rounds: int, simulate: bool, record: bool) -> Record:
     from taskbot.fake import NoFakeResponse
     from taskbot.pipeline import run_pipeline
@@ -256,11 +259,11 @@ def run_one(p: BenchPrompt, client: LLMClient, run_dir: Path, catalog, meta: Run
         shutil.rmtree(out_root)  # a re-run (after an error) starts clean
     out_root.mkdir(parents=True)
     rec = Record(p.id, p.category, p.split, p.prompt, DONE, p.expect.should_reject,
-                 backend=meta.backend, model=meta.model, provider=meta.provider)
+                 backend=meta.backend, model=meta.model, provider=meta.provider, design_mode=meta.design_mode)
     start = time.monotonic()
     try:
         result = run_pipeline(client, p.prompt, catalog, out_root, max_rounds=max_rounds,
-                              simulate=simulate, record=record)
+                              simulate=simulate, record=record, design_mode=meta.design_mode, nearest=nearest)
     except NoFakeResponse as exc:
         rec.status, rec.error = NO_FAKE, str(exc)
     except LLMRateLimitError as exc:
@@ -319,7 +322,8 @@ def _score_result(rec: Record, p: BenchPrompt, result, run_dir: Path) -> None:
         return
     rec.valid_spec = True
     rec.rounds = len(o.rounds)
-    rec.passed = o.passed and not p.expect.should_reject
+    rec.approximate = getattr(o, "approximate", None)
+    rec.passed = o.passed and not p.expect.should_reject and rec.approximate is None  # never count APPROXIMATE
     rec.stop_reason = o.stop_reason
     rec.final_checks = [{"check": r.check, "passed": r.passed, "cause": r.cause} for r in o.final.results]
     rec.failed_any_round = [{"round": rnd.number, "check": r.check, "cause": r.cause}
@@ -343,13 +347,14 @@ def _load_state(path: Path) -> dict[str, Record]:
                 if d.get("report"):  # state written on Windows before reports used forward slashes
                     d["report"] = d["report"].replace("\\", "/")
                 d.setdefault("strict_pass", bool(d.get("passed") and d.get("expectations_met")))  # older runs
+                d.setdefault("design_mode", "llm")  # runs from before design modes were llm runs
                 state[d["id"]] = Record(**d)  # later lines win
     return state
 
 
 def run_bench(prompts: list[BenchPrompt], run_dir: Path, client_factory: Callable[[], LLMClient],
               meta: RunMeta, catalog=None, *, concurrency: int = 2, max_rounds: int = 5,
-              simulate: bool = True, record: bool = False,
+              simulate: bool = True, record: bool = False, nearest: bool = False,
               progress: Callable[[str], None] | None = None) -> list[Record]:
     """Run every prompt not already finished in `run_dir`, `concurrency` at a time.
     Returns the records for `prompts`, in order (missing ones are left out)."""
@@ -361,9 +366,11 @@ def run_bench(prompts: list[BenchPrompt], run_dir: Path, client_factory: Callabl
     meta_path = run_dir / "meta.json"
     if meta_path.exists():
         old = json.loads(meta_path.read_text("utf-8"))
-        if (old["backend"], old["model"]) != (meta.backend, meta.model):
-            raise ValueError(f"{run_dir} holds a run of {old['backend']} / {old['model']}; this is "
-                             f"{meta.backend} / {meta.model}. Use a different --name.")
+        old_mode = old.get("design_mode", "llm")
+        if (old["backend"], old["model"], old_mode) != (meta.backend, meta.model, meta.design_mode):
+            raise ValueError(f"{run_dir} holds a run of {old['backend']} / {old['model']} ({old_mode} mode); "
+                             f"this is {meta.backend} / {meta.model} ({meta.design_mode} mode). "
+                             "Use a different --name.")
         meta.started = old.get("started", "")
     else:
         meta.started = dt.datetime.now().isoformat(timespec="seconds")
@@ -377,7 +384,7 @@ def run_bench(prompts: list[BenchPrompt], run_dir: Path, client_factory: Callabl
 
     def work(p: BenchPrompt) -> Record:
         return run_one(p, client_factory(), run_dir, catalog, meta, max_rounds=max_rounds,
-                       simulate=simulate, record=record)
+                       simulate=simulate, record=record, nearest=nearest)
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
         futures = {pool.submit(work, p): p for p in todo}
@@ -403,6 +410,8 @@ def _outcome(r: Record) -> str:
         return "infeasible (stopped)"
     if r.valid_spec is False:
         return "invalid spec"
+    if r.approximate:
+        return f"APPROXIMATE ({r.approximate}), not a pass"
     return f"{'PASS' if r.passed else 'FAIL'} in {r.rounds} round{'s' * (r.rounds != 1)}"
 
 
@@ -412,7 +421,8 @@ CSV_FIELDS = ["id", "split", "category", "status", "passed", "strict_pass", "rej
               "rejection_correct", "requirements_valid", "valid_spec", "robot_type",
               "robot_type_correct", "expectations_met", "expectation_failures", "rounds",
               "final_failures", "unfixed_count", "tokens_in", "tokens_out", "json_retries",
-              "rate_limit_waits", "time_s", "report", "backend", "model", "provider", "error"]
+              "rate_limit_waits", "time_s", "report", "backend", "model", "provider", "design_mode",
+              "approximate", "error"]
 
 
 def _yn(v: bool | None) -> str:
@@ -464,7 +474,7 @@ def render_markdown(records: list[Record], meta: RunMeta, run_name: str) -> str:
     main = [r for r in scored if r.split == "main"]
     hold = [r for r in scored if r.split == "holdout"]
     status = Counter(r.status for r in records)
-    out = [f"# TaskBot benchmark: {meta.backend} / {meta.model}", ""]
+    out = [f"# TaskBot benchmark: {meta.backend} / {meta.model} ({meta.design_mode} mode)", ""]
     if meta.is_fake:
         out += ["> [!WARNING]", f"> # {FAKE_WARNING}", ""]
     out += [f"Run `{run_name}`, started {meta.started or 'unknown'}; provider {meta.provider}.",
@@ -582,8 +592,10 @@ def compare(old_csv: Path, new_csv: Path, allow_different_models: bool = False) 
     better = [k for k in both if o[k]["passed"] == "n" and n[k]["passed"] == "y"]
     worse = [k for k in both if o[k]["passed"] == "y" and n[k]["passed"] == "n"]
     rounds = [k for k in both if o[k]["passed"] == n[k]["passed"] == "y" and o[k]["rounds"] != n[k]["rounds"]]
+    modes = [sorted({r.get("design_mode") or "llm" for r in rows}) for rows in (old, new)]
     lines = [f"# Compare {Path(old_csv).name} → {Path(new_csv).name}", "",
-             f"Old: {', '.join(' / '.join(w) for w in who[0])}; new: {', '.join(' / '.join(w) for w in who[1])}",
+             f"Old: {', '.join(' / '.join(w) for w in who[0])} ({', '.join(modes[0])} mode); "
+             f"new: {', '.join(' / '.join(w) for w in who[1])} ({', '.join(modes[1])} mode)",
              f"Scored in both: {len(both)}. Pass: {sum(o[k]['passed'] == 'y' for k in both)} → "
              f"{sum(n[k]['passed'] == 'y' for k in both)}. Strict pass: "
              f"{sum(o[k].get('strict_pass') == 'y' for k in both)} → {sum(n[k].get('strict_pass') == 'y' for k in both)}.", ""]
@@ -636,6 +648,10 @@ def main(argv: list[str] | None = None, bench_dir: Path = Path("bench")) -> int:
     ap.add_argument("--retries", type=int, default=4, help="waits after a rate-limit error, per call")
     ap.add_argument("--backoff", type=float, default=5.0, help="first rate-limit wait in s; doubles")
     ap.add_argument("--no-sim", action="store_true")
+    ap.add_argument("--design-mode", choices=("hybrid", "llm"), default="hybrid",
+                    help="hybrid (default): LLM chooses, code sizes; llm: the LLM writes the whole spec")
+    ap.add_argument("--nearest", action="store_true",
+                    help="hybrid: build the nearest feasible design when none fits (APPROXIMATE, never a pass)")
     ap.add_argument("--record", action="store_true", help="render sim GIFs (slow)")
     ap.add_argument("--name", help="run name (default <date>_<backend>_<model>); reuse it to resume")
     ap.add_argument("--prompts-dir", type=Path, default=bench_dir)
@@ -658,14 +674,16 @@ def main(argv: list[str] | None = None, bench_dir: Path = Path("bench")) -> int:
     except (PromptFileError, ValueError, LLMError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    name = args.name or f"{dt.date.today().isoformat()}_{args.backend}_{_slug(probe.usage.model)}"
-    meta = RunMeta(args.backend, probe.usage.model, probe.usage.provider, name)
+    name = args.name or (f"{dt.date.today().isoformat()}_{args.backend}_{_slug(probe.usage.model)}"
+                         f"_{args.design_mode}")
+    meta = RunMeta(args.backend, probe.usage.model, probe.usage.provider, name, design_mode=args.design_mode)
     args.results_dir.mkdir(parents=True, exist_ok=True)
     print(f"Benchmark {name}: {len(prompts)} prompts, concurrency {args.concurrency}", file=sys.stderr)
     if meta.is_fake:
         print(f"WARNING: {FAKE_WARNING}", file=sys.stderr)
     try:
         records = run_bench(prompts, args.results_dir / name, factory, meta, concurrency=args.concurrency,
+                            nearest=args.nearest,
                             max_rounds=args.max_rounds, simulate=not args.no_sim, record=args.record,
                             progress=lambda line: print(line, file=sys.stderr))
     except ValueError as exc:

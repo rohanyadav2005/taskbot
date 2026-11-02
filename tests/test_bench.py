@@ -17,7 +17,8 @@ from taskbot.llm import FakeClient, LLMRateLimitError, OpenAICompatClient
 from taskbot.requirements import Requirements
 
 BENCH = Path(__file__).resolve().parent.parent / "bench"
-FAKE_META = RunMeta("fake", "scripted", "fake", "test_run")
+# The llm design mode: these tests exercise the full-spec LLM loop (the default is now hybrid).
+FAKE_META = RunMeta("fake", "scripted", "fake", "test_run", design_mode="llm")
 
 
 def by_id(*ids: str) -> list[BenchPrompt]:
@@ -182,7 +183,7 @@ def test_out_of_scope_prompt_that_is_not_rejected_fails(tmp_path):
     (drone,) = by_id("oos_coffee_drone")
     mobile = _load("mobile_requirements")  # no OUT OF SCOPE assumption
     recs = run_bench([drone], tmp_path / "r", _client_for({drone.prompt: mobile}, _load("mobile_design_round2")),
-                     RunMeta("x", "y", "z", "r"), simulate=False)
+                     RunMeta("x", "y", "z", "r", design_mode="llm"), simulate=False)
     r = recs[0]
     assert r.status == "done" and r.rejected is False and r.rejection_correct is False and not r.passed
     assert "should have been rejected as out of scope" in r.expectation_failures
@@ -191,7 +192,7 @@ def test_out_of_scope_prompt_that_is_not_rejected_fails(tmp_path):
 def test_in_scope_prompt_that_is_rejected_fails(tmp_path):
     (box,) = by_id("mobile_office_box")
     oos = _load("out_of_scope_requirements") | {"task_summary": box.prompt}
-    r = run_bench([box], tmp_path / "r", _client_for({box.prompt: oos}), RunMeta("x", "y", "z", "r"))[0]
+    r = run_bench([box], tmp_path / "r", _client_for({box.prompt: oos}), RunMeta("x", "y", "z", "r", design_mode="llm"))[0]
     assert r.rejected and not r.passed and r.rejection_correct is None
     assert "rejected as out of scope, but TaskBot can build this" in r.expectation_failures
 
@@ -199,7 +200,7 @@ def test_in_scope_prompt_that_is_rejected_fails(tmp_path):
 def test_invalid_design_json_is_scored_as_invalid_spec(tmp_path):
     (box,) = by_id("mobile_office_box")
     r = run_bench([box], tmp_path / "r", _client_for({box.prompt: _load("mobile_requirements")}, {"name": 3}),
-                  RunMeta("x", "y", "z", "r"))[0]
+                  RunMeta("x", "y", "z", "r", design_mode="llm"))[0]
     assert r.status == "done" and r.valid_spec is False and not r.passed and r.json_retries == 3
     assert r.unfixed[0]["cause"] == "invalid_json" and "no valid RobotSpec after 4 attempts" in r.error
 
@@ -277,7 +278,7 @@ def test_runner_with_mocked_openai_compat_backend(tmp_path):
     with MockOpenAI([_scripted_pipeline]) as m:
         def factory():
             return OpenAICompatClient(model="mock-model", base_url=m.url, api_key=None)
-        meta = RunMeta("openai_compat", "mock-model", "openai_compat (mock)", "mock")
+        meta = RunMeta("openai_compat", "mock-model", "openai_compat (mock)", "mock", design_mode="llm")
         (r,) = run_bench([box], tmp_path / "mock", factory, meta, simulate=False)
     assert r.status == "done" and r.passed and r.rounds == 1 and r.valid_spec
     assert (r.tokens_in, r.tokens_out, r.json_retries) == (200, 100, 0)
@@ -291,7 +292,7 @@ def test_runner_records_rate_limited_prompt_from_http_429(tmp_path):
             c = OpenAICompatClient(model="mock-model", base_url=m.url, api_key=None, rate_limit_retries=2)
             c._sleep = lambda s: None
             return c
-        (r,) = run_bench([box], tmp_path / "mock", factory, RunMeta("openai_compat", "mock-model", "p", "mock"))
+        (r,) = run_bench([box], tmp_path / "mock", factory, RunMeta("openai_compat", "mock-model", "p", "mock", design_mode="llm"))
     assert r.status == "rate_limited" and r.rate_limit_waits == 2 and len(m.requests) == 3
 
 
@@ -316,7 +317,7 @@ def test_real_backend_report_has_headline_holdout_and_unfixed_messages(fake_run,
     rows.append(Record("holdout_mobile_toolbox", "mobile", "holdout", "p", "done", False, passed=True, rounds=3,
                        rejected=False, valid_spec=True))
     rows.append(Record("mm_cafe_cups", "mobile_manipulator", "main", "p", "error", False, error="HTTP 500 boom"))
-    text = bench.render_markdown(rows, RunMeta("openai_compat", "m", "p", "real"), "real")
+    text = bench.render_markdown(rows, RunMeta("openai_compat", "m", "p", "real", design_mode="llm"), "real")
     assert FAKE_WARNING not in text
     assert "**Overall pass rate (main prompts): 2/3 (67%)**" in text
     assert "Holdout pass rate (reported separately): 1/1 (100%)" in text
@@ -404,7 +405,7 @@ def test_strict_pass_needs_the_expectations_met(tmp_path):
     assert m3.passed and not m3.expectations_met and not m3.strict_pass
     assert recs["mobile_office_box"].strict_pass and recs["oos_coffee_drone"].strict_pass
     rows = [Record(**{**vars(r), "backend": "openai_compat", "model": "m"}) for r in recs.values()]
-    text = bench.render_markdown(rows, RunMeta("openai_compat", "m", "p", "real"), "real")
+    text = bench.render_markdown(rows, RunMeta("openai_compat", "m", "p", "real", design_mode="llm"), "real")
     assert "**Overall pass rate (main prompts): 3/3 (100%)**" in text
     assert "**Strict pass rate (main prompts): 2/3 (67%)**" in text
     assert "| hard_arm | 1 | 1/1 (100%) | 0/1 (0%) |" in text

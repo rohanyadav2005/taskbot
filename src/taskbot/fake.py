@@ -139,4 +139,18 @@ def fake_client(catalog: dict[str, Motor], strict: bool = False) -> FakeClient:
             return _load("mobile_design_round1")  # the stuck scenario: never changes the design
         return _load(f"{kind}_design_round1" if first else f"{kind}_design_round2")
 
-    return FakeClient({"Requirements": requirements, "RobotSpec": design})
+    def intent(system, messages, schema):
+        """Hybrid mode: a canned DesignIntent per scenario (code sizes the numbers)."""
+        req = json.loads(messages[0]["content"].split("Requirements:\n", 1)[1].split("\n\n", 1)[0])
+        kind = req["robot_type"]
+        base = {"robot_type": kind, "gripper": req.get("gripper_kind") or "none",
+                "rationale": "FAKE BACKEND: canned intent for this scenario."}
+        if kind != "mobile":
+            base["arm_layout"] = "yaw_pitch_pitch_pitch" if kind == "arm" else "yaw_pitch_pitch"
+        if kind != "arm":
+            base |= {"drive": "differential", "caster": True}
+        if kind == "mobile_manipulator":
+            base["arm_mount"] = "front"
+        return base
+
+    return FakeClient({"Requirements": requirements, "RobotSpec": design, "DesignIntent": intent})
