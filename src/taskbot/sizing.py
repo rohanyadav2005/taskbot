@@ -4,7 +4,8 @@ The LLM chooses (taskbot.intent); code sizes every number:
 
     arm       a fixed base (or the chassis), a riser link, then the layout's joints
               (ARM_LAYOUTS). Upper arm and forearm lengths reach the farthest target (workspace
-              corners, centre and the reach_m point) from the shoulder with a 5% margin, split
+              corners, centre and the reach_m point) from the shoulder exactly (the reach margin is
+              already in reach_m, x1.10 in requirements; the sizer adds none), split
               evenly so the nearest target is inside the inner radius |L1 - L2|. The riser
               puts the shoulder at mid-workspace height, raised until self_collision passes
               (checks._search, the same search as the verified collision fixes). Joint limits
@@ -48,7 +49,6 @@ from taskbot.requirements import Requirements
 from taskbot.schema import Gripper, Motor, RobotSpec, supported_motors
 from taskbot.sim.motor import motor_model
 
-REACH_MARGIN = 1.05
 MOTOR_MARGIN = 1.25
 LIMIT_WIDEN_RAD = math.radians(15)
 MIN_LINK_M = 0.05
@@ -112,6 +112,9 @@ def _tube(name: str, length: float, payload: float, material: str) -> dict:
 
 
 def _targets(req: Requirements) -> list[np.ndarray]:
+    """The points the arm must reach: the workspace corners and centre, and the reach check's
+    point (reach_m from the base axis at mid-workspace height). reach_m already holds the reach
+    margin (x1.10 over the farthest corner, in requirements); the sizer adds none."""
     from taskbot.sim.plan import workspace_targets
 
     ws = req.workspace
@@ -120,11 +123,11 @@ def _targets(req: Requirements) -> list[np.ndarray]:
 
 
 def _arm_lengths(targets, shoulder: np.ndarray, tail: float) -> tuple[float, float, float, float]:
-    """(upper arm, forearm, farthest, nearest): reach the farthest target with REACH_MARGIN,
-    split so the inner radius |L1 - (L2 + tail)| is ~0."""
+    """(upper arm, forearm, farthest, nearest): exactly reach the farthest target (its margin is
+    already in reach_m), split so the inner radius |L1 - (L2 + tail)| is ~0."""
     d = [float(np.linalg.norm(t - shoulder)) for t in targets]
     far, near = max(d), min(d)
-    total = REACH_MARGIN * far
+    total = far
     l1, l2 = total / 2, total / 2 - tail
     if l2 < MIN_LINK_M:
         l2, l1 = MIN_LINK_M, total - tail - MIN_LINK_M
@@ -206,10 +209,11 @@ class _Arm:
     def size_lengths(self, steps: list[str]) -> None:
         targets = _targets(self.req)
         self.l1, self.l2, far, near = _arm_lengths(targets, self.shoulder(), self.tail)
-        steps.append(f"upper_arm {self.l1:.3g} m, forearm {self.l2:.3g} m: the farthest target is {far:.3g} m "
-                     f"from the shoulder, x{REACH_MARGIN} = {REACH_MARGIN * far:.3g} m including "
-                     f"{self.tail:.3g} m of wrist and gripper; the nearest is {near:.3g} m away, inside "
-                     f"|upper_arm - (forearm + wrist + gripper)| = {abs(self.l1 - self.l2 - self.tail):.3g} m")
+        steps.append(f"upper_arm {self.l1:.3g} m, forearm {self.l2:.3g} m: together with {self.tail:.3g} m of wrist "
+                     f"and gripper they reach the farthest target, {far:.3g} m from the shoulder (reach_m "
+                     f"{self.req.reach_m:g} m already holds the 10% reach margin; the sizer adds none); the nearest "
+                     f"is {near:.3g} m away, inside |upper_arm - (forearm + wrist + gripper)| = "
+                     f"{abs(self.l1 - self.l2 - self.tail):.3g} m")
 
     def size_limits(self, steps: list[str]) -> None:
         from taskbot.sim.ik import solve_ik

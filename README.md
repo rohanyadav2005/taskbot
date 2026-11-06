@@ -66,7 +66,8 @@ benchmark CSV.
 **What the sizer computes** (`taskbot/sizing.py`):
 - arm: a riser at mid-workspace height, raised until `self_collision` passes (the same verified
   search as the collision fixes); upper arm and forearm reaching the farthest target from the
-  shoulder ×1.05, split so the nearest target lies inside the inner radius; hollow tube links
+  shoulder exactly (reach_m already holds the reach margin), split so the nearest target lies inside
+  the inner radius; hollow tube links
   (radius from length and payload, 2 mm wall; PLA under 0.25 m, aluminium above, unless the
   intent says otherwise); joint limits from IK over the workspace targets widened by 15°, at
   least the required range, the shoulder clipped so the upper arm can't swing into the base;
@@ -78,6 +79,18 @@ benchmark CSV.
 - mobile bases: the cheapest wheel motor and smallest radius with `wheel_torque` margin and
   `top_speed`, verified with the `drive_straight` and `incline` sims; the smallest chassis
   passing `tip_over` and `traction`.
+
+**Where each margin lives (each applied exactly once):**
+
+| Margin | Value | Applied in |
+|---|---|---|
+| Payload | ×1.25 on the bare mass (`payload_bare_kg`, `base_payload_bare_kg`) | `taskbot/normalize.py` (requirements) |
+| Reach | ×1.10 on the farthest workspace corner from the shoulder → `reach_m` | `taskbot/normalize.py` (requirements) |
+| Motor | usable torque ≥ 1.25 × the holding torque (else the cheapest that passes without it) | `taskbot/sizing.py` |
+| Usable torque | 80% of a motor's rated torque | `taskbot/checks.py` (every torque check) |
+
+The sizer sizes the arm to exactly the points the requirements ask for (the workspace corners and
+the reach check's point at `reach_m`), with no reach margin of its own.
 
 Every sized design is checked; the sizer returns a design that passes every static check, or a
 reason ("infeasible", with the largest payload at this reach and the longest reach with this
