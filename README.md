@@ -101,9 +101,50 @@ The design is checked (static torque, reach, workspace corners, self-collision,
 joint ranges, budget, mass); once those all pass, it is simulated in MuJoCo
 (`reach_targets`, `carry_payload`, `hold_still`). `report.md` shows each round's results,
 a diff of what changed, the final pass/fail and GIFs of the final round's
-simulations (`sim/*.gif`). Exit code 0 = passed, 2 = never passed.
-`--no-sim` skips simulation; `--no-record` skips the GIFs. Exit code 3 = out of scope (below),
-4 = infeasible (below).
+simulations (`sim/*.gif`). `--no-sim` skips simulation; `--no-record` skips the GIFs.
+
+**Every run finishes with a report.** The LLM supplies facts about the scene and choices; code
+normalises, derives and corrects (`taskbot/normalize.py`), and the validators run after that and
+only reject what code can't fix. Everything code changed is listed in `report.md` under
+"Corrections made by code" (and counted in `run.json`). When the LLM's replies still can't be
+used, code stands in and says so: the last reply that parsed, filled with documented defaults,
+or rule-based requirements from the task's words (`taskbot/fallback.py`); the default intent;
+the first requirements when a feasibility retry fails. Every exit path writes `report.md` and
+`run.json` with its `status` and `reason`.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | passed |
+| 2 | failed design (or APPROXIMATE with `--nearest`) |
+| 3 | out of scope |
+| 4 | infeasible: no catalog motor can meet the requirements |
+| 5 | LLM unusable: the backend couldn't be reached (the report names a next step, e.g. "is Ollama running? try: ollama ps") |
+| 1 | bad arguments or configuration only |
+
+**Record and replay.** Every run writes `llm_transcript.jsonl`: per LLM call the step
+(requirements, feasibility_retry, intent, intent_revision, design, repair), a hash of the system
+prompt, the user message, the raw reply, the validation error if any, the corrections, the model
+and the time (never an API key). Replay one offline, through today's code:
+
+```bash
+taskbot design "water the three plants on my windowsill" --backend replay --transcript out/<name>/llm_transcript.jsonl
+python bench/run.py --backend replay --transcripts DIR      # DIR/<prompt id>.jsonl
+```
+
+`tests/fixtures/real_runs/` holds transcripts reconstructed from real qwen2.5:7b runs, replayed by
+`tests/test_replay_acceptance.py`. `tests/test_sloppy.py` runs the hybrid pipeline 200 times with
+a seeded "sloppy model" backend (`taskbot/sloppy.py`: mismatched reach, workspaces around the base,
+reversed min/max, double margins, wrong fields, numbers as strings, prose around the JSON, invalid
+JSON) and requires 0 crashes and at least 90% sized designs.
+
+**Smoke test.** Six everyday prompts with a real backend, one line each (status, time, LLM calls,
+corrections), transcripts saved under `smoke/<date-time>/transcripts/`:
+
+```bash
+scripts/smoke.sh ollama qwen2.5:7b-instruct                       # Linux / macOS
+.\scripts\smoke.ps1 -Backend ollama -Model qwen2.5:7b-instruct     # Windows PowerShell
+python -m taskbot.smoke --backend fake --no-sim                    # offline check of the script
+```
 
 Recording needs an OpenGL backend. On a headless Linux machine install one and
 pick it before running, e.g. `apt install libosmesa6` and `export MUJOCO_GL=osmesa`
