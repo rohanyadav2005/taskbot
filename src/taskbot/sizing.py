@@ -455,8 +455,25 @@ def _provenance(intent: DesignIntent, spec: RobotSpec) -> dict[str, str]:
     return p
 
 
+_CACHE: dict[tuple, SizedDesign | SizingFailure] = {}
+_CACHE_MAX = 256
+
+
 def size_design(intent: DesignIntent, req: Requirements, catalog: dict[str, Motor], *,
                 nearest: bool = False) -> SizedDesign | SizingFailure:
+    """Deterministic, so memoised on (intent, requirements, catalog, nearest); a copy is returned."""
+    import copy
+
+    key = (intent.model_dump_json(), req.model_dump_json(), tuple(sorted(catalog)), nearest)
+    if key not in _CACHE:
+        if len(_CACHE) >= _CACHE_MAX:
+            _CACHE.clear()
+        _CACHE[key] = _size_design(intent, req, catalog, nearest=nearest)
+    return copy.deepcopy(_CACHE[key])
+
+
+def _size_design(intent: DesignIntent, req: Requirements, catalog: dict[str, Motor], *,
+                 nearest: bool = False) -> SizedDesign | SizingFailure:
     steps: list[str] = []
     arm = None
     if req.has_arm:
@@ -541,7 +558,7 @@ def _nearest(intent, req, catalog, options, reason, steps) -> SizedDesign | Sizi
                 what = f"reach_m {old:g} -> {relaxed.reach_m:g} m (workspace scaled by {k})"
         except ValueError:
             continue
-        sized = size_design(intent, relaxed, catalog)
+        sized = _size_design(intent, relaxed, catalog)
         if isinstance(sized, SizedDesign):
             sized.approximate = what
             sized.steps = steps + [f"APPROXIMATE: {reason} Relaxed {what} to the nearest feasible design."] + sized.steps

@@ -7,8 +7,9 @@ are unchanged) only reject what code can't fix. Every note is shown in report.md
 
 Requirements (normalize_requirements):
     unknown fields dropped; numbers given as strings ("0.3 m") parsed; min/max swapped back;
-    an arm workspace clipped to WORKSPACE_LIMIT_M and moved off the base (forward or up,
-    whichever changes it less); reach_m derived from the workspace (the farthest corner from
+    an arm workspace clipped to WORKSPACE_LIMIT_M and moved off the base: forward (same
+    size), or up when raising z_min cuts at most RAISE_MAX_FRACTION of its height; a mobile
+    manipulator's low targets moved in front of its default chassis; reach_m derived from the workspace (the farthest corner from
     the plausible shoulder x REACH_MARGIN, rounded up to 1 cm); fields that don't apply to the
     robot_type set to null (a mobile manipulator's reach_m is measured horizontally from the
     chassis centre, as the reach check measures it); missing mobile fields filled with MOBILE_DEFAULTS; gripper_needed
@@ -34,6 +35,11 @@ DEFAULT_DOF = 3
 # Documented indoor defaults for a mobile robot whose requirements leave them out.
 MOBILE_DEFAULTS = {"speed_m_s": 0.3, "max_incline_deg": 5.0, "terrain": "flat", "base_payload_kg": 0.0}
 # A workspace in front of the base, for an arm whose requirements give none.
+# A mobile manipulator's default chassis (taskbot.sizing.CHASSIS_M: 0.30 x 0.24 m, top about 0.1 m up).
+CHASSIS_FRONT_M = 0.15
+CHASSIS_HALF_WIDTH_M = 0.12
+CHASSIS_TOP_M = 0.12
+RAISE_MAX_FRACTION = 0.25     # raise a workspace off the base only if that cuts <= 25% of its height
 DEFAULT_WORKSPACE = {"x_min": 0.15, "x_max": 0.35, "y_min": -0.15, "y_max": 0.15, "z_min": 0.0, "z_max": 0.25}
 
 ARM_FIELDS = ("reach_m", "workspace", "dof_min")
@@ -105,18 +111,32 @@ def _workspace(ws, robot_type: str, notes: list[str]) -> dict:
             v = min(max(out[k], lo), hi)
             notes.append(f"workspace {k} {out[k]:g} m is outside {lo:g} to {hi:g} m: clipped to {v:g} m")
             out[k] = v
+    if robot_type == "mobile_manipulator":
+        # Targets low down must be in front of the chassis (taskbot.sizing's default chassis), not under it.
+        front = CHASSIS_FRONT_M + 0.05
+        if out["x_min"] < front and out["z_min"] < CHASSIS_TOP_M and out["y_min"] < CHASSIS_HALF_WIDTH_M \
+                and out["y_max"] > -CHASSIS_HALF_WIDTH_M:
+            shift = front - out["x_min"]
+            out["x_min"], out["x_max"] = round(out["x_min"] + shift, 3), round(out["x_max"] + shift, 3)
+            notes.append(f"the workspace reached under the chassis: moved it {shift:.3g} m forward so it starts "
+                         f"{front:g} m ahead of the chassis centre (x now {out['x_min']:g} to {out['x_max']:g} m)")
+        return out
     b, top = BASE_HALF_WIDTH_M, BASE_REGION_TOP_M
     if out["x_min"] < b and out["x_max"] > -b and out["y_min"] < b and out["y_max"] > -b and out["z_min"] < top:
         clearance = b + 0.02
         shift = clearance - out["x_min"]
         raise_by = top - out["z_min"]
-        if shift <= raise_by:
+        height = out["z_max"] - out["z_min"]
+        # Moving it forward keeps its size; raising z_min cuts targets off, so it is the smaller
+        # change only when it removes at most RAISE_MAX_FRACTION of the height.
+        if height <= 0 or raise_by > RAISE_MAX_FRACTION * height:
             out["x_min"], out["x_max"] = round(out["x_min"] + shift, 3), round(out["x_max"] + shift, 3)
             notes.append(f"the workspace covered the robot's own base: moved it {shift:.3g} m forward "
                          f"(x now {out['x_min']:g} to {out['x_max']:g} m, same size)")
         else:
             notes.append(f"the workspace covered the robot's own base: raised z_min from {out['z_min']:g} to "
-                         f"{top:g} m (moving it forward would take {shift:.3g} m)")
+                         f"{top:g} m (cuts {raise_by / height:.0%} of its height; moving it forward would take "
+                         f"{shift:.3g} m)")
             out["z_min"] = top
             if out["z_max"] < out["z_min"]:
                 out["z_max"] = out["z_min"]

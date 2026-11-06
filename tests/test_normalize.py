@@ -41,9 +41,13 @@ def test_reach_is_derived_and_the_models_value_kept_in_the_note():
 
 def test_workspace_over_the_base_moves_the_smaller_way():
     centred = {"x_min": -0.15, "x_max": 0.15, "y_min": -0.15, "y_max": 0.15, "z_min": 0.0, "z_max": 0.3}
-    req, notes = norm(ARM | {"workspace": centred})
-    assert req.workspace.z_min == 0.1 and req.workspace.x_min == -0.15  # raising z (0.1) < moving x (0.25)
-    assert any("raised z_min from 0 to 0.1 m" in n for n in notes)
+    req, notes = norm(ARM | {"workspace": centred})  # raising would cut a third of it: moved forward
+    assert (req.workspace.x_min, req.workspace.x_max, req.workspace.z_min) == (0.1, 0.4, 0.0)
+    assert any("moved it 0.25 m forward (x now 0.1 to 0.4 m, same size)" in n for n in notes)
+    tall = {"x_min": -0.15, "x_max": 0.15, "y_min": -0.15, "y_max": 0.15, "z_min": 0.05, "z_max": 0.45}
+    req, notes = norm(ARM | {"workspace": tall})  # raising cuts 12%: raised
+    assert req.workspace.z_min == 0.1 and req.workspace.x_min == -0.15
+    assert any("raised z_min from 0.05 to 0.1 m (cuts 12% of its height" in n for n in notes)
     near = {"x_min": 0.05, "x_max": 0.25, "y_min": -0.1, "y_max": 0.1, "z_min": 0.0, "z_max": 0.2}
     req, notes = norm(ARM | {"workspace": near})
     assert (req.workspace.x_min, req.workspace.x_max) == (0.1, 0.3) and req.workspace.z_min == 0.0
