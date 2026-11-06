@@ -113,6 +113,7 @@ class LLMClient(ABC):
         self.transcript: list[dict] = []
         self.corrections: list[tuple[str, str]] = []  # (step, note) from normalisers, kept attempts only
         self._step = "llm"
+        self._backend_timing: dict | None = None  # the backend's own timing of the last call, if it gives one
 
     def _call(self, system: str, messages: list[Message], schema: type[BaseModel]) -> str:
         """`_chat`, waiting and retrying on rate-limit errors."""
@@ -141,7 +142,8 @@ class LLMClient(ABC):
             "user": redact(user), "reply": None if reply is None else redact(reply),
             "error": None if error is None else redact(error),
             "provider": self.usage.provider, "model": self.usage.model,
-            "time_s": round(time.monotonic() - start, 3), "corrections": list(notes or [])})
+            "time_s": round(time.monotonic() - start, 3), "corrections": list(notes or []),
+            "backend_timing": self._backend_timing})
 
     def complete_json(
         self,
@@ -168,8 +170,12 @@ class LLMClient(ABC):
         attempts = self.max_retries + 1
         for attempt in range(1, attempts + 1):
             start = time.monotonic()
+            self._backend_timing = None
             try:
-                reply = self._call(system, messages, schema)
+                from taskbot.timing import timed
+
+                with timed("llm", f"{step} attempt {attempt}"):
+                    reply = self._call(system, messages, schema)
             except LLMError as exc:
                 self._record(step, attempt, system, messages[-1]["content"], None, str(exc), start, schema)
                 raise
@@ -347,6 +353,14 @@ class OllamaClient(LLMClient):
         prompt_n, reply_n = int(payload.get("prompt_eval_count") or 0), int(payload.get("eval_count") or 0)
         self.usage.input_tokens += prompt_n
         self.usage.output_tokens += reply_n
+
+        def seconds(key):  # Ollama reports durations in ns
+            return round(int(payload.get(key) or 0) / 1e9, 3)
+        # Where Ollama spent the call: loading the model, reading the prompt (tokens not served
+        # from its cache), writing the reply.
+        self._backend_timing = {"load_s": seconds("load_duration"), "prompt_tokens": prompt_n,
+                                "prompt_eval_s": seconds("prompt_eval_duration"), "reply_tokens": reply_n,
+                                "eval_s": seconds("eval_duration"), "total_s": seconds("total_duration")}
         if payload.get("done_reason") == "length" or prompt_n + reply_n >= self.num_ctx:
             raise LLMTruncatedError(
                 f"Ollama filled its {self.num_ctx}-token context ({prompt_n} prompt + {reply_n} reply "

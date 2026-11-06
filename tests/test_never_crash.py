@@ -30,11 +30,14 @@ def report(result):
 def test_no_parsable_reply_uses_rule_based_requirements_and_still_designs(tmp_path):
     fake = FakeClient({"Requirements": ["Sure! The robot should water plants."] * 4})
     result = run(fake, tmp_path)
-    assert result.outcome is not None and result.passed
+    # Every check passes, but guessed requirements are never a pass: APPROXIMATE, with why.
+    assert result.outcome is not None and result.outcome.final.passed and not result.passed
+    assert "do less than the task asks" in result.approximate and "guessed these requirements" in result.approximate
     assert any(FALLBACK_MARK in a for a in result.requirements.assumptions)
     assert result.fallbacks[0].startswith("requirements: no reply passed validation")
     assert "rule-based requirements from keywords" in result.fallbacks[0]
-    assert "- FALLBACK: requirements:" in report(result) and run_json(result)["status"] == "PASSED"
+    assert "- FALLBACK: requirements:" in report(result) and run_json(result)["status"] == "APPROXIMATE"
+    assert "**APPROXIMATE: every check passed" in report(result)
 
 
 def test_last_parsed_reply_is_used_when_it_can_be_filled(tmp_path):

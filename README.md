@@ -57,7 +57,8 @@ taskbot design "..." --backend fake                                   # offline,
 and arm mount. `taskbot/sizing.py` computes every number (below), every static check runs on the
 result, then the sims; `taskbot/autofix.py` applies fixes with known numbers (a stronger motor,
 the missing length, a verified collision fix, a wider joint range) for up to 5 rounds, and only
-then is the LLM asked for a different intent (at most 3 times). `--nearest` builds the nearest
+then is the LLM asked for a different intent (at most 3 times; when its reply can't be used, code
+tries its next untried layout, drive or mount instead). `--nearest` builds the nearest
 feasible design when none fits (relaxed payload, then reach), labelled APPROXIMATE and never a
 pass. `--design-mode llm`: the LLM writes the whole spec and repairs it from the check messages,
 up to `--max-rounds` (default 5). The mode is recorded in `run.json`, `report.md` and the
@@ -71,14 +72,24 @@ benchmark CSV.
   (radius from length and payload, 2 mm wall; PLA under 0.25 m, aluminium above, unless the
   intent says otherwise); joint limits from IK over the workspace targets widened by 15°, at
   least the required range, the shoulder clipped so the upper arm can't swing into the base;
-  base yaw and wrist roll continuous;
+  base yaw and wrist roll continuous; before declaring that no motor can carry the arm, an upper
+  arm up to 0.75 × the nearest target's distance shorter than the even split (the heavy elbow motor
+  nearer the shoulder);
 - motors from the tip inward (outer motors load inner joints) with `checks.holding_loads` and
   `checks.speed_loads`, the checks' own functions: the cheapest supported motor with usable
   torque (80% of rated) ≥ 1.25 × the holding torque and enough torque at the planned peak speed,
-  else the cheapest that passes without the margin; repeated until the choice stops changing;
+  else the cheapest that passes without the margin; repeated until the choice stops changing. At a
+  position tolerance of 3 mm or less, the stiffest motor that passes instead (control stays "pd":
+  on the smoke run's M3-screw arm the fixed "pid" preset overshot during moves, about 3.5 mm,
+  where the stiffest motors with pd held about 0.5 mm). When even they can't meet the tolerance
+  in the sims (every remaining failure a compliance miss), the run is INFEASIBLE with the best
+  precision any design reached ("holds about X mm");
 - mobile bases: the cheapest wheel motor and smallest radius with `wheel_torque` margin and
-  `top_speed`, verified with the `drive_straight` and `incline` sims; the smallest chassis
-  passing `tip_over` and `traction`.
+  `top_speed`, passing `tip_over` and `traction` and verified with the `drive_straight` and
+  `incline` sims (and `turn_in_place` for skid-steered four_wheel bases: at most 3 wheel sizes per
+  motor, and no larger chassis once only turning fails, since a scaled-up chassis is heavier in the
+  same proportions); the smallest chassis that does; a mobile manipulator's base yaw is made stiffer until `drive_with_arm_extended` holds
+  the tool (the arm swings when the chassis speeds up with it to the side).
 
 **Where each margin lives (each applied exactly once):**
 
@@ -103,6 +114,14 @@ joint ranges, budget, mass); once those all pass, it is simulated in MuJoCo
 a diff of what changed, the final pass/fail and GIFs of the final round's
 simulations (`sim/*.gif`). `--no-sim` skips simulation; `--no-record` skips the GIFs.
 
+**Scope gate.** Before any LLM call, a fixed word list is checked against the task's own words
+(`taskbot/scope.py`): flying (fly, flying, drone, quadcopter, aerial, airborne), water (swim,
+underwater, boat, submarine), legs (walk, walking, legged, biped, quadruped, humanoid, stairs) and
+harm (weapon, gun, shoot, attack, turret), with simple inflections. A match stops the run as OUT OF
+SCOPE (exit 3) with the matched words in `report.md`; a negation up to three words before it in
+the same clause ("not a drone", "no flying") lets it through. The requirements LLM's own
+"OUT OF SCOPE:" assumption is the second check (spellings like "OUT_OF_SCOPE:" are read as it).
+
 **Every run finishes with a report.** The LLM supplies facts about the scene and choices; code
 normalises, derives and corrects (`taskbot/normalize.py`), and the validators run after that and
 only reject what code can't fix. Everything code changed is listed in `report.md` under
@@ -110,12 +129,18 @@ only reject what code can't fix. Everything code changed is listed in `report.md
 used, code stands in and says so: the last reply that parsed, filled with documented defaults,
 or rule-based requirements from the task's words (`taskbot/fallback.py`); the default intent;
 the first requirements when a feasibility retry fails. Every exit path writes `report.md` and
-`run.json` with its `status` and `reason`.
+`run.json` with its `status` and `reason`. A FAILED report says which check blocked the saved
+design, by how much (value against limit) and what would make it pass ("What blocked it").
+
+**Time per step.** `run.json` has `time_by_kind` (seconds of LLM calls, sizing, autofix, static
+checks, sims, report and other, nested steps counted once) and `timings` (each LLM call, sizing,
+autofix, static-check round and sim test). With Ollama each transcript record's `backend_timing`
+splits a call into model load, prompt reading and reply writing, from Ollama's own counters.
 
 | Exit code | Meaning |
 |---|---|
 | 0 | passed |
-| 2 | failed design (or APPROXIMATE with `--nearest`) |
+| 2 | failed design, or APPROXIMATE: `--nearest`, or requirements cut short of the task or guessed |
 | 3 | out of scope |
 | 4 | infeasible: no catalog motor can meet the requirements |
 | 5 | LLM unusable: the backend couldn't be reached (the report names a next step, e.g. "is Ollama running? try: ollama ps") |
@@ -137,8 +162,8 @@ a seeded "sloppy model" backend (`taskbot/sloppy.py`: mismatched reach, workspac
 reversed min/max, double margins, wrong fields, numbers as strings, prose around the JSON, invalid
 JSON) and requires 0 crashes and at least 90% sized designs.
 
-**Smoke test.** Six everyday prompts with a real backend, one line each (status, time, LLM calls,
-corrections), transcripts saved under `smoke/<date-time>/transcripts/`:
+**Smoke test.** Six everyday prompts with a real backend, one line each (status, total time,
+seconds by step, LLM calls, corrections), transcripts saved under `smoke/<date-time>/transcripts/`:
 
 ```bash
 scripts/smoke.sh ollama qwen2.5:7b-instruct                       # Linux / macOS
@@ -353,10 +378,24 @@ beat, using the same numbers as the checks:
   and wheels) against the best wheel motor on four driven wheels at the required speed.
 
 A `Requirements` validator also rejects a workspace whose corners are farther than `reach_m` from
-any plausible shoulder position (on the base axis 0.03–0.15 m up for an arm; on a 0.05–0.4 m
-chassis top over the workspace for a mobile manipulator), and one that reaches into the robot's own
+the nearest plausible shoulder position (on the base axis 0.03–0.38 m up for an arm; over the
+workspace centre 0.05–0.47 m up for a mobile manipulator), and one that reaches into the robot's own
 base (|x| and |y| under 0.08 m below z = 0.1 m): the workspace is where the targets are, relative to
-the base, never a box centred on it. The JSON retry fixes both.
+the base, never a box centred on it. The normaliser runs first and fixes both:
+
+- `reach_m` is derived from the workspace: its farthest corner from TaskBot's own shoulder (on the
+  base axis, or the chassis centre's axis, at mid-workspace height within what the riser allows:
+  0.07–0.38 m for an arm, 0.11–0.47 m for a mobile manipulator) × 1.10, rounded up to 1 mm. That
+  shoulder is never nearer than the validator's, so a derived `reach_m` always passes.
+- A box around the base or turret is the same targets in front of it, since the base yaw turns the
+  arm to any side: it is turned a multiple of 90° so its longest reach points forward and its near
+  edge is moved out of the base; its farthest point keeps its distance and height.
+- A mobile manipulator drives to each target, so its workspace is what the arm covers once the
+  base stops: at most 0.25 m deep from 0.2 m ahead of the chassis centre and 0.2 m to each side, at
+  the heights the task gives (a design convention, unverified).
+- Targets beyond 1.5 m are cut to 1.5 m, and the requirements get a `CUT SHORT:` assumption; so do
+  requirements code guessed (`REQUIREMENTS FALLBACK:`). A design for them is APPROXIMATE at best,
+  never PASSED (exit 2), and an infeasible verdict says what was cut.
 
 If the gate fails, the requirements go back to the requirements step once, with the numbers and
 "keep them realistic for the described scene, don't just shrink them to fit". If they are still

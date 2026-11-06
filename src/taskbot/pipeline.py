@@ -72,8 +72,11 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
     """`max_rounds` applies to the llm mode; `nearest` to the hybrid mode."""
     if design_mode not in DESIGN_MODES:
         raise ValueError(f"design_mode must be one of {DESIGN_MODES}")
+    from taskbot import timing
+
     emit = on_event or (lambda line: None)
     start = time.monotonic()
+    timing.start()
     fallbacks: list[str] = []
 
     def usage_for(out, status, reason=""):
@@ -134,7 +137,7 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
             out = write_infeasible(req, out_root, feasible, first)
             emit("Stopped: the requirements are still infeasible, so no design was made. "
                  + " ".join(feasible.problems))
-            return PipelineResult(req, None, out, usage_for(out, "INFEASIBLE", " ".join(feasible.problems)),
+            return PipelineResult(req, None, out, usage_for(out, "INFEASIBLE", _with_short(req, feasible.problems)),
                                   infeasible=feasible.problems, design_mode=design_mode, fallbacks=fallbacks)
         emit("Feasibility: the second version can be built.")
     try:
@@ -158,7 +161,8 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
         return _llm_unusable(client, prompt, out_root, usage_for, emit, design_mode, exc, "design", req)
     except Exception as exc:  # a bug in TaskBot: report it rather than crash
         detail = f"internal error in TaskBot: {type(exc).__name__}: {exc}\n{traceback.format_exc(limit=6)}"
-        out = write_design_failed(req, out_root, detail)
+        out = write_design_failed(req, out_root, detail, "FAILED: TaskBot hit an internal error (a bug), so nothing "
+                                  "was checked. The error is below.")
         emit(f"Stopped: {detail.splitlines()[0]}")
         return PipelineResult(req, None, out, usage_for(out, "INTERNAL_ERROR", detail), error=detail,
                               design_mode=design_mode, fallbacks=fallbacks)
@@ -170,24 +174,48 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
             out = write_infeasible(req, out_root, Feasibility(list(outcome.infeasible),
                                                               list(getattr(outcome, "infeasible_options", []))))
             emit(f"Stopped: {' '.join(outcome.infeasible)}")
-            return PipelineResult(req, None, out, usage_for(out, "INFEASIBLE", " ".join(outcome.infeasible)),
+            return PipelineResult(req, None, out, usage_for(out, "INFEASIBLE", _with_short(req, outcome.infeasible)),
                                   infeasible=list(outcome.infeasible), design_mode=design_mode, fallbacks=fallbacks)
-        out = write_design_failed(req, out_root, reason)
+        out = write_design_failed(req, out_root, reason, "FAILED: no design could be sized for these requirements "
+                                  "with any intent tried, so nothing was checked. The last sizing failure is below.")
         emit(f"Stopped: {reason}")
         return PipelineResult(req, None, out, usage_for(out, "DESIGN_FAILED", reason), error=reason,
                               design_mode=design_mode, fallbacks=fallbacks)
+    short = [a.split(":", 1)[1].strip() for a in req.short_of_task]
+    if short and outcome.passed:  # it passes, but for requirements that do less than the task asks
+        outcome.approximate = "the requirements it was sized for do less than the task asks: " + "; ".join(short)
+        outcome.approximate_kind = "requirements"
     if record and outcome.final.sim_runs:
         emit("Recording simulation GIFs...")
-    out = write_outputs(outcome, out_root, catalog, record=record)
+    from taskbot.timing import timed
+
+    with timed("report", "write outputs" + (" and GIFs" if record else "")):
+        out = write_outputs(outcome, out_root, catalog, record=record)
     approx = getattr(outcome, "approximate", None)
     state = ("INFEASIBLE" if outcome.infeasible else "APPROXIMATE" if approx
              else ("PASSED" if outcome.passed else "FAILED"))
-    usage = usage_for(out, state, outcome.stop_reason or "")
+    reason = outcome.stop_reason or ""
+    if state == "APPROXIMATE":
+        reason = getattr(outcome, "approximate", "") or reason
+    elif state == "FAILED":
+        from taskbot.report import shortfall
+
+        reason = (reason + ". " if reason else "") + "Blocked by: " + "; ".join(
+            f"{r.check} {shortfall(r)}" for r in outcome.final.failures)
+    if short and state != "APPROXIMATE":
+        reason = (reason + " " if reason else "") + "(The requirements were also cut short: " + "; ".join(short) + ")"
+    usage = usage_for(out, state, reason)
     emit(f"Done: {state}. Saved to {out}")
     emit(f"LLM: {usage['provider']} / {usage['model']}: {usage['calls']} calls, "
          f"{usage['total_tokens']} tokens, {usage['json_retries']} JSON retries")
     return PipelineResult(req, outcome, out, usage, infeasible=list(outcome.infeasible), design_mode=design_mode,
                           fallbacks=fallbacks)
+
+
+def _with_short(req: Requirements, problems: list[str]) -> str:
+    """The run's reason, with any way code had already cut the requirements short of the task."""
+    short = [a.split(":", 1)[1].strip() for a in req.short_of_task]
+    return " ".join(problems) + (" (The requirements were also cut short: " + "; ".join(short) + ")" if short else "")
 
 
 def _gate_requirements(prompt: str, gate) -> Requirements:
@@ -249,9 +277,14 @@ def record_usage(client: LLMClient, out: Path, start: float, design_mode: str = 
                  reason: str = "", fallbacks: list[str] | None = None) -> dict:
     """Write run.json (with the run's status and why) and the transcript, and append the
     corrections and LLM usage to report.md."""
-    usage = client.usage.as_dict() | {"time_s": round(time.monotonic() - start, 2), "design_mode": design_mode,
+    from taskbot import timing
+
+    total = round(time.monotonic() - start, 2)
+    log = timing._LOG.get() or []
+    usage = client.usage.as_dict() | {"time_s": total, "design_mode": design_mode,
                                       "corrections": len(client.corrections), "status": status,
-                                      "reason": reason, "fallbacks": list(fallbacks or [])}
+                                      "reason": reason, "fallbacks": list(fallbacks or []),
+                                      "time_by_kind": timing.by_kind(log, total), "timings": list(log)}
     (out / "run.json").write_text(json.dumps(usage, indent=2) + "\n", "utf-8")
     (out / "llm_transcript.jsonl").write_text(
         "".join(json.dumps(r) + "\n" for r in client.transcript), "utf-8")
@@ -264,5 +297,6 @@ def record_usage(client: LLMClient, out: Path, start: float, design_mode: str = 
                     f"{usage['input_tokens']} input + {usage['output_tokens']} output tokens, "
                     f"{usage['json_retries']} JSON validation retries, "
                     f"{usage['rate_limit_waits']} rate-limit waits, {usage['time_s']:g} s. "
-                    f"Design mode: {design_mode}.\n")
+                    f"Design mode: {design_mode}.\n\n"
+                    f"Time by step: {timing.summary(usage['time_by_kind'])} (each step in run.json \"timings\").\n")
     return usage

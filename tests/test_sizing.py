@@ -90,7 +90,7 @@ def test_property_pass_count(capsys):
 
 
 def test_run2_is_stopped_before_sizing():
-    with pytest.raises(ValueError, match="1.38 m from the nearest plausible shoulder position"):
+    with pytest.raises(ValueError, match="1.16 m away \\(from the nearest plausible shoulder"):
         Requirements(**RUN2)
 
 

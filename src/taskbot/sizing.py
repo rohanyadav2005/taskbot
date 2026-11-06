@@ -61,6 +61,14 @@ RISER_RADIUS_M = 0.025
 MAX_PITCH_RAD = 2.6
 WRIST_PITCH_RAD = 2.0
 MOTOR_PASSES = 5
+# Fixed sizing presets (not tuned per design):
+# At or below TIGHT_TOLERANCE_M each joint gets the stiffest position motor that passes (not the
+# cheapest). Control stays "pd": on the M3-screw arm (smoke run 2, 2 mm) the stiffest motors with
+# pd met the tolerance to about 0.5 mm in reach_targets and carry_payload, while the fixed "pid"
+# preset overshot during moves (about 3.5 mm); an integral term only removes steady sag.
+TIGHT_TOLERANCE_M = 0.003
+INNER_MAX_FRACTION = 0.75   # a shorter upper arm may open the inner radius to 75% of the nearest target
+SHIFT_STEP_M = 0.01
 GEOMETRY_PASSES = 3
 GRIPPER = {"parallel": {"max_opening_m": 0.06, "grip_force_n": 10.0},
            "suction": {"max_opening_m": 0.04, "grip_force_n": 5.0}}
@@ -68,6 +76,7 @@ CHASSIS_M = (0.30, 0.24, 0.06)
 CHASSIS_SCALES = (1.0, 1.25, 1.5, 1.75, 2.0)
 WHEEL_WIDTH_M = 0.025
 WHEEL_RADIUS_MAX_M = 0.12
+TURN_TRIES = 3              # turn_in_place sims per wheel motor and chassis size before the next motor
 
 # Joints per layout: (joint name, axis, link name). The first is the base yaw on the riser.
 ARM_LAYOUTS: dict[str, list[tuple[str, str, str]]] = {
@@ -122,13 +131,14 @@ def _targets(req: Requirements) -> list[np.ndarray]:
     return pts + [np.array([req.reach_m, 0.0, (ws.z_min + ws.z_max) / 2])]
 
 
-def _arm_lengths(targets, shoulder: np.ndarray, tail: float) -> tuple[float, float, float, float]:
+def _arm_lengths(targets, shoulder: np.ndarray, tail: float, shift: float = 0.0) -> tuple[float, float, float, float]:
     """(upper arm, forearm, farthest, nearest): exactly reach the farthest target (its margin is
-    already in reach_m), split so the inner radius |L1 - (L2 + tail)| is ~0."""
+    already in reach_m), split so the inner radius |L1 - (L2 + tail)| is ~0, or 2 x `shift` with
+    the upper arm `shift` shorter."""
     d = [float(np.linalg.norm(t - shoulder)) for t in targets]
     far, near = max(d), min(d)
     total = far
-    l1, l2 = total / 2, total / 2 - tail
+    l1, l2 = total / 2 - shift, total / 2 - tail + shift
     if l2 < MIN_LINK_M:
         l2, l1 = MIN_LINK_M, total - tail - MIN_LINK_M
     return max(l1, MIN_LINK_M), l2, far, near
@@ -158,6 +168,9 @@ class _Arm:
         self.limits: dict[str, tuple[float, float]] = {}
         self.riser = RISER_MIN_M
         self.l1 = self.l2 = 0.1
+        self.shift = 0.0        # upper arm this much shorter than the even split (forearm longer)
+        self.near = 0.0
+        self.stiff = req.position_tolerance_m <= TIGHT_TOLERANCE_M  # tight tolerance: the stiffest motors
 
     def base_top(self) -> float:
         b = self.base
@@ -208,12 +221,15 @@ class _Arm:
 
     def size_lengths(self, steps: list[str]) -> None:
         targets = _targets(self.req)
-        self.l1, self.l2, far, near = _arm_lengths(targets, self.shoulder(), self.tail)
+        self.l1, self.l2, far, near = _arm_lengths(targets, self.shoulder(), self.tail, self.shift)
+        self.near = near
         steps.append(f"upper_arm {self.l1:.3g} m, forearm {self.l2:.3g} m: together with {self.tail:.3g} m of wrist "
                      f"and gripper they reach the farthest target, {far:.3g} m from the shoulder (reach_m "
                      f"{self.req.reach_m:g} m already holds the 10% reach margin; the sizer adds none); the nearest "
                      f"is {near:.3g} m away, inside |upper_arm - (forearm + wrist + gripper)| = "
-                     f"{abs(self.l1 - self.l2 - self.tail):.3g} m")
+                     f"{abs(self.l1 - self.l2 - self.tail):.3g} m"
+                     + (f" (upper arm {self.shift:.3g} m shorter than an even split, so the elbow motor sits nearer "
+                        "the shoulder)" if self.shift else ""))
 
     def size_limits(self, steps: list[str]) -> None:
         from taskbot.sim.ik import solve_ik
@@ -267,8 +283,11 @@ class _Arm:
                 hl = {jl.joint.name: jl for jl in holding_loads(spec, self.req, build_model(spec, self.catalog))}
                 need, s = hl[name].need, sl[name]
                 margin = MOTOR_MARGIN
-                pick = next((m for m in motors if usable_torque(m) >= margin * need
-                             and motor_model(m).drive_limit(s.speed) >= margin * s.gravity), None)
+                ok = [m for m in motors if usable_torque(m) >= margin * need
+                      and motor_model(m).drive_limit(s.speed) >= margin * s.gravity]
+                if self.stiff and ok:  # tight tolerance: the stiffest position loop that passes, then cheapest
+                    ok = sorted(ok, key=lambda m: (-motor_model(m).kp, m.price_usd))
+                pick = ok[0] if ok else None
                 if pick is None:  # no motor with the margin: the cheapest that still passes the checks
                     margin = 1.0
                     pick = next((m for m in motors if usable_torque(m) >= need
@@ -278,7 +297,7 @@ class _Arm:
                     failing = (name, need, usable_torque(pick))
                 if pick.id != self.motors[name]:
                     self.motors[name], changed = pick.id, True
-                reasons[name] = (f"{name}: {pick.id} (needs {need:.3g} Nm holding, usable {usable_torque(pick):.3g} "
+                reasons[name] = (f"{name}: {pick.id}{' (stiffest that passes, for the tight tolerance)' if self.stiff and margin > 1 else ''} (needs {need:.3g} Nm holding, usable {usable_torque(pick):.3g} "
                                  f"Nm; {s.gravity:.3g} Nm at {s.speed:.3g} rad/s, gives "
                                  f"{motor_model(pick).drive_limit(s.speed):.3g} Nm there; "
                                  + (f"margin {MOTOR_MARGIN})" if margin > 1 else
@@ -306,6 +325,72 @@ class _Arm:
                      f"sampled poses; this is the shortest riser that passes self_collision ({found[1]:.1%})")
         self.riser = found[0]
         return True
+
+
+def _carry_anyway(arm: _Arm, intent, req, catalog, base, mount, failing, steps: list[str]):
+    """Before declaring a joint no motor can carry: the cheapest (lighter) motors if the tight
+    tolerance picked the stiffest, then an upper arm up to
+    INNER_MAX_FRACTION x the nearest target shorter than the even split (the elbow motor nearer
+    the shoulder), on the all-PLA arm if the material is "auto". Returns (arm, failing)."""
+    light = intent.model_copy(update={"link_material": "pla"}) if intent.link_material == "auto" else intent
+    tight = req.position_tolerance_m <= TIGHT_TOLERANCE_M
+    steps_max = int(INNER_MAX_FRACTION * arm.near / 2 / SHIFT_STEP_M + 1e-9)
+
+    def trial(shift: float, stiff: bool):
+        t = _Arm(light, req, catalog, base, mount)
+        t.shift, t.stiff = shift, stiff
+        t_steps: list[str] = []
+        return (t, t_steps) if _size_arm(t, t_steps) is None else None
+
+    # The shoulder load falls as the upper arm shortens, so try the largest shift first and give up
+    # if even that can't be carried; then the smallest shift that still can (bisection, 1 cm steps).
+    found, chosen = (trial(0.0, False) if tight else None), (0, False)  # tight: the cheapest motors first
+    if found is None and steps_max and (top := trial(steps_max * SHIFT_STEP_M, False)) is not None:
+        lo, hi, found, chosen = 0, steps_max, top, (steps_max, False)
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if (t := trial(mid * SHIFT_STEP_M, False)) is not None:
+                hi, found, chosen = mid, t, (mid, False)
+            else:
+                lo = mid
+    if found is None:
+        return arm, failing
+    (t, t_steps), (k, _) = found, chosen
+    shift = round(k * SHIFT_STEP_M, 3)
+    what = (["the cheapest motors that pass instead of the stiffest"] if tight else []) + (
+        [f"an upper arm {shift:.3g} m shorter than the even split, so the elbow motor sits nearer the shoulder"]
+        if shift else [])
+    steps.append(f"{failing[0]} couldn't carry the arm ({failing[1]:.3g} Nm needed, {failing[2]:.3g} Nm usable): "
+                 "sized again with " + " and ".join(what) + (" and all-PLA links" if light is not intent else "")
+                 + ", which can be carried")
+    steps += t_steps
+    return t, None
+
+
+def _stiffen_yaw_for_driving(arm: _Arm, req, catalog, steps: list[str]) -> None:
+    """A mobile manipulator's base yaw holds no weight, but holds the arm when the chassis speeds up
+    and slows down with the arm to the side (drive_with_arm_extended). If that sim moves the tool
+    out of tolerance through compliance, try stiffer motors on the base yaw, least stiff first."""
+    from taskbot.mobile_sim import drive_with_arm_extended
+
+    yaw = arm.layout[0][0]
+    run = drive_with_arm_extended(arm.spec(), req, catalog).result
+    if run.passed or run.cause != "compliance":
+        return
+    current = motor_model(catalog[arm.motors[yaw]]).kp
+    stiffer = sorted((m for m in _position_motors(catalog) if motor_model(m).kp > current * 1.01),
+                     key=lambda m: (motor_model(m).kp, m.price_usd))
+    first = run
+    for m in stiffer:
+        old = arm.motors[yaw]
+        arm.motors[yaw] = m.id  # it sits below the shoulder: no other arm joint carries its mass
+        run = drive_with_arm_extended(arm.spec(), req, catalog).result
+        if run.passed:
+            steps.append(f"{yaw}: {m.id} (stiffer than {old}): driving with the arm to the side moved the tool "
+                         f"{first.value * 1000:.3g} mm with {old} (limit {req.position_tolerance_m * 1000:g} mm); "
+                         f"the least stiff motor that holds it, verified in drive_with_arm_extended")
+            return
+        arm.motors[yaw] = old
 
 
 def _size_arm(arm: _Arm, steps: list[str]) -> tuple[str, float, float] | None:
@@ -340,7 +425,11 @@ def _size_base(intent, req, catalog, arm: _Arm | None, steps: list[str]) -> tupl
     drives straight and climbs the incline in simulation, on the smallest chassis that passes
     tip_over and traction. (base dict, failure reason)."""
     from taskbot.mobile_checks import tip_over, traction
-    from taskbot.mobile_sim import drive_straight, incline
+    from taskbot.mobile_sim import drive_straight, incline, turn_in_place
+
+    # Skid steering (four_wheel) scrubs its wheels sideways to turn, which takes far more torque
+    # than driving: verify that too (smoke run 6 failed turn_in_place after sizing for speed).
+    verify = (drive_straight, incline) + ((turn_in_place,) if intent.drive == "four_wheel" else ())
 
     caster = bool(intent.caster) if intent.drive == "differential" else False
     if intent.drive == "differential" and not caster:
@@ -358,25 +447,43 @@ def _size_base(intent, req, catalog, arm: _Arm | None, steps: list[str]) -> tupl
     last = "no wheel motor in the catalog"
     for scale in CHASSIS_SCALES:
         chosen = None
+        cant_turn: list = []  # motors that couldn't turn this base round at any radius tried
         for m in wheel_motors:
-            r = max(MOTOR_MARGIN * req.speed_m_s / (0.8 * m.no_load_speed_rad_s), 0.02)
+            if any(m.rated_torque_nm <= f.rated_torque_nm and m.no_load_speed_rad_s <= f.no_load_speed_rad_s
+                   for f in cant_turn):
+                continue  # no more torque and no more speed than one that couldn't: it can't either
+            r, turn_tries = max(MOTOR_MARGIN * req.speed_m_s / (0.8 * m.no_load_speed_rad_s), 0.02), 0
             while r <= WHEEL_RADIUS_MAX_M:
                 b = _base_dict(intent, scale, r, m.id, caster)
                 spec = spec_for(b)
                 model = build_model(spec, catalog)
                 (wt,), (ts,) = wheel_torque(spec, req, model, catalog), top_speed(spec, req, model, catalog)
                 if wt.value * MOTOR_MARGIN <= wt.limit and ts.passed:
-                    sims = [t(spec, req, catalog).result for t in (drive_straight, incline)]
-                    if all(x.passed for x in sims):
+                    # The static tip_over and traction checks first: no sim can pass a base they fail.
+                    (tip,), (tr,) = tip_over(spec, req, model, catalog), traction(spec, req, model, catalog)
+                    if not (tip.passed and tr.passed):
+                        last = tip.message if not tip.passed else tr.message
+                        break  # this motor at this chassis size: a bigger wheel won't fix it
+                    failed = next((x for x in (t(spec, req, catalog).result for t in verify) if not x.passed), None)
+                    if failed is None:
                         chosen = (b, m, r, wt)
                         break
-                    last = next(x.message for x in sims if not x.passed)
+                    last = failed.message
+                    if failed.check == "turn_in_place":
+                        turn_tries += 1  # a slightly bigger wheel can turn better (less speed-limited), but
+                        if turn_tries >= TURN_TRIES:  # not without end: then try the next motor
+                            cant_turn.append(m)
+                            break
                 else:
                     last = f"wheel_torque with {m.id}: {wt.message}"
                 r += 0.005
             if chosen:
                 break
         if chosen is None:
+            if cant_turn and last.startswith("Turned on the spot"):
+                # Scaled up, a chassis keeps its proportions but gets heavier: the wheels' turning
+                # moment against their sideways scrub only shrinks, so no larger chassis turns either.
+                break
             continue
         b, m, r, wt = chosen
         spec = spec_for(b)
@@ -385,7 +492,8 @@ def _size_base(intent, req, catalog, arm: _Arm | None, steps: list[str]) -> tupl
         if tip.passed and tr.passed:
             steps.append(f"wheels: {m.id}, radius {r:.3g} m (each wheel needs {wt.value:.3g} Nm, it gives "
                          f"{wt.limit:.3g} Nm at speed; margin {MOTOR_MARGIN}; the smallest radius that also "
-                         "drives straight and climbs the incline in simulation); chassis "
+                         "drives straight, climbs the incline" + (" and turns in place" if len(verify) > 2 else "")
+                         + " in simulation); chassis "
                          f"{b['chassis_size_m'][0]:.3g} x {b['chassis_size_m'][1]:.3g} m, the smallest that passes "
                          "tip_over and traction")
             return b, None
@@ -497,6 +605,8 @@ def _size_design(intent: DesignIntent, req: Requirements, catalog: dict[str, Mot
                              f"{failing[2]:.3g} Nm usable): sized again with all-PLA links, which can be carried")
                 steps += pla_steps
                 arm, failing = lighter, None
+        if failing is not None:
+            arm, failing = _carry_anyway(arm, intent, req, catalog, base, mount, failing, steps)
         if req.is_mobile:  # the arm's mass sizes the base; the chassis top moves the shoulder
             for _ in range(2):
                 b, why = _size_base(intent, req, catalog, arm, steps)
@@ -509,6 +619,8 @@ def _size_design(intent: DesignIntent, req: Requirements, catalog: dict[str, Mot
                 if abs(arm.base_top() - old_top) < 1e-3:
                     break
                 failing = _size_arm(arm, steps)
+        if req.is_mobile and failing is None:
+            _stiffen_yaw_for_driving(arm, req, catalog, steps)
         spec = arm.spec()
         if failing is not None:
             joint, need, usable = failing

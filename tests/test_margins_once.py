@@ -7,7 +7,7 @@ from taskbot import sizing
 from taskbot.checks import run_checks, stretch_m
 from taskbot.llm import ReplayClient
 from taskbot.normalize import default_intent
-from taskbot.requirements import extract_requirements, farthest_corner
+from taskbot.requirements import extract_requirements, reach_corner
 from taskbot.schema import load_motor_catalog
 from taskbot.sizing import SizedDesign, size_design
 
@@ -16,8 +16,8 @@ CRASH = Path(__file__).parent / "fixtures" / "real_runs" / "windowsill_reach_cra
 
 def test_windowsill_arm_is_no_longer_than_its_derived_reach():
     req = extract_requirements(ReplayClient(CRASH), "water the three plants on my windowsill")
-    _, far, _ = farthest_corner("arm", req.workspace)
-    assert req.reach_m == 0.4 and abs(req.reach_m - far * 1.10) <= 0.01
+    _, far, _ = reach_corner("arm", req.workspace)  # from the shoulder the sizer uses, 0.1625 m up
+    assert req.reach_m == 0.39 and abs(req.reach_m - far * 1.10) <= 0.001
     sized = size_design(default_intent(req), req, load_motor_catalog())
     assert isinstance(sized, SizedDesign)
     assert stretch_m(sized.spec) <= far * 1.10 + 0.01

@@ -27,7 +27,7 @@ PROMPTS = [
     "something to help my grandmother reach things on a high shelf",
     "a flying drone that delivers coffee to my room",
 ]
-LABELS = {"PASSED": "PASSED", "FAILED": "FAILED", "APPROXIMATE": "FAILED", "DESIGN_FAILED": "FAILED",
+LABELS = {"PASSED": "PASSED", "FAILED": "FAILED", "APPROXIMATE": "APPROXIMATE", "DESIGN_FAILED": "FAILED",
           "INTERNAL_ERROR": "FAILED", "INFEASIBLE": "INFEASIBLE", "OUT_OF_SCOPE": "OUT OF SCOPE",
           "LLM_UNUSABLE": "LLM UNUSABLE"}
 
@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     out = args.out or Path("smoke") / dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     (out / "transcripts").mkdir(parents=True, exist_ok=True)
     print(f"Smoke test: {args.backend} / {args.model}, results in {out.as_posix()}")
+    print("   status         total    [seconds by step: LLM calls, sizing, autofix, static checks, sims, other]")
     worst = 0
     for i, prompt in enumerate(PROMPTS, 1):
         folder = out / f"{i}"
@@ -55,16 +56,20 @@ def main(argv: list[str] | None = None) -> int:
             run = json.loads(runs[-1].read_text(encoding="utf-8"))
             status = LABELS.get(run.get("status", ""), run.get("status") or "UNKNOWN")
             calls, corrections = run.get("calls", 0), run.get("corrections", 0)
+            t = run.get("time_by_kind") or {}
+            split = (f"LLM {t.get('llm', 0):6.1f} | size {t.get('sizing', 0):5.1f} | fix {t.get('autofix', 0):5.1f} | "
+                     f"checks {t.get('static_checks', 0):5.1f} | sims {t.get('sim', 0):6.1f} | other "
+                     f"{t.get('report', 0) + t.get('other', 0):5.1f}")
             (runs[-1].parent / "log.txt").write_text(proc.stdout + "\n" + proc.stderr, encoding="utf-8")
             transcript = runs[-1].parent / "llm_transcript.jsonl"
             if transcript.exists():
                 shutil.copy(transcript, out / "transcripts" / f"{i}.jsonl")
         else:  # no report: only a bad argument or configuration gets here
-            status, calls, corrections = f"NO REPORT (exit {proc.returncode})", 0, 0
+            status, calls, corrections, split = f"NO REPORT (exit {proc.returncode})", 0, 0, ""
             folder.mkdir(parents=True, exist_ok=True)
             (folder / "log.txt").write_text(proc.stdout + "\n" + proc.stderr, encoding="utf-8")
         worst = max(worst, 0 if status in ("PASSED", "INFEASIBLE", "OUT OF SCOPE") else 1)
-        print(f"{i}. {status:<13} {elapsed:6.1f} s  {calls:2d} LLM calls  {corrections:2d} corrections  {prompt}")
+        print(f"{i}. {status:<13} {elapsed:6.1f} s  [{split}]  {calls:2d} LLM calls  {corrections:2d} corrections  {prompt}")
     return worst
 
 

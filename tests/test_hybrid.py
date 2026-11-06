@@ -12,6 +12,7 @@ from taskbot.fake import fake_client
 from taskbot.intent import DesignIntent
 from taskbot.llm import FakeClient
 from taskbot.pipeline import run_pipeline
+from taskbot.requirements import Requirements
 from taskbot.schema import RobotSpec, load_motor_catalog, supported_motors
 from taskbot.sizing import SizedDesign, SizingFailure, size_design
 
@@ -89,10 +90,21 @@ def test_revision_message_sends_failures_and_asks_for_no_numbers():
 
 # --------------------------------------------------------------------------- infeasible and nearest
 
-INFEASIBLE = next(r for r in arm_cases(30, CATALOG)
-                  if isinstance(size_design(DesignIntent(robot_type="arm", arm_layout="yaw_pitch_pitch_pitch",
-                                                         gripper=r.gripper_kind, rationale="r"), r, CATALOG),
-                                SizingFailure))
+def _sized_as_the_pipeline_would(r):
+    """The pipeline sizes the normalised requirements (derived reach_m) after the feasibility gate."""
+    from taskbot.feasibility import check_feasibility
+    from taskbot.normalize import normalize_requirements
+
+    n = Requirements(**normalize_requirements(json.loads(r.model_dump_json()), "x")[0])
+    if not check_feasibility(n, CATALOG).ok:
+        return None
+    return size_design(DesignIntent(robot_type="arm", arm_layout="yaw_pitch_pitch_pitch", gripper=r.gripper_kind,
+                                    rationale="r"), n, CATALOG)
+
+
+# The first random case that passes the gate but no catalog motor can carry once sized.
+INFEASIBLE = next(r for r in arm_cases(60, CATALOG)
+                  if isinstance(s := _sized_as_the_pipeline_would(r), SizingFailure) and s.kind == "infeasible")
 
 
 def _client(req):

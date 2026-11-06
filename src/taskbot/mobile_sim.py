@@ -340,8 +340,18 @@ def drive_with_arm_extended(spec: RobotSpec, req: Requirements, catalog=None) ->
         cause = _wheel_saturation(results[0][4])[0] or "slip"
     elif sagged:
         cause = "compliance"
-    result = CheckResult(check="drive_with_arm_extended", passed=ok,
-                         value=max(r[1] for r in results), limit=TILT_MAX_DEG,
+        worst = max(results, key=lambda r: r[2])[0]
+        joints = [seg.joint for m in spec.modules for seg in getattr(m, "segments", [])]
+        if worst in ("left", "right") and joints and joints[0].axis == "z":
+            text += (f" With the arm to the side, speeding up and slowing down swings it about the vertical axis, "
+                     f"which {joints[0].name} ({joints[0].motor_id}) has to hold: a stiffer motor on {joints[0].name}, "
+                     "a gentler acceleration or a shorter reach.")
+        else:
+            text += (" With the arm forward or back, speeding up and slowing down tips it about the pitch joints: "
+                     "stiffer motors on the shoulder and elbow, or a shorter reach.")
+    value, limit = ((max(r[2] for r in results), tol) if cause == "compliance"
+                    else (max(r[1] for r in results), TILT_MAX_DEG))
+    result = CheckResult(check="drive_with_arm_extended", passed=ok, value=value, limit=limit,
                          message=_msg(text, cause), cause=cause)
     return _run("drive_with_arm_extended", result, last)
 

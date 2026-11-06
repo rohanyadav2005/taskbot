@@ -15,7 +15,7 @@ from taskbot.schema import load_motor_catalog, supported_motors
 CATALOG = load_motor_catalog()
 FIXTURES = Path(__file__).parent / "fixtures" / "real_runs"
 KEYS = {"step", "attempt", "schema", "system_sha256", "user", "reply", "error", "provider", "model", "time_s",
-        "corrections"}
+        "corrections", "backend_timing"}
 
 
 def fake_run(tmp_path, prompt="a robot that carries a 2 kg box across my office"):
@@ -67,12 +67,14 @@ def test_replay_returns_each_steps_replies_in_order(tmp_path):
 
 
 def test_the_real_crash_reproduces_offline():
-    """Without the normaliser, the recorded requirements fail exactly as in the real run."""
+    """Without the normaliser, the recorded requirements still fail validation as in the real run
+    (the run said 0.358 m from a shoulder 0.15 m up; the plausible shoulder now goes up to
+    mid-workspace height, 0.163 m)."""
     replay = ReplayClient(FIXTURES / "windowsill_reach_crash.jsonl")
     with pytest.raises(LLMOutputError) as err:
         replay.complete_json(requirements_system_prompt(), "water the three plants on my windowsill",
                              Requirements, step="requirements")
-    assert "workspace corner (0.3, -0.15, 0.275) is 0.358 m from the nearest plausible shoulder position" in str(err.value)
+    assert "workspace corner (0.3, -0.15, 0.275) is 0.354 m away (from the nearest plausible shoulder" in str(err.value)
     assert "but reach_m is 0.3 m" in str(err.value)
 
 
@@ -102,6 +104,9 @@ def test_bench_replay_backend(tmp_path):
 
 
 def test_fixtures_are_valid_transcripts():
-    for f in FIXTURES.glob("*.jsonl"):
+    """The real and reconstructed transcripts predate backend_timing; everything else must be there."""
+    files = sorted(FIXTURES.rglob("*.jsonl"))
+    assert len(files) >= 10
+    for f in files:
         for line in f.read_text(encoding="utf-8").splitlines():
-            assert set(json.loads(line)) == KEYS
+            assert KEYS - {"backend_timing"} <= set(json.loads(line)) <= KEYS, f

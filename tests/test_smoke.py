@@ -13,7 +13,9 @@ def test_smoke_prints_one_line_per_prompt_and_saves_transcripts(tmp_path, capsys
     lines = [ln for ln in capsys.readouterr().out.splitlines() if re.match(r"\d\. ", ln)]
     assert code == 0 and len(lines) == 6
     for line, prompt in zip(lines, smoke.PROMPTS):
-        assert re.match(r"\d\. (PASSED|FAILED|INFEASIBLE|OUT OF SCOPE) +[\d.]+ s +\d+ LLM calls +\d+ corrections  ", line)
+        assert re.match(r"\d\. (PASSED|FAILED|APPROXIMATE|INFEASIBLE|OUT OF SCOPE) +[\d.]+ s  \[LLM +[\d.]+ \| size +[\d.]+ "
+                        r"\| fix +[\d.]+ \| checks +[\d.]+ \| sims +[\d.]+ \| other +[\d.]+\] +\d+ LLM calls +\d+ corrections  ",
+                        line), line
         assert line.endswith(prompt)
     assert lines[-1].startswith("6. OUT OF SCOPE")
     assert len(list((tmp_path / "transcripts").glob("*.jsonl"))) == 6

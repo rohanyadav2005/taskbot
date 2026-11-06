@@ -17,10 +17,9 @@ from __future__ import annotations
 import re
 
 from taskbot.normalize import DEFAULT_ARM_PAYLOAD_KG, DEFAULT_WORKSPACE, normalize_requirements
-from taskbot.requirements import Requirements
+from taskbot.requirements import FALLBACK_MARK, Requirements
 from taskbot.scope import scope_gate
 
-FALLBACK_MARK = "REQUIREMENTS FALLBACK:"
 _MM = re.compile(r"\b(pick(s|ing)? up|picks?|collect\w*|tidy\w*|gather\w*|fetch\w*)\b.*\b(floor|room|around|house|"
                  r"basket|bring)\b|\b(floor|room)\b.*\b(pick|collect|tidy)", re.S)
 _MOBILE = re.compile(r"\b(carr(y|ies|ying)|deliver\w*|transport\w*|drive\w*|patrol\w*|follow\w*|across)\b")

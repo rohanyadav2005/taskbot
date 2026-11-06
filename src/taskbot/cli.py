@@ -99,7 +99,9 @@ def cmd_design(args: argparse.Namespace) -> int:
         print(f"Saved to {result.out_dir}/ : report.md, requirements.json")
         return 4
     if result.error is not None:
-        print(f"FAILED: the model never produced a valid design for: {result.requirements.task_summary}")
+        what = ("TaskBot hit an internal error" if result.error.startswith("internal error") else
+                "no design could be sized" if result.design_mode == "hybrid" else "the model never produced a valid design")
+        print(f"FAILED: {what} for: {result.requirements.task_summary}")
         print(f"  {result.error}")
         print(f"Saved to {result.out_dir}/ : report.md, requirements.json")
         return 2
@@ -118,7 +120,8 @@ def cmd_design(args: argparse.Namespace) -> int:
             print(f"  What would work: {option}")
         return 4
     if result.approximate:
-        print(f"APPROXIMATE: relaxed {result.approximate}; not a pass.")
+        kind = getattr(result.outcome, "approximate_kind", "")
+        print(f"APPROXIMATE: {'' if kind == 'requirements' else 'relaxed '}{result.approximate}; not a pass.")
         return 2
     return 0 if result.passed else 2
 

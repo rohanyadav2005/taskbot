@@ -27,31 +27,85 @@ def norm(d, task="water plants"):
 def test_the_real_crash_now_validates_with_a_derived_reach():
     req = extract_requirements(ReplayClient(FIXTURES / "windowsill_reach_crash.jsonl"),
                                "water the three plants on my windowsill")
-    assert req.reach_m == 0.4  # 0.358 m x 1.10, rounded up to 1 cm
+    assert req.reach_m == 0.39  # 0.354 m from the sizer's shoulder 0.1625 m up, x 1.10, rounded up to 1 mm
 
 
 def test_reach_is_derived_and_the_models_value_kept_in_the_note():
     req, notes = norm(ARM | {"reach_m": 0.9})
-    assert req.reach_m == 0.37  # corner (0.3, 0.1, 0.05) is 0.332 m from the shoulder 0.15 m up, x 1.10
-    assert any(n.startswith("reach_m 0.37 m derived from the workspace") and "the model said 0.9 m" in n
+    assert req.reach_m == 0.365  # corner (0.3, -0.1, 0.05) is 0.332 m from the sizer's shoulder, x 1.10
+    assert any(n.startswith("reach_m 0.365 m derived from the workspace") and "the model said 0.9 m" in n
                for n in notes)
-    _, close = norm(ARM | {"reach_m": 0.37})
+    _, close = norm(ARM | {"reach_m": 0.365})
     assert not any("reach_m" in n for n in close)
 
 
-def test_workspace_over_the_base_moves_the_smaller_way():
+def test_workspace_around_the_base_is_turned_and_trimmed():
+    """The base yaw turns the arm to any side, so a box around the robot is the same targets in
+    front of it: keep its farthest point (distance and height), move its near edge out of the
+    base. Raising z_min (smoke run 2, M3 screws) left targets inside the turret column."""
+    import math
+
+    def far(ws):
+        return max(math.hypot(x, y) for x in (ws["x_min"], ws["x_max"]) for y in (ws["y_min"], ws["y_max"]))
+
     centred = {"x_min": -0.15, "x_max": 0.15, "y_min": -0.15, "y_max": 0.15, "z_min": 0.0, "z_max": 0.3}
-    req, notes = norm(ARM | {"workspace": centred})  # raising would cut a third of it: moved forward
-    assert (req.workspace.x_min, req.workspace.x_max, req.workspace.z_min) == (0.1, 0.4, 0.0)
-    assert any("moved it 0.25 m forward (x now 0.1 to 0.4 m, same size)" in n for n in notes)
-    tall = {"x_min": -0.15, "x_max": 0.15, "y_min": -0.15, "y_max": 0.15, "z_min": 0.05, "z_max": 0.45}
-    req, notes = norm(ARM | {"workspace": tall})  # raising cuts 12%: raised
-    assert req.workspace.z_min == 0.1 and req.workspace.x_min == -0.15
-    assert any("raised z_min from 0.05 to 0.1 m (cuts 12% of its height" in n for n in notes)
-    near = {"x_min": 0.05, "x_max": 0.25, "y_min": -0.1, "y_max": 0.1, "z_min": 0.0, "z_max": 0.2}
-    req, notes = norm(ARM | {"workspace": near})
-    assert (req.workspace.x_min, req.workspace.x_max) == (0.1, 0.3) and req.workspace.z_min == 0.0
-    assert any("moved it 0.05 m forward" in n for n in notes)
+    req, notes = norm(ARM | {"workspace": centred})
+    ws = req.workspace.model_dump()
+    assert (ws["x_min"], ws["x_max"], ws["y_min"], ws["y_max"], ws["z_min"]) == (0.1, 0.15, -0.15, 0.15, 0.0)
+    assert far(ws) == pytest.approx(far(centred))
+    assert any("surrounds the robot's own base and turret" in n and "near edge was moved out to 0.1 m" in n for n in notes)
+    tall = centred | {"z_min": 0.05, "z_max": 0.45}  # above the base region but around the turret
+    req, _ = norm(ARM | {"workspace": tall})
+    assert (req.workspace.x_min, req.workspace.x_max, req.workspace.z_min) == (0.1, 0.15, 0.05)
+    windowsill = {"x_min": -0.15, "x_max": 0.35, "y_min": -0.15, "y_max": 0.15, "z_min": 0.05, "z_max": 0.35}
+    req, _ = norm(ARM | {"workspace": windowsill})  # smoke run 1
+    assert (req.workspace.x_min, req.workspace.x_max, req.workspace.z_min) == (0.1, 0.35, 0.05)
+    behind = {"x_min": -0.4, "x_max": 0.05, "y_min": -0.1, "y_max": 0.1, "z_min": 0.0, "z_max": 0.2}
+    req, notes = norm(ARM | {"workspace": behind})
+    assert (req.workspace.x_min, req.workspace.x_max) == (0.1, 0.4) and any("turned 180°" in n for n in notes)
+    left = {"x_min": -0.05, "x_max": 0.05, "y_min": 0.0, "y_max": 0.4, "z_min": 0.0, "z_max": 0.2}
+    req, notes = norm(ARM | {"workspace": left})
+    ws = req.workspace.model_dump()
+    assert (ws["x_min"], ws["x_max"], ws["y_min"], ws["y_max"]) == (0.1, 0.4, -0.05, 0.05)
+    assert far(ws) == pytest.approx(far(left)) and any("turned 90° from the left" in n for n in notes)
+    tiny = {"x_min": -0.05, "x_max": 0.05, "y_min": -0.05, "y_max": 0.05, "z_min": 0.0, "z_max": 0.2}
+    req, notes = norm(ARM | {"workspace": tiny})  # nothing outside the base to keep: moved forward
+    assert (req.workspace.x_min, req.workspace.x_max) == (0.1, 0.2) and any("same size" in n for n in notes)
+    above = {"x_min": -0.1, "x_max": 0.1, "y_min": -0.1, "y_max": 0.1, "z_min": 0.6, "z_max": 0.8}
+    req, notes = norm(ARM | {"workspace": above})  # over the shoulder (0.38 m at most): left as is
+    assert req.workspace.x_min == -0.1 and not any("surrounds" in n for n in notes)
+
+
+def test_mobile_manipulator_workspace_is_what_the_arm_covers_once_the_base_stops():
+    """Smoke run 4 (toys): +-0.5 m around the chassis, then x 0.1-1.1 m on the second try. The
+    base drives to each toy, so the arm covers at most 0.25 m from 0.2 m ahead of the chassis
+    centre and 0.2 m to each side, at the heights the task gives."""
+    mm = {"task_summary": "toys", "robot_type": "mobile_manipulator", "payload_kg": 0.3, "dof_min": 3,
+          "gripper_needed": True, "gripper_kind": "parallel", "speed_m_s": 0.2, "max_incline_deg": 5,
+          "terrain": "carpet", "base_payload_kg": 0.0, "position_tolerance_m": 0.02, "tolerance_reason": "r"}
+    for ws in ({"x_min": -0.5, "x_max": 0.5, "y_min": -0.5, "y_max": 0.5, "z_min": 0.05, "z_max": 0.3},
+               {"x_min": 0.1, "x_max": 1.1, "y_min": -0.4, "y_max": 0.4, "z_min": 0.05, "z_max": 0.25}):
+        req, notes = norm(mm | {"workspace": ws})
+        w = req.workspace
+        assert (w.x_min, w.x_max, w.y_min, w.y_max, w.z_min, w.z_max) == (0.2, 0.45, -0.2, 0.2, ws["z_min"], ws["z_max"])
+        assert any("drives to each target" in n for n in notes)
+    inside = {"x_min": 0.25, "x_max": 0.4, "y_min": -0.1, "y_max": 0.1, "z_min": 0.0, "z_max": 0.3}
+    req, notes = norm(mm | {"workspace": inside})  # already what the arm covers: unchanged
+    assert req.workspace.model_dump() == inside and not any("drives to each target" in n for n in notes)
+
+
+def test_targets_above_the_limit_mark_the_requirements_cut_short():
+    """Smoke run 5 (high shelf, z 1.5-2.5 m): clipping to 1.5 m cuts the task short, so the
+    requirements say so; a design for them is APPROXIMATE at best (taskbot.pipeline)."""
+    ws = {"x_min": 0.2, "x_max": 0.4, "y_min": -0.1, "y_max": 0.1, "z_min": 1.2, "z_max": 2.5}
+    req, _ = norm(ARM | {"workspace": ws})
+    assert req.workspace.z_max == 1.5
+    (short,) = req.short_of_task
+    assert short.startswith("CUT SHORT: targets up to z_max = 2.5 m were cut to 1.5 m")
+    again, _ = norm(ARM | {"workspace": ws, "assumptions": [short]})  # the model copying it back changes nothing
+    assert again.short_of_task == [short]
+    below, _ = norm(ARM | {"workspace": ws | {"z_min": -0.1, "z_max": 0.3}})  # below the floor is no target
+    assert below.short_of_task == []
 
 
 def test_reversed_and_absurd_values_are_fixed():
@@ -118,5 +172,5 @@ def test_report_lists_every_correction(tmp_path):
                           tmp_path, simulate=False, record=False)
     report = (result.out_dir / "report.md").read_text(encoding="utf-8")
     assert "## Corrections made by code" in report
-    assert "- requirements: reach_m 0.45 m derived from the workspace" in report
+    assert "- requirements: reach_m 0.471 m derived from the workspace" in report
     assert json.loads((result.out_dir / "run.json").read_text(encoding="utf-8"))["corrections"] >= 1

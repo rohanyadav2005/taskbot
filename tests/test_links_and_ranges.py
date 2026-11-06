@@ -162,10 +162,10 @@ def test_half_a_kilo_at_half_a_metre_is_infeasible():
 
 
 def test_corner_beyond_reach_is_rejected():
-    ws = {"x_min": 0.1, "x_max": 0.2, "y_min": -0.2, "y_max": 0.2, "z_min": 0.0, "z_max": 0.6}
+    ws = {"x_min": 0.1, "x_max": 0.2, "y_min": -0.2, "y_max": 0.2, "z_min": 0.0, "z_max": 1.0}
     with pytest.raises(ValidationError) as err:
         Requirements(**(RUN3 | {"workspace": ws, "payload_kg": 0.2}))
     msg = str(err.value)
-    # 0.532 m from the most generous plausible shoulder (0.15 m up); ~0.61 m from a shoulder 0.05 m up.
-    assert "workspace corner (0.2, -0.2, 0.6) is 0.532 m from the nearest plausible shoulder position" in msg
+    # 0.681 m from the most generous plausible shoulder (0.38 m up, the highest a riser puts it).
+    assert "workspace corner (0.2, -0.2, 1) is 0.681 m away (from the nearest plausible shoulder" in msg
     assert "but reach_m is 0.5 m" in msg

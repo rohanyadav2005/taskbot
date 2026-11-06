@@ -69,6 +69,7 @@ class SimRun:
     camera_distance: float = 1.0
     ideal: CheckResult | None = None                  # same test, controller knows the mass
     track_body: int | None = None                     # follow this body with the camera
+    achieved_tolerance_m: float | None = None         # the tightest tolerance this run would meet
 
 
 # --------------------------------------------------------------------------- simulation
@@ -257,6 +258,12 @@ def _view(req: Requirements) -> dict:
     return {"look_at": (0.0, 0.0, max(ws.z_max, 0.1) / 2), "camera_distance": max(0.6, 3.0 * reach)}
 
 
+def _achieved(moves: list[_MoveResult]) -> float:
+    """The tightest task tolerance these moves would meet: worst of the final error, the path
+    deviation / PEAK_FACTOR and the overshoot / OVERSHOOT_FACTOR (settling time aside)."""
+    return max(max(m.final_error, m.peak_dev / PEAK_FACTOR, m.overshoot / OVERSHOOT_FACTOR) for m in moves)
+
+
 def _move_summary(moves: list[_MoveResult]) -> tuple[bool, str]:
     tol = moves[0].tol
     failed = [m for m in moves if m.failures]
@@ -394,7 +401,8 @@ def reach_targets(spec: RobotSpec, req: Requirements, catalog: dict[str, Motor] 
         msg += extra
     result = CheckResult(check="reach_targets", passed=ok, value=worst, limit=req.position_tolerance_m,
                          message=_with_cause(msg, cause), cause=cause)
-    return SimRun("reach_targets", result, robot, np.array(sim.frames), **_view(req))
+    return SimRun("reach_targets", result, robot, np.array(sim.frames), achieved_tolerance_m=_achieved(moves),
+                  **_view(req))
 
 
 def _belief(req: Requirements, payload_mass_error: float) -> str:
@@ -406,6 +414,7 @@ def _carry(spec, req, catalog, payload_mass_error) -> tuple[CheckResult, SimRobo
     targets = [p for _, p in workspace_targets(req)]
     robot = build_scene(spec, catalog, payload_kg=req.payload_kg, markers=targets)
     sim, moves = _run_moves(robot, req, payload_mass_error)
+    sim.achieved = _achieved(moves)
     reach_ok, text = _move_summary(moves)
     saturated, worst_sat, sat_text = _saturation(robot, sim, req.payload_kg)
     ok = reach_ok and not saturated
@@ -425,7 +434,8 @@ def carry_payload(spec: RobotSpec, req: Requirements, catalog: dict[str, Motor] 
     catalog = _catalog(catalog)
     result, robot, sim = _carry(spec, req, catalog, payload_mass_error)
     ideal = _carry(spec, req, catalog, 0.0)[0] if payload_mass_error else None
-    return SimRun("carry_payload", result, robot, np.array(sim.frames), ideal=ideal, **_view(req))
+    return SimRun("carry_payload", result, robot, np.array(sim.frames), ideal=ideal,
+                  achieved_tolerance_m=sim.achieved, **_view(req))
 
 
 def _worst_pose(robot: SimRobot, req: Requirements) -> tuple[str, np.ndarray, int, float]:
@@ -455,6 +465,7 @@ def _hold(spec, req, catalog, payload_mass_error) -> tuple[CheckResult, SimRobot
     path = sim.run(HOLD_S, lambda t: (pose, np.zeros(robot.n)))
     deviation = np.linalg.norm(path - commanded, axis=1)
     peak, final = float(deviation.max()), float(deviation[-1])
+    sim.achieved = max(final, peak / PEAK_FACTOR)
     if peak == 0.0:
         raise SimMeasurementError(
             f"hold_still measured exactly zero deviation holding {label}: the tool didn't move "
@@ -483,7 +494,8 @@ def hold_still(spec: RobotSpec, req: Requirements, catalog: dict[str, Motor] | N
     catalog = _catalog(catalog)
     result, robot, sim = _hold(spec, req, catalog, payload_mass_error)
     ideal = _hold(spec, req, catalog, 0.0)[0] if payload_mass_error else None
-    return SimRun("hold_still", result, robot, np.array(sim.frames), ideal=ideal, **_view(req))
+    return SimRun("hold_still", result, robot, np.array(sim.frames), ideal=ideal,
+                  achieved_tolerance_m=sim.achieved, **_view(req))
 
 
 SIM_TESTS = [reach_targets, carry_payload, hold_still]

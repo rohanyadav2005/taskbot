@@ -35,6 +35,10 @@ def _spec_json(rnd: Round) -> str:
 
 def verdict(outcome: RepairOutcome) -> str:
     n = len(outcome.rounds)
+    if outcome.infeasible and getattr(outcome, "infeasible_kind", "") == "precision":
+        return (f"INFEASIBLE: no design TaskBot can size from this catalog holds the tool within the task's "
+                f"{outcome.requirements.position_tolerance_m * 1000:.3g} mm; the run stopped after round {n}. The "
+                "best precision reached, and what would work, are listed below.")
     if outcome.infeasible and getattr(outcome, "infeasible_options", None):  # the sizer's verdict
         return (f"INFEASIBLE: no catalog motor can carry the arm TaskBot sized for these requirements, its own "
                 f"links and motors included; the run stopped after round {n}. Do not build it as is. "
@@ -43,6 +47,9 @@ def verdict(outcome: RepairOutcome) -> str:
         return (f"INFEASIBLE: the requirements are beyond the motor catalog, so no design can pass; the loop "
                 f"stopped after round {n}. Do not build it as is.")
     approx = getattr(outcome, "approximate", None)
+    if approx and outcome.rounds[-1].passed and getattr(outcome, "approximate_kind", "") == "requirements":
+        return (f"APPROXIMATE: every check passed in round {n}, but {approx}. It is not a pass: check the "
+                "requirements against the task before building it.")
     if approx and outcome.rounds[-1].passed:
         return (f"APPROXIMATE: no design can meet the requirements as written; this is the nearest feasible "
                 f"design, which passes every check with {approx}. It is not a pass.")
@@ -65,7 +72,10 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
     final = outcome.final
     lines = [f"# Design report: {final.spec.name}", "", f"**{verdict(outcome)}**", ""]
     if outcome.infeasible:
-        lines += _infeasible_lines(outcome.infeasible, req, getattr(outcome, "infeasible_options", None) or None) + [""]
+        lines += _infeasible_lines(outcome.infeasible, req, getattr(outcome, "infeasible_options", None) or None,
+                                   bound=False) + [""]
+    elif not outcome.passed and not getattr(outcome, "approximate", None):
+        lines += blocked_lines(outcome) + [""]
 
     lines += ["## Requirements", ""]
     lines += requirements_rows(req)
@@ -303,23 +313,53 @@ def write_out_of_scope(req, out_root: Path, gate=None) -> Path:
     return _write_no_design(req, out_root, slug, headline, req.out_of_scope, None, extra)
 
 
-def write_design_failed(req, out_root: Path, error: str) -> Path:
-    """out/<task>/{requirements.json, report.md} when the model never produced a valid design."""
-    return _write_no_design(req, out_root, "invalid_design",
-                            "FAILED: the model never produced a valid design (JSON that matches the "
+def write_design_failed(req, out_root: Path, error: str, headline: str | None = None) -> Path:
+    """out/<task>/{requirements.json, report.md} when no design was made to check: the model never
+    produced a valid one (llm mode), or none could be sized (hybrid; `headline` says so)."""
+    return _write_no_design(req, out_root, "invalid_design" if headline is None else "no_design",
+                            headline or "FAILED: the model never produced a valid design (JSON that matches the "
                             "schema), so nothing was checked.", [error], "Requirements")
 
 
-def _infeasible_lines(problems: list[str], req, options: list[str] | None = None) -> list[str]:
+def shortfall(r: CheckResult) -> str:
+    """How far a failed check is from its limit, in its own units."""
+    if r.value is None or r.limit is None:
+        return "no number to compare"
+    text = f"{_num(r.value)} against a limit of {_num(r.limit)}"
+    if r.limit and r.value / r.limit > 1:
+        return text + f" ({r.value / r.limit:.2g} x the limit)"
+    return text + f" (off by {_num(abs(r.value - r.limit))})"
+
+
+def blocked_lines(outcome: RepairOutcome) -> list[str]:
+    """For a FAILED run: each check that still blocks the saved design, by how much, and what
+    would make it pass (the check's own message names the fix)."""
+    final = outcome.final
+    lines = ["## What blocked it", "",
+             f"The saved design (round {final.number}) still fails these checks. Each line gives the value against "
+             "its limit and the check's own advice on what would make it pass:", ""]
+    lines += [f"- **{r.check}**{f' (cause: {r.cause})' if r.cause else ''}: {shortfall(r)}. {_cell(r.message)}"
+              for r in final.failures]
+    if outcome.stop_reason:
+        lines += ["", f"Why TaskBot stopped: {_cell(outcome.stop_reason)}."]
+    return lines
+
+
+def _infeasible_lines(problems: list[str], req, options: list[str] | None = None, bound: bool = True) -> list[str]:
     from taskbot.feasibility import check_feasibility
     from taskbot.schema import load_motor_catalog
 
     if options is None:
         options = check_feasibility(req, load_motor_catalog()).options
     lines = ["## Why no design can pass", "", *[f"- {_cell(p)}" for p in problems]]
+    if req.short_of_task:
+        lines += ["", "Code had already cut these requirements short of the task:",
+                  *[f"- {_cell(a)}" for a in req.short_of_task]]
     if options:
         lines += ["", "## What would make it possible", "", *[f"- {_cell(o)}" for o in options]]
     lines += ["", "These are bounds no design can beat (weightless links, chassis and motors), so the "
+              "requirements, or the motor catalog, have to change." if bound else
+              "These come from the designs TaskBot sized and checked, their own links and motors included; the "
               "requirements, or the motor catalog, have to change."]
     return lines
 

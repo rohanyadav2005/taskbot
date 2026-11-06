@@ -7,12 +7,14 @@ are unchanged) only reject what code can't fix. Every note is shown in report.md
 
 Requirements (normalize_requirements):
     unknown fields dropped; numbers given as strings ("0.3 m") parsed; min/max swapped back;
-    an arm workspace clipped to WORKSPACE_LIMIT_M and moved off the base: forward (same
-    size), or up when raising z_min cuts at most RAISE_MAX_FRACTION of its height; a mobile
-    manipulator's low targets moved in front of its default chassis; reach_m derived from the workspace (the farthest corner from
-    the plausible shoulder x REACH_MARGIN, rounded up to 1 cm); fields that don't apply to the
-    robot_type set to null (a mobile manipulator's reach_m is measured horizontally from the
-    chassis centre, as the reach check measures it); missing mobile fields filled with MOBILE_DEFAULTS; gripper_needed
+    an out-of-scope verdict in robot_type or an "OUT_OF_SCOPE:"-like assumption kept as the
+    "OUT OF SCOPE:" assumption; a workspace clipped to WORKSPACE_LIMIT_M (a "CUT SHORT:"
+    assumption when that cuts targets off); an arm workspace around the base or turret turned and
+    trimmed to the same targets in front (_turn_and_trim); a mobile manipulator's workspace cut to
+    what its arm covers once the base stops (MM_ARM_DEPTH_M, MM_ARM_HALF_WIDTH_M); reach_m derived
+    from the workspace (the farthest corner from TaskBot's own shoulder, requirements.reach_corner,
+    x REACH_MARGIN, rounded up to 1 mm); fields that don't apply to the robot_type set to null;
+    missing mobile fields filled with MOBILE_DEFAULTS; gripper_needed
     and gripper_kind made consistent; payload_kg = payload_bare_kg x PAYLOAD_MARGIN (and the
     same for the base payload) when the bare value is given; a missing or out-of-range
     position_tolerance_m set to DEFAULT_TOLERANCE_M.
@@ -26,7 +28,7 @@ import copy
 import math
 import re
 
-from taskbot.requirements import OUT_OF_SCOPE_PREFIX
+from taskbot.requirements import CUT_SHORT_PREFIX, OUT_OF_SCOPE_PREFIX
 
 PAYLOAD_MARGIN = 1.25          # payload_kg = bare mass x 1.25 (applied here, once)
 REACH_MARGIN = 1.10            # reach_m = farthest workspace corner from the shoulder x 1.10
@@ -39,9 +41,10 @@ MOBILE_DEFAULTS = {"speed_m_s": 0.3, "max_incline_deg": 5.0, "terrain": "flat", 
 # A workspace in front of the base, for an arm whose requirements give none.
 # A mobile manipulator's default chassis (taskbot.sizing.CHASSIS_M: 0.30 x 0.24 m, top about 0.1 m up).
 CHASSIS_FRONT_M = 0.15
-CHASSIS_HALF_WIDTH_M = 0.12
-CHASSIS_TOP_M = 0.12
-RAISE_MAX_FRACTION = 0.25     # raise a workspace off the base only if that cuts <= 25% of its height
+# A mobile manipulator drives to its targets: its arm covers at most this region in front of the
+# chassis (design convention, unverified: the base stops within a few cm of where it should).
+MM_ARM_DEPTH_M = 0.25
+MM_ARM_HALF_WIDTH_M = 0.2
 DEFAULT_WORKSPACE = {"x_min": 0.15, "x_max": 0.35, "y_min": -0.15, "y_max": 0.15, "z_min": 0.0, "z_max": 0.25}
 
 ARM_FIELDS = ("reach_m", "workspace", "dof_min")
@@ -92,8 +95,38 @@ def _robot_type(v, d) -> str:
     return "mobile_manipulator" if has_arm and has_mobile else "mobile" if has_mobile else "arm"
 
 
-def _workspace(ws, robot_type: str, notes: list[str]) -> dict:
-    from taskbot.requirements import BASE_HALF_WIDTH_M, BASE_REGION_TOP_M
+def _box(ws: dict) -> str:
+    return (f"x {ws['x_min']:g} to {ws['x_max']:g}, y {ws['y_min']:g} to {ws['y_max']:g}, "
+            f"z {ws['z_min']:g} to {ws['z_max']:g} m")
+
+
+def _turn_and_trim(out: dict, clearance: float) -> tuple[dict, str]:
+    """A box around the robot, as the same targets in front of it: the base yaw (or the chassis)
+    turns the arm to any side, so only distance and height matter. Turn the box a multiple of
+    90° so its longest reach from the axis points forward, then move its near edge out to
+    `clearance`. The farthest corner keeps its distance from the axis and its height; what is
+    cut is inside the robot. A box too small to keep anything is moved forward instead."""
+    x0, x1, y0, y1 = out["x_min"], out["x_max"], out["y_min"], out["y_max"]
+    turns = {"forward": (x0, x1, y0, y1), "from behind": (-x1, -x0, -y1, -y0),
+             "from the left": (y0, y1, -x1, -x0), "from the right": (-y1, -y0, x0, x1)}
+    side = max(turns, key=lambda k: turns[k][1] + (1e-9 if k == "forward" else 0.0))
+    nx0, nx1, ny0, ny1 = turns[side]
+    turned = ("" if side == "forward" else "it was turned 180° to the front, " if side == "from behind"
+              else f"it was turned 90° {side} to the front, ")
+    if nx1 > clearance + 0.01:
+        nx0 = max(nx0, clearance)
+        how = (f"{turned}its near edge was moved out to {clearance:g} m from the axis, and its farthest point "
+               "keeps its distance and height")
+    else:
+        nx0, nx1 = clearance, clearance + (nx1 - nx0)
+        how = f"{turned}it was moved forward to start {clearance:g} m from the axis (same size)"
+    new = {"x_min": round(nx0, 3), "x_max": round(nx1, 3), "y_min": round(ny0, 3), "y_max": round(ny1, 3),
+           "z_min": out["z_min"], "z_max": out["z_max"]}
+    return new, how
+
+
+def _workspace(ws, robot_type: str, notes: list[str], shrunk: list[str]) -> dict:
+    from taskbot.requirements import BASE_HALF_WIDTH_M, Workspace, shoulder_point
 
     if not isinstance(ws, dict):
         notes.append(f"workspace missing: used the default in front of the base {DEFAULT_WORKSPACE}")
@@ -115,44 +148,45 @@ def _workspace(ws, robot_type: str, notes: list[str]) -> dict:
         lo, hi = (0.0, WORKSPACE_LIMIT_M) if k.startswith("z") else (-WORKSPACE_LIMIT_M, WORKSPACE_LIMIT_M)
         if not lo <= out[k] <= hi:
             v = min(max(out[k], lo), hi)
-            notes.append(f"workspace {k} {out[k]:g} m is outside {lo:g} to {hi:g} m: clipped to {v:g} m")
+            text = f"workspace {k} {out[k]:g} m is outside {lo:g} to {hi:g} m: clipped to {v:g} m"
+            notes.append(text)
+            if k != "z_min" or out[k] > hi:  # below the floor is no target; anything else is cut off
+                shrunk.append(f"targets up to {k} = {out[k]:g} m were cut to {v:g} m (TaskBot designs for "
+                              f"targets within {WORKSPACE_LIMIT_M:g} m of the base)")
             out[k] = v
     if robot_type == "mobile_manipulator":
-        # Targets low down must be in front of the chassis (taskbot.sizing's default chassis), not under it.
-        front = CHASSIS_FRONT_M + 0.05
-        if out["x_min"] < front and out["z_min"] < CHASSIS_TOP_M and out["y_min"] < CHASSIS_HALF_WIDTH_M \
-                and out["y_max"] > -CHASSIS_HALF_WIDTH_M:
-            shift = front - out["x_min"]
-            out["x_min"], out["x_max"] = round(out["x_min"] + shift, 3), round(out["x_max"] + shift, 3)
-            notes.append(f"the workspace reached under the chassis: moved it {shift:.3g} m forward so it starts "
-                         f"{front:g} m ahead of the chassis centre (x now {out['x_min']:g} to {out['x_max']:g} m)")
-        return out
-    b, top = BASE_HALF_WIDTH_M, BASE_REGION_TOP_M
-    if out["x_min"] < b and out["x_max"] > -b and out["y_min"] < b and out["y_max"] > -b and out["z_min"] < top:
-        clearance = b + 0.02
-        shift = clearance - out["x_min"]
-        raise_by = top - out["z_min"]
-        height = out["z_max"] - out["z_min"]
-        # Moving it forward keeps its size; raising z_min cuts targets off, so it is the smaller
-        # change only when it removes at most RAISE_MAX_FRACTION of the height.
-        if height <= 0 or raise_by > RAISE_MAX_FRACTION * height:
-            out["x_min"], out["x_max"] = round(out["x_min"] + shift, 3), round(out["x_max"] + shift, 3)
-            notes.append(f"the workspace covered the robot's own base: moved it {shift:.3g} m forward "
-                         f"(x now {out['x_min']:g} to {out['x_max']:g} m, same size)")
-        else:
-            notes.append(f"the workspace covered the robot's own base: raised z_min from {out['z_min']:g} to "
-                         f"{top:g} m (cuts {raise_by / height:.0%} of its height; moving it forward would take "
-                         f"{shift:.3g} m)")
-            out["z_min"] = top
-            if out["z_max"] < out["z_min"]:
-                out["z_max"] = out["z_min"]
+        # The base drives to each target, so the arm only covers MM_ARM_DEPTH_M by 2 x MM_ARM_HALF_WIDTH_M
+        # in front of the chassis, at the heights the task needs.
+        front, hw = CHASSIS_FRONT_M + 0.05, MM_ARM_HALF_WIDTH_M
+        new = dict(out)
+        if not (out["x_min"] >= front and out["x_max"] <= front + MM_ARM_DEPTH_M + 1e-9):
+            depth = min(out["x_max"] - out["x_min"], MM_ARM_DEPTH_M)
+            new["x_min"] = round(min(max(out["x_min"], front), front + MM_ARM_DEPTH_M - depth), 3)
+            new["x_max"] = round(new["x_min"] + depth, 3)
+        if not (out["y_min"] >= -hw - 1e-9 and out["y_max"] <= hw + 1e-9):
+            half = min((out["y_max"] - out["y_min"]) / 2, hw)
+            new["y_min"], new["y_max"] = round(-half, 3), round(half, 3)
+        if new != out:
+            notes.append(f"a mobile manipulator drives to each target, so its arm only covers the region in front "
+                         f"of the chassis where it works once the base stops: the workspace ({_box(out)}) became "
+                         f"{_box(new)} (at most {MM_ARM_DEPTH_M:g} m deep from {front:g} m ahead of the chassis "
+                         f"centre and {hw:g} m to each side, at the same heights; the base drives and turns for "
+                         "the rest)")
+        return new
+    b = BASE_HALF_WIDTH_M
+    (_, _, shoulder_z), _ = shoulder_point("arm", Workspace(**out))
+    if out["x_min"] < b and out["x_max"] > -b and out["y_min"] < b and out["y_max"] > -b and out["z_min"] < shoulder_z:
+        new, how = _turn_and_trim(out, b + 0.02)
+        notes.append(f"the workspace ({_box(out)}) surrounds the robot's own base and turret, so part of it was "
+                     f"inside the robot. The base yaw turns the arm to any side, so {how}: {_box(new)}")
+        out = new
     return out
 
 
 def normalize_requirements(data: dict, task: str = "") -> tuple[dict, list[str]]:
-    from taskbot.requirements import Requirements, Workspace, farthest_corner
+    from taskbot.requirements import Requirements, Workspace, reach_corner
 
-    d, notes = copy.deepcopy(data), []
+    d, notes, shrunk = copy.deepcopy(data), [], []
     known = set(Requirements.model_fields)
     for k in [k for k in d if k not in known]:
         notes.append(f"ignored unknown field {k!r}")
@@ -250,22 +284,17 @@ def normalize_requirements(data: dict, task: str = "") -> tuple[dict, list[str]]
         if d.get("travel_distance_m") is not None and d["travel_distance_m"] <= 0:
             d["travel_distance_m"] = None
     if has_arm:
-        d["workspace"] = _workspace(d.get("workspace"), d["robot_type"], notes)
+        d["workspace"] = _workspace(d.get("workspace"), d["robot_type"], notes, shrunk)
         dof = d.get("dof_min")
         if dof is None or not 1 <= dof <= 7:
             notes.append(f"dof_min {dof!r}: used {DEFAULT_DOF}" if dof is not None else f"dof_min missing: used {DEFAULT_DOF}")
             dof = DEFAULT_DOF
         d["dof_min"] = int(dof)
         ws = Workspace(**d["workspace"])
-        if d["robot_type"] == "arm":  # the shoulder is on the base axis: the validator's own rule
-            corner, dist, where = farthest_corner("arm", ws)
-        else:  # the reach check measures reach_m from the robot's axis (chassis centre), horizontally
-            corner = max(((x, y, ws.z_max) for x in (ws.x_min, ws.x_max) for y in (ws.y_min, ws.y_max)),
-                         key=lambda c: math.hypot(c[0], c[1]))
-            dist, where = math.hypot(corner[0], corner[1]), "horizontally from the robot's axis, where the reach check measures"
-        reach = math.ceil(dist * REACH_MARGIN * 100 - 1e-9) / 100
+        corner, dist, where = reach_corner(d["robot_type"], ws)  # from the shoulder the sizer uses
+        reach = math.ceil(dist * REACH_MARGIN * 1000 - 1e-9) / 1000
         said = d.get("reach_m")
-        if said is None or abs(said - reach) > 0.005:
+        if said is None or abs(said - reach) > 0.0005:
             text = (f"reach_m {reach:g} m derived from the workspace: its farthest corner "
                     f"({', '.join(f'{v:g}' for v in corner)}) is {dist:.3g} m away ({where}), "
                     f"x {REACH_MARGIN}")
@@ -291,7 +320,8 @@ def normalize_requirements(data: dict, task: str = "") -> tuple[dict, list[str]]
         if m and not text.strip().startswith(OUT_OF_SCOPE_PREFIX):
             a[i] = f"{OUT_OF_SCOPE_PREFIX} {text.strip()[m.end():].strip()}"
             notes.append(f"assumption starting {text.strip()[:m.end()]!r} read as '{OUT_OF_SCOPE_PREFIX}'")
-    d["assumptions"] = a + [n for n in scope_notes if n not in a]
+    a = [x for x in a if not x.strip().startswith(CUT_SHORT_PREFIX)]  # code's own marker: only code adds it
+    d["assumptions"] = a + [n for n in scope_notes if n not in a] + [f"{CUT_SHORT_PREFIX} {x}" for x in shrunk]
     if d.get("max_budget_usd") is not None and d["max_budget_usd"] <= 0:
         d["max_budget_usd"] = None
     return d, notes
@@ -356,6 +386,31 @@ def normalize_intent(data: dict, req) -> tuple[dict, list[str]]:
         r = "not given"
     d["rationale"] = r[:600]
     return d, notes
+
+
+def _intent_key(intent) -> tuple:
+    return (intent.arm_layout, intent.drive, intent.arm_mount, intent.gripper)
+
+
+def alternative_intent(req, tried: list):
+    """The next intent code would try when the LLM gives no usable revision: the other drive, then
+    the other arm layouts and mounts, in a fixed order, skipping any already tried. None when every
+    combination has been tried."""
+    from itertools import product
+
+    from taskbot.intent import DesignIntent
+
+    layouts = ("yaw_pitch_pitch_pitch", "yaw_pitch_pitch", "yaw_pitch_pitch_wristroll") if req.has_arm else (None,)
+    drives = ("differential", "four_wheel") if req.is_mobile else (None,)
+    mounts = ("front", "centre") if req.robot_type == "mobile_manipulator" else (None,)
+    seen = {_intent_key(i) for i in tried}
+    for mount, layout, drive in product(mounts, layouts, drives):
+        d, _ = normalize_intent({"arm_layout": layout, "drive": drive, "arm_mount": mount,
+                                 "rationale": "alternative chosen by code (no usable LLM revision)"}, req)
+        intent = DesignIntent.model_validate(d, context={"requirements": req})
+        if _intent_key(intent) not in seen:
+            return intent
+    return None
 
 
 def default_intent(req):

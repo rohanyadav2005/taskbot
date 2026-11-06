@@ -27,9 +27,11 @@ RUN = dict(task_summary=TASK, robot_type="arm", reach_m=0.8, payload_kg=0.5,
            workspace={"x_min": -0.2, "x_max": 0.2, "y_min": -0.2, "y_max": 0.2, "z_min": 0.1, "z_max": 1.5},
            dof_min=3, gripper_needed=True, gripper_kind="parallel", position_tolerance_m=0.01,
            tolerance_reason="within 1 cm of the pot", assumptions=["a watering can holds 0.5 kg"])
-# Same reach and payload with a workspace that fits the reach: gets past the validator,
-# and the gate has to catch it.
-HEAVY = RUN | {"workspace": RUN["workspace"] | {"z_max": 0.6}}
+# Same reach and payload with a workspace in front of the base that fits the reach: gets past the
+# validator, and the gate has to catch it. (The run's own box, +-0.2 m around the base, is now
+# turned and trimmed by the normaliser to the same targets in front, 0.28 m out at most, which the
+# gate lets through: taskbot.normalize._turn_and_trim.)
+HEAVY = RUN | {"workspace": {"x_min": 0.3, "x_max": 0.6, "y_min": -0.2, "y_max": 0.2, "z_min": 0.1, "z_max": 0.6}}
 # What the requirements should have been: a cup of water on a windowsill.
 CUP = RUN | {"reach_m": 0.4, "payload_kg": 0.3,
              "workspace": {"x_min": 0.15, "x_max": 0.3, "y_min": -0.15, "y_max": 0.15, "z_min": 0.0, "z_max": 0.3},
@@ -44,8 +46,8 @@ def test_workspace_beyond_reach_is_rejected_with_the_numbers():
     with pytest.raises(ValidationError) as err:
         Requirements(**RUN)
     msg = str(err.value)
-    assert "workspace corner (-0.2, -0.2, 1.5) is 1.38 m from the nearest plausible shoulder position" in msg
-    assert "on the base axis 0.15 m up" in msg and "but reach_m is 0.8 m" in msg
+    assert "workspace corner (-0.2, -0.2, 1.5) is 1.16 m away (from the nearest plausible shoulder" in msg
+    assert "on the base axis 0.38 m up" in msg and "but reach_m is 0.8 m" in msg
     assert "make reach_m and the workspace agree" in msg
 
 
@@ -53,7 +55,7 @@ def test_json_retry_sends_the_workspace_error_back():
     fake = FakeClient({"Requirements": [RUN, CUP]})
     req = fake.complete_json("sys", TASK, Requirements)
     assert req.reach_m == 0.4 and fake.usage.json_retries == 1
-    assert "1.38 m from the nearest plausible shoulder position" in fake.calls[1][1][-1]["content"]
+    assert "1.16 m away (from the nearest plausible shoulder" in fake.calls[1][1][-1]["content"]
 
 
 def test_mobile_manipulator_workspace_is_measured_from_the_chassis_top():
@@ -98,7 +100,7 @@ def test_mobile_gate_catches_loads_no_wheel_motor_can_move():
 
 def _seen(d: dict) -> Requirements:
     """What the pipeline sees: the model's requirements after code's normaliser (Task 8 derives
-    reach_m from the workspace: HEAVY's 0.8 m becomes 0.59 m, still infeasible)."""
+    reach_m from the workspace: HEAVY's 0.8 m becomes 0.748 m, still infeasible)."""
     from taskbot.normalize import normalize_requirements
 
     return Requirements(**normalize_requirements(d, TASK)[0])
@@ -138,7 +140,7 @@ def test_feasible_second_version_goes_on_to_design(tmp_path):
     result, fake, events = _pipeline(tmp_path, [HEAVY, CUP], [strong_arm()])
     assert result.outcome is not None and not result.infeasible
     assert "Feasibility: the second version can be built." in events
-    assert result.requirements.reach_m == _seen(CUP).reach_m == 0.41  # derived from the workspace
+    assert result.requirements.reach_m == _seen(CUP).reach_m == 0.405  # derived from the workspace, rounded up to 1 mm
 
 
 def test_cli_exit_code_4_for_infeasible(tmp_path, monkeypatch, capsys):

@@ -22,6 +22,7 @@ from taskbot.repair import RepairOutcome, Round, _line, format_failures, sim_tes
 from taskbot.requirements import Requirements
 from taskbot.schema import Motor, RobotSpec
 from taskbot.sizing import SizedDesign, SizingFailure, size_design
+from taskbot.timing import timed
 
 MAX_INTENT_REVISIONS = 3
 
@@ -32,8 +33,10 @@ class HybridOutcome(RepairOutcome):
     intents: list[DesignIntent] = field(default_factory=list)
     steps: list[str] = field(default_factory=list)          # sizing and autofix, in order
     provenance: dict[str, str] = field(default_factory=dict)
-    approximate: str | None = None                          # requirement relaxed (--nearest)
+    approximate: str | None = None                          # requirement relaxed (--nearest), or why
+    approximate_kind: str = ""                              # "requirements": they do less than the task asks
     infeasible_options: list[str] = field(default_factory=list)
+    infeasible_kind: str = ""                               # "precision": the tolerance is beyond the catalog
     sized_for: Requirements | None = None                   # the relaxed requirements, if approximate
     sized_spec: RobotSpec | None = None                     # what the sizer made from the last intent
     prompt: str = ""                                        # the user's words, for the report
@@ -62,10 +65,21 @@ def _intent(client, req, feedback, fall_back) -> DesignIntent | None:
             raise
         step = "intent_revision" if feedback else "intent"
         if feedback:
-            fall_back(step, f"no usable revised intent ({str(exc).splitlines()[0]}); kept the best design so far")
+            fall_back(step, f"no usable revised intent ({str(exc).splitlines()[0]})")
             return None
         fall_back(step, f"no usable intent ({str(exc).splitlines()[0]}); used the default intent")
         return default_intent(req)
+
+
+def _alternative(req, tried, fall_back) -> DesignIntent | None:
+    """Code's next untried intent, when the LLM gives no usable revision."""
+    from taskbot.normalize import alternative_intent
+
+    alt = alternative_intent(req, tried)
+    if alt is not None:
+        fall_back("intent_revision", "code tried its next untried intent instead: "
+                  + alt.model_dump_json(exclude_none=True, exclude={"rationale", "not_modelled"}))
+    return alt
 
 
 def hybrid_loop(client: LLMClient, req: Requirements, catalog: dict[str, Motor], *, simulate: bool = True,
@@ -78,13 +92,15 @@ def hybrid_loop(client: LLMClient, req: Requirements, catalog: dict[str, Motor],
     def check(spec: RobotSpec, target: Requirements) -> list[CheckResult]:
         number = len(out.rounds) + 1
         emit(f"Round {number}: {spec.name}: static checks")
-        results, runs = run_checks(spec, target, catalog), []
+        with timed("static_checks", f"round {number}"):
+            results, runs = run_checks(spec, target, catalog), []
         for r in results:
             emit(_line(r))
         if simulate and all(r.passed for r in results):
             for test in sim_tests_for(spec, target):
                 emit(f"  ...simulating {test.__name__}")
-                run = test(spec, target, catalog)
+                with timed("sim", f"round {number}: {test.__name__}"):
+                    run = test(spec, target, catalog)
                 runs.append(run)
                 emit(_line(run.result))
             results = results + [run.result for run in runs]
@@ -101,7 +117,8 @@ def hybrid_loop(client: LLMClient, req: Requirements, catalog: dict[str, Motor],
         emit(f"Intent{f' (revision {revision})' if revision else ''}: " + intent.model_dump_json(exclude_none=True))
         emit("Sizing...")
         try:
-            sized = size_design(intent, req, catalog, nearest=nearest)
+            with timed("sizing", f"intent {revision + 1}"):
+                sized = size_design(intent, req, catalog, nearest=nearest)
         except Exception as exc:  # a sizer bug must not end the run without a report
             import traceback
 
@@ -127,6 +144,7 @@ def hybrid_loop(client: LLMClient, req: Requirements, catalog: dict[str, Motor],
                 break
             revised = _intent(client, req, f"Sizing your last intent {intent.model_dump_json(exclude_none=True)} "
                               f"failed: {sized.reason}\nChoose a different intent; don't give any numbers.", fall_back)
+            revised = revised or _alternative(req, out.intents, fall_back)
             if revised is None:
                 break
             intent = revised
@@ -138,7 +156,8 @@ def hybrid_loop(client: LLMClient, req: Requirements, catalog: dict[str, Motor],
         spec = sized.spec
         out.sized_spec = spec
         results = check(spec, target)
-        fixed = autofix_loop(spec, target, catalog, lambda s: check(s, target), results=results, on_event=emit)
+        with timed("autofix", f"intent {revision + 1}"):
+            fixed = autofix_loop(spec, target, catalog, lambda s: check(s, target), results=results, on_event=emit)
         out.steps += fixed.steps
         failures = [r for r in fixed.results if not r.passed]
         if not failures:
@@ -152,9 +171,47 @@ def hybrid_loop(client: LLMClient, req: Requirements, catalog: dict[str, Motor],
                                f"({fixed.stop})")
             break
         emit(f"Autofix stopped ({fixed.stop}); asking the model for a different intent...")
-        revised = _intent(client, req, revision_message(intent, failures), fall_back)
+        revised = _intent(client, req, revision_message(intent, failures), fall_back) or \
+            _alternative(req, out.intents, fall_back)
         if revised is None:
-            out.stop_reason = "the model gave no usable revised intent"
+            out.stop_reason = "the model gave no usable revised intent, and code had no untried intent left"
             break
         intent = revised
+    _precision_limit(out, req)
     return out
+
+
+SIM_CHECKS = ("reach_targets", "carry_payload", "hold_still")
+
+
+def _precision_limit(out: HybridOutcome, req: Requirements) -> None:
+    """A tight tolerance (the sizer chose the stiffest motors that carry the arm)
+    that every design still misses only through compliance in the sims: the catalog's position
+    loops can't hold the tool that precisely. INFEASIBLE, with the best precision any design
+    reached (SimRun.achieved_tolerance_m)."""
+    from taskbot.sizing import TIGHT_TOLERANCE_M
+
+    tol = req.position_tolerance_m
+    if out.passed or out.infeasible or not out.rounds or tol > TIGHT_TOLERANCE_M:
+        return
+    fails = out.final.failures
+    if not fails or any(r.cause != "compliance" or r.check not in SIM_CHECKS for r in fails):
+        return
+    reached = [(max(a), rnd) for rnd in out.rounds
+               if (a := [run.achieved_tolerance_m for run in rnd.sim_runs if run.achieved_tolerance_m is not None])]
+    if not reached:
+        return
+    best, rnd = min(reached, key=lambda t: t[0])
+    if best <= tol:  # missed on settling time, not precision
+        return
+    mm = best * 1000
+    out.infeasible = [
+        f"No design TaskBot sized from this catalog holds the tool within the task's {tol * 1000:.3g} mm: the most "
+        f"precise one (round {rnd.number}, control \"{rnd.spec.control}\", the stiffest catalog motors that carry the "
+        f"arm) holds about {mm:.2g} mm (its worst final error, path deviation / 3 and overshoot / 2 over the sim "
+        f"tests). The catalog's position loops are too soft for {tol * 1000:.3g} mm at this reach and payload."]
+    out.infeasible_options = [
+        f"A position tolerance of about {mm:.2g} mm, if the task allows it, with the round {rnd.number} design.",
+        "A shorter reach or a lighter payload (less sag at every joint), or motors stiffer than any in the catalog."]
+    out.infeasible_kind = "precision"
+    out.stop_reason = f"the catalog's motors can't hold the tool to {tol * 1000:.3g} mm (best about {mm:.2g} mm)"

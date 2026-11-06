@@ -11,12 +11,18 @@ from pydantic import BaseModel, ConfigDict, Field, NonNegativeFloat, PositiveFlo
 from taskbot.llm import LLMClient
 from taskbot.prompts import load_prompt
 
-# Where an arm's shoulder (its first bending joint) can plausibly be, for checking that the
-# workspace fits within reach_m. Design conventions, not measured data: a fixed arm's shoulder
-# is on the base axis, on a base and turret 0.03-0.15 m tall; a mobile manipulator's is on the
-# chassis top (0.05-0.4 m) anywhere over the workspace.
-ARM_SHOULDER_Z_M = (0.03, 0.15)
-MOBILE_SHOULDER_Z_M = (0.05, 0.4)
+# Where TaskBot puts an arm's shoulder (its first bending joint): on the base's vertical axis (a
+# fixed arm) or the chassis centre's (a mobile manipulator), at mid-workspace height within what
+# the base and riser allow (taskbot.sizing: base top + RISER_MIN_M to RISER_MAX_M). The normaliser
+# derives reach_m from this shoulder (taskbot.normalize). Design conventions, not measured data.
+ARM_SHOULDER_Z_M = (0.07, 0.38)      # fixed base 0.03 m + riser 0.04-0.35 m
+MOBILE_SHOULDER_Z_M = (0.11, 0.47)   # chassis top about 0.07-0.12 m + riser 0.04-0.35 m
+# The validator only checks that reach_m and the workspace agree, from the nearest plausible
+# shoulder: on the base axis 0.03-0.38 m up (an arm), anywhere over the workspace centre 0.05-0.47 m
+# up (a mobile manipulator). That is never farther than TaskBot's own shoulder, so a reach_m the
+# normaliser derived always passes.
+PLAUSIBLE_ARM_SHOULDER_Z_M = (0.03, 0.38)
+PLAUSIBLE_MOBILE_SHOULDER_Z_M = (0.05, 0.47)
 WORKSPACE_REACH_TOLERANCE_M = 0.01
 # The robot's own base occupies |x|, |y| < BASE_HALF_WIDTH_M below BASE_REGION_TOP_M; a workspace
 # reaching into that region would ask the tool to go through the base (design convention).
@@ -24,23 +30,51 @@ BASE_HALF_WIDTH_M = 0.08
 BASE_REGION_TOP_M = 0.1
 
 
-def farthest_corner(robot_type: str, ws) -> tuple[tuple[float, float, float], float, str]:
-    """(corner, its distance from the best plausible shoulder position, where that is)."""
-    corners = [(x, y, z) for x in (ws.x_min, ws.x_max) for y in (ws.y_min, ws.y_max)
-               for z in (ws.z_min, ws.z_max)]
+def _corners(ws) -> list[tuple[float, float, float]]:
+    return [(x, y, z) for x in (ws.x_min, ws.x_max) for y in (ws.y_min, ws.y_max) for z in (ws.z_min, ws.z_max)]
+
+
+def shoulder_point(robot_type: str, ws) -> tuple[tuple[float, float, float], str]:
+    """(where TaskBot puts the shoulder for this workspace, a description of it)."""
     lo, hi = MOBILE_SHOULDER_Z_M if robot_type == "mobile_manipulator" else ARM_SHOULDER_Z_M
     h = min(max((ws.z_min + ws.z_max) / 2, lo), hi)
-    if robot_type == "mobile_manipulator":
-        sx, sy = (ws.x_min + ws.x_max) / 2, (ws.y_min + ws.y_max) / 2
-        where = f"over the workspace centre {h:.3g} m up; a chassis top is {lo:g}-{hi:g} m high"
-    else:
-        sx = sy = 0.0
-        where = f"on the base axis {h:.3g} m up; a base and turret are {lo:g}-{hi:g} m tall"
-    dist = {c: math.dist(c, (sx, sy, h)) for c in corners}
+    axis = "the chassis centre's axis" if robot_type == "mobile_manipulator" else "the base axis"
+    return (0.0, 0.0, h), (f"from the shoulder on {axis} {h:.3g} m up, where TaskBot puts it: mid-workspace "
+                           f"height within {lo:g}-{hi:g} m")
+
+
+def reach_corner(robot_type: str, ws) -> tuple[tuple[float, float, float], float, str]:
+    """(corner, its distance from TaskBot's own shoulder, where that is): what reach_m is derived from."""
+    shoulder, where = shoulder_point(robot_type, ws)
+    dist = {c: math.dist(c, shoulder) for c in _corners(ws)}
     far = max(dist, key=dist.get)
     return far, dist[far], where
 
+
+def farthest_corner(robot_type: str, ws) -> tuple[tuple[float, float, float], float, str]:
+    """(corner, its distance from the nearest plausible shoulder position, where that is)."""
+    if robot_type == "mobile_manipulator":
+        lo, hi = PLAUSIBLE_MOBILE_SHOULDER_Z_M
+        sx, sy = (ws.x_min + ws.x_max) / 2, (ws.y_min + ws.y_max) / 2
+    else:
+        lo, hi = PLAUSIBLE_ARM_SHOULDER_Z_M
+        sx = sy = 0.0
+    h = min(max((ws.z_min + ws.z_max) / 2, lo), hi)
+    where = (f"from the nearest plausible shoulder, over the workspace centre {h:.3g} m up; a chassis top and "
+             f"riser put it {lo:g}-{hi:g} m high" if robot_type == "mobile_manipulator" else
+             f"from the nearest plausible shoulder, on the base axis {h:.3g} m up; a base and turret are "
+             f"{lo:g}-{hi:g} m tall")
+    dist = {c: math.dist(c, (sx, sy, h)) for c in _corners(ws)}
+    far = max(dist, key=dist.get)
+    return far, dist[far], where
+
+
 OUT_OF_SCOPE_PREFIX = "OUT OF SCOPE:"
+# Assumptions code adds when the requirements do less than the task asks: targets cut off by the
+# normaliser (CUT_SHORT_PREFIX), or requirements guessed instead of extracted (taskbot.fallback).
+# A design for them is APPROXIMATE at best, never a pass.
+CUT_SHORT_PREFIX = "CUT SHORT:"
+FALLBACK_MARK = "REQUIREMENTS FALLBACK:"
 
 
 class Workspace(BaseModel):
@@ -149,8 +183,7 @@ class Requirements(BaseModel):
         if d > self.reach_m + WORKSPACE_REACH_TOLERANCE_M:
             c = ", ".join(f"{v:.3g}" for v in corner)
             raise ValueError(
-                f"workspace corner ({c}) is {d:.3g} m from the nearest plausible shoulder position "
-                f"({where}), but reach_m is {self.reach_m:.3g} m. The workspace is only the region the "
+                f"workspace corner ({c}) is {d:.3g} m away ({where}), but reach_m is {self.reach_m:.3g} m. The workspace is only the region the "
                 "tool must reach: make reach_m and the workspace agree, keeping both realistic for the "
                 "scene in the task.")
         return self
@@ -189,6 +222,11 @@ class Requirements(BaseModel):
     @property
     def out_of_scope(self) -> list[str]:
         return [a for a in self.assumptions if a.strip().startswith(OUT_OF_SCOPE_PREFIX)]
+
+    @property
+    def short_of_task(self) -> list[str]:
+        """Code's notes that these requirements do less than the task asks (cut short or guessed)."""
+        return [a for a in self.assumptions if a.strip().startswith((CUT_SHORT_PREFIX, FALLBACK_MARK))]
 
 
 def requirements_system_prompt() -> str:
