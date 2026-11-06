@@ -26,13 +26,13 @@ class DesignIntent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     robot_type: Literal["arm", "mobile", "mobile_manipulator"] = Field(
-        description="Must match the requirements' robot_type.")
+        description="Optional: copied from the requirements.")
     arm_layout: ArmLayout | None = Field(
         default=None, description="Arm types only. yaw_pitch_pitch: base yaw, shoulder and elbow pitch. "
         "yaw_pitch_pitch_pitch: plus a wrist pitch to tilt the tool. yaw_pitch_pitch_wristroll: plus a "
         "wrist roll to turn the tool.")
     gripper: Literal["parallel", "suction", "none"] = Field(
-        description="Must match the requirements' gripper_kind ('none' when no gripper is needed).")
+        description="Optional: copied from the requirements' gripper_kind ('none' when no gripper).")
     link_material: Literal["auto", "pla", "aluminium"] = Field(
         default="auto", description="auto: PLA for links under 0.25 m, aluminium for longer ones.")
     drive: Literal["differential", "four_wheel"] | None = Field(
@@ -44,6 +44,16 @@ class DesignIntent(BaseModel):
         default_factory=list, description="Things the task asks for that TaskBot doesn't model (a colour, "
         "a camera, a sensor, a sound), each a few words. Empty if none.")
     rationale: str = Field(min_length=1, max_length=600, description="Why these choices, 1-3 sentences.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _defaults_from_requirements(cls, data, info: ValidationInfo):
+        req = (info.context or {}).get("requirements")
+        if isinstance(data, dict) and req is not None:
+            data = dict(data)
+            data.setdefault("robot_type", req.robot_type)
+            data.setdefault("gripper", req.gripper_kind if req.gripper_needed else "none")
+        return data
 
     @model_validator(mode="after")
     def _fields_match_type(self) -> DesignIntent:
@@ -91,5 +101,8 @@ def intent_user_message(req: Requirements, feedback: str | None = None) -> str:
 
 
 def request_intent(client: LLMClient, req: Requirements, feedback: str | None = None) -> DesignIntent:
+    from taskbot.normalize import normalize_intent
+
     return client.complete_json(intent_system_prompt(), intent_user_message(req, feedback), DesignIntent,
-                                context={"requirements": req}, step="intent_revision" if feedback else "intent")
+                                context={"requirements": req}, step="intent_revision" if feedback else "intent",
+                                normalize=lambda d: normalize_intent(d, req))

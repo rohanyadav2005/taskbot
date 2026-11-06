@@ -76,10 +76,14 @@ class Requirements(BaseModel):
         description="arm: works from one fixed place. mobile: drives around, no arm. "
         "mobile_manipulator: drives and handles objects with an arm.")
     reach_m: PositiveFloat | None = Field(
-        default=None, description="Arm types only: required reach including the 10% margin.")
+        default=None, description="Arm types only. A rough estimate is fine: code derives it from the "
+        "workspace (farthest corner from the shoulder x 1.10).")
     payload_kg: NonNegativeFloat = Field(
-        description="Mass the gripper holds while working (e.g. a watering can and its water, not "
-        "the plants), including the 25% margin (0 for mobile).")
+        description="Mass the gripper holds, margin included (0 for mobile). Code computes it from "
+        "payload_bare_kg x 1.25 when that is given.")
+    payload_bare_kg: NonNegativeFloat | None = Field(
+        default=None, description="Arm types: the bare mass the gripper holds in one go, NO margin "
+        "(e.g. a cup with 250 ml of water: 0.27 kg). Code adds the 25% margin.")
     workspace: Workspace | None = Field(
         default=None, description="Arm types only. For a mobile_manipulator, in the robot frame: "
         "origin on the ground under the chassis centre, x forward, z up.")
@@ -91,7 +95,10 @@ class Requirements(BaseModel):
     terrain: Literal["flat", "carpet", "outdoor"] | None = Field(
         default=None, description="Mobile types: what it drives on.")
     base_payload_kg: NonNegativeFloat | None = Field(
-        default=None, description="Mobile types: mass carried on the chassis (25% margin included).")
+        default=None, description="Mobile types: mass carried on the chassis, margin included. Code "
+        "computes it from base_payload_bare_kg x 1.25 when that is given.")
+    base_payload_bare_kg: NonNegativeFloat | None = Field(
+        default=None, description="Mobile types: the bare mass carried on the chassis, NO margin.")
     travel_distance_m: PositiveFloat | None = Field(
         default=None, description="Mobile types, optional: distance it must cover per charge.")
     gripper_kind: Literal["parallel", "suction"] | None = Field(
@@ -190,4 +197,7 @@ def requirements_system_prompt() -> str:
 
 
 def extract_requirements(client: LLMClient, task: str) -> Requirements:
-    return client.complete_json(requirements_system_prompt(), task, Requirements, step="requirements")
+    from taskbot.normalize import normalize_requirements
+
+    return client.complete_json(requirements_system_prompt(), task, Requirements, step="requirements",
+                                normalize=lambda d: normalize_requirements(d, task))

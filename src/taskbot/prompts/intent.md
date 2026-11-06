@@ -1,8 +1,8 @@
 You choose the layout of a robot that meets the requirements. You don't size anything: code computes every length, height, joint limit and motor from your choices.
 Choose:
-- robot_type: the requirements' robot_type.
+- robot_type: optional, copied from the requirements.
 - arm_layout (arm and mobile_manipulator): "yaw_pitch_pitch" to reach and place; "yaw_pitch_pitch_pitch" when the tool must stay level or tilt (pouring, watering, placing into something); "yaw_pitch_pitch_wristroll" when the tool must turn (unscrewing, turning a page).
-- gripper: the requirements' gripper_kind, or "none" if no gripper is needed.
+- gripper: optional, copied from the requirements.
 - link_material: "auto" unless the task needs otherwise.
 - drive (mobile types): "differential" with caster true indoors; "four_wheel" for outdoor or rough ground. arm_mount (mobile_manipulator): "front" to reach the floor or tables ahead, "centre" for balance.
 - not_modelled: anything the task asks for that these choices can't express (a colour, a camera, a sensor).

@@ -67,13 +67,15 @@ class LLMTruncatedError(LLMError):
 class LLMOutputError(LLMError):
     """The model never produced output that validates, even after retries."""
 
-    def __init__(self, schema: type[BaseModel], attempts: int, last_error: str, last_reply: str):
+    def __init__(self, schema: type[BaseModel], attempts: int, last_error: str, last_reply: str,
+                 last_data: dict | None = None):
         super().__init__(
             f"no valid {schema.__name__} after {attempts} attempts; last error:\n{last_error}"
         )
         self.schema_name = schema.__name__
         self.attempts = attempts
         self.last_error = last_error
+        self.last_data = last_data
         self.last_reply = last_reply
 
 
@@ -109,6 +111,7 @@ class LLMClient(ABC):
         self.usage = Usage(self.provider, "")
         self._sleep = time.sleep  # replaced in tests
         self.transcript: list[dict] = []
+        self.corrections: list[tuple[str, str]] = []  # (step, note) from normalisers, kept attempts only
         self._step = "llm"
 
     def _call(self, system: str, messages: list[Message], schema: type[BaseModel]) -> str:
@@ -130,7 +133,7 @@ class LLMClient(ABC):
         """Return the assistant's reply to `messages`."""
 
     def _record(self, step: str, attempt: int, system: str, user: str, reply: str | None,
-                error: str | None, start: float, schema: type[BaseModel]) -> None:
+                error: str | None, start: float, schema: type[BaseModel], notes: list[str] | None = None) -> None:
         redact = getattr(self, "_redact", lambda s: s)
         self.transcript.append({
             "step": step, "attempt": attempt, "schema": schema.__name__,
@@ -138,7 +141,7 @@ class LLMClient(ABC):
             "user": redact(user), "reply": None if reply is None else redact(reply),
             "error": None if error is None else redact(error),
             "provider": self.usage.provider, "model": self.usage.model,
-            "time_s": round(time.monotonic() - start, 3)})
+            "time_s": round(time.monotonic() - start, 3), "corrections": list(notes or [])})
 
     def complete_json(
         self,
@@ -148,12 +151,17 @@ class LLMClient(ABC):
         context: Mapping[str, Any] | None = None,
         *,
         step: str | None = None,
+        normalize: Callable[[dict], tuple[dict, list[str]]] | None = None,
     ) -> T:
         """Get a validated `schema` instance. Makes 1 + max_retries attempts at most.
 
         `context` is passed to Pydantic validators (see RobotSpec's motor check). `step` labels
         the attempts in the transcript (requirements, feasibility_retry, intent, ...).
+        `normalize` fixes the parsed dict before validation on every attempt (taskbot.normalize);
+        the notes of the attempt that validates go to `self.corrections`. On failure,
+        LLMOutputError.last_data is the last reply that parsed as a JSON object, normalised.
         """
+        last_data = None
         step = step or schema.__name__.lower()
         self._step = step
         messages: list[Message] = [{"role": "user", "content": user}]
@@ -165,16 +173,22 @@ class LLMClient(ABC):
             except LLMError as exc:
                 self._record(step, attempt, system, messages[-1]["content"], None, str(exc), start, schema)
                 raise
+            notes: list[str] = []
             try:
                 data = extract_json(reply)
+                if normalize is not None and isinstance(data, dict):
+                    data, notes = normalize(data)
+                if isinstance(data, dict):
+                    last_data = data
                 result = schema.model_validate(data, context=dict(context or {}))
-                self._record(step, attempt, system, messages[-1]["content"], reply, None, start, schema)
+                self._record(step, attempt, system, messages[-1]["content"], reply, None, start, schema, notes)
+                self.corrections += [(step, n) for n in notes]
                 return result
             except ValueError as exc:  # ValidationError and JSON errors are ValueErrors
                 error = describe_error(exc)
-            self._record(step, attempt, system, messages[-1]["content"], reply, error, start, schema)
+            self._record(step, attempt, system, messages[-1]["content"], reply, error, start, schema, notes)
             if attempt == attempts:
-                raise LLMOutputError(schema, attempts, error, reply)
+                raise LLMOutputError(schema, attempts, error, reply, last_data)
             self.usage.json_retries += 1
             messages += [
                 {"role": "assistant", "content": reply},

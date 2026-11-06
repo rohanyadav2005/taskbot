@@ -42,11 +42,14 @@ def test_intent_must_match_the_requirements():
         DesignIntent.model_validate(MM | {"gripper": "suction"}, context={"requirements": mm})
 
 
-def test_request_intent_retries_a_mismatch():
+def test_request_intent_corrects_a_mismatch_instead_of_retrying():
+    """Task 8: robot_type and gripper are copied from the requirements by code, with a note."""
     req = Requirements(**_load("mobile_requirements"))
     fake = FakeClient({"DesignIntent": [ARM, MOBILE]})
-    assert request_intent(fake, req).drive == "differential"
-    assert "requirements ask for 'mobile'" in fake.calls[1][1][-1]["content"]
+    intent = request_intent(fake, req)
+    assert intent.robot_type == "mobile" and intent.drive == "differential" and len(fake.calls) == 1
+    notes = [n for _, n in fake.corrections]
+    assert "intent robot_type 'arm' replaced by the requirements' 'mobile'" in notes
     assert fake.calls[0][1][0]["content"].startswith("Requirements:\n")
 
 

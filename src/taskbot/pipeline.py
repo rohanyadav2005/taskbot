@@ -83,8 +83,10 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
         first = feasible
         emit("Feasibility: no design can meet these requirements. " + " ".join(feasible.problems))
         emit("Sending the requirements back once with these numbers...")
+        from taskbot.normalize import normalize_requirements
+
         req = client.complete_json(requirements_system_prompt(), retry_message(prompt, req, feasible), Requirements,
-                                   step="feasibility_retry")
+                                   step="feasibility_retry", normalize=lambda d: normalize_requirements(d, prompt))
         emit(f"Requirements (second try): {req.robot_type} robot. " + " ".join(f"[{a}]" for a in req.assumptions))
         if req.out_of_scope:
             return _out_of_scope(client, req, out_root, usage_for, emit, design_mode)
@@ -128,15 +130,25 @@ def _out_of_scope(client, req, out_root, usage_for, emit, design_mode) -> Pipeli
     return PipelineResult(req, None, out, usage_for(out), design_mode=design_mode)
 
 
+def corrections_section(corrections: list[tuple[str, str]]) -> str:
+    lines = ["", "## Corrections made by code", "",
+             "What the LLM wrote that code fixed or filled in before validating it (taskbot.normalize). "
+             "The checks and their limits are unchanged.", ""]
+    lines += [f"- {step}: {note}" for step, note in corrections] or ["None: every reply was used as written."]
+    return "\n".join(lines) + "\n"
+
+
 def record_usage(client: LLMClient, out: Path, start: float, design_mode: str = "hybrid") -> dict:
     """Write run.json and append an 'LLM usage' section to report.md."""
-    usage = client.usage.as_dict() | {"time_s": round(time.monotonic() - start, 2), "design_mode": design_mode}
+    usage = client.usage.as_dict() | {"time_s": round(time.monotonic() - start, 2), "design_mode": design_mode,
+                                      "corrections": len(client.corrections)}
     (out / "run.json").write_text(json.dumps(usage, indent=2) + "\n", "utf-8")
     (out / "llm_transcript.jsonl").write_text(
         "".join(json.dumps(r) + "\n" for r in client.transcript), "utf-8")
     report = out / "report.md"
     if report.exists():
         with report.open("a", encoding="utf-8") as f:
+            f.write(corrections_section(client.corrections))
             f.write("\n## LLM usage\n\n"
                     f"Provider {usage['provider']}, model {usage['model']}: {usage['calls']} calls, "
                     f"{usage['input_tokens']} input + {usage['output_tokens']} output tokens, "

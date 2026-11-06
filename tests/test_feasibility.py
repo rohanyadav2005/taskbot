@@ -96,6 +96,19 @@ def test_mobile_gate_catches_loads_no_wheel_motor_can_move():
     assert "under 45.5 kg of payload could work" in f.options[0]
 
 
+def _seen(d: dict) -> Requirements:
+    """What the pipeline sees: the model's requirements after code's normaliser (Task 8 derives
+    reach_m from the workspace: HEAVY's 0.8 m becomes 0.59 m, still infeasible)."""
+    from taskbot.normalize import normalize_requirements
+
+    return Requirements(**normalize_requirements(d, TASK)[0])
+
+
+def _floor_text(d: dict) -> str:
+    problem = check_feasibility(_seen(d), CATALOG).problems[0]
+    return problem.split(" at the shoulder")[0].split("needs at least ")[1]  # e.g. "3.38 Nm"
+
+
 def _pipeline(tmp_path, requirements: list, designs: list | None = None):
     fake = FakeClient({"Requirements": requirements, "RobotSpec": designs or []})
     events = []
@@ -109,12 +122,13 @@ def test_infeasible_requirements_go_back_once_then_stop(tmp_path):
     result, fake, events = _pipeline(tmp_path, [HEAVY, HEAVY])
     assert result.outcome is None and result.infeasible and not result.rejected and not result.passed
     second_ask = fake.calls[1][1][0]["content"]
-    assert second_ask.startswith(TASK) and "needs at least 4.6 Nm" in second_ask
+    floor = _floor_text(HEAVY)
+    assert second_ask.startswith(TASK) and f"needs at least {floor}" in second_ask
     assert "keep them realistic for the described scene, don't just shrink them to fit" in second_ask
     assert [c[2] for c in fake.calls] == ["Requirements", "Requirements"]  # never designed
     report = (result.out_dir / "report.md").read_text(encoding="utf-8")
     assert "**INFEASIBLE: no design was made." in report
-    assert "## Why no design can pass" in report and "needs at least 4.6 Nm" in report
+    assert "## Why no design can pass" in report and f"needs at least {floor}" in report
     assert "## What would make it possible" in report and "a reach under 0.495 m" in report
     assert "sent back to the model once" in report
     assert any(e.startswith("Stopped: the requirements are still infeasible") for e in events)
@@ -124,7 +138,7 @@ def test_feasible_second_version_goes_on_to_design(tmp_path):
     result, fake, events = _pipeline(tmp_path, [HEAVY, CUP], [strong_arm()])
     assert result.outcome is not None and not result.infeasible
     assert "Feasibility: the second version can be built." in events
-    assert result.requirements.reach_m == 0.4
+    assert result.requirements.reach_m == _seen(CUP).reach_m == 0.41  # derived from the workspace
 
 
 def test_cli_exit_code_4_for_infeasible(tmp_path, monkeypatch, capsys):
@@ -133,7 +147,7 @@ def test_cli_exit_code_4_for_infeasible(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "get_client", lambda *a: FakeClient({"Requirements": [HEAVY, HEAVY]}))
     assert cli.main(["design", TASK, "--backend", "fake", "--out", str(tmp_path), "--no-record"]) == 4
     out = capsys.readouterr().out
-    assert out.startswith("INFEASIBLE: no design was made for: " + TASK) and "4.6 Nm" in out
+    assert out.startswith("INFEASIBLE: no design was made for: " + TASK) and _floor_text(HEAVY) in out
 
 
 # --------------------------------------------------------------------------- loop stops

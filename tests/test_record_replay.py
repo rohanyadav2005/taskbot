@@ -14,7 +14,8 @@ from taskbot.schema import load_motor_catalog, supported_motors
 
 CATALOG = load_motor_catalog()
 FIXTURES = Path(__file__).parent / "fixtures" / "real_runs"
-KEYS = {"step", "attempt", "schema", "system_sha256", "user", "reply", "error", "provider", "model", "time_s"}
+KEYS = {"step", "attempt", "schema", "system_sha256", "user", "reply", "error", "provider", "model", "time_s",
+        "corrections"}
 
 
 def fake_run(tmp_path, prompt="a robot that carries a 2 kg box across my office"):
