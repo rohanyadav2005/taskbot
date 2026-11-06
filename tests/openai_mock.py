@@ -51,7 +51,7 @@ class MockOpenAI:
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
                     self.wfile.write(data)
-                except (BrokenPipeError, ConnectionResetError):  # client timed out first
+                except ConnectionError:  # client timed out first (Windows: ConnectionAbortedError)
                     pass
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
