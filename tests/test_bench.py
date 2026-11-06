@@ -160,9 +160,11 @@ def test_fake_runner_scores_each_prompt(fake_run):
 
 def test_prompts_without_a_fake_answer_are_not_failures(fake_run):
     _, _, recs = fake_run
-    for pid in ("vague_grandma", "oos_yard_turret"):
-        r = recs[pid]
-        assert r.status == "no_fake_response" and not r.scored and r.rejection_correct is None
+    r = recs["vague_grandma"]
+    assert r.status == "no_fake_response" and not r.scored and r.rejection_correct is None
+    # The scope gate stops this one on its own words ("turret") before any LLM call.
+    turret = recs["oos_yard_turret"]
+    assert turret.status == "done" and turret.rejected and turret.rejection_correct
 
 
 def test_out_of_scope_rejection_is_scored(fake_run):
@@ -181,6 +183,8 @@ def _client_for(prompt_text_to_requirements: dict, design: dict | None = None):
 
 def test_out_of_scope_prompt_that_is_not_rejected_fails(tmp_path):
     (drone,) = by_id("oos_coffee_drone")
+    # Words the scope gate doesn't know, so the LLM's (missing) verdict is what gets scored.
+    drone = drone.model_copy(update={"prompt": "a robot that brings coffee to my room through the air"})
     mobile = _load("mobile_requirements")  # no OUT OF SCOPE assumption
     recs = run_bench([drone], tmp_path / "r", _client_for({drone.prompt: mobile}, _load("mobile_design_round2")),
                      RunMeta("x", "y", "z", "r", design_mode="llm"), simulate=False)
@@ -305,7 +309,7 @@ def test_fake_report_has_the_warning_and_no_headline_rate(fake_run, tmp_path):
     text = md.read_text(encoding="utf-8")
     assert FAKE_WARNING in "\n".join(text.splitlines()[:5])
     assert "Overall pass rate" not in text and "No headline pass rate" in text
-    assert "2 with no fake response (not counted)" in text
+    assert "1 with no fake response (not counted)" in text  # the turret prompt is stopped by the scope gate
     assert "### saturated" in text and "mobile_laundry_basket** `wheel_torque`" in text
     assert "[report](test_run/out/mobile_office_box/" in text
     assert "| mobile | 2 | 1/2 (50%)" in text
@@ -319,9 +323,9 @@ def test_real_backend_report_has_headline_holdout_and_unfixed_messages(fake_run,
     rows.append(Record("mm_cafe_cups", "mobile_manipulator", "main", "p", "error", False, error="HTTP 500 boom"))
     text = bench.render_markdown(rows, RunMeta("openai_compat", "m", "p", "real", design_mode="llm"), "real")
     assert FAKE_WARNING not in text
-    assert "**Overall pass rate (main prompts): 2/3 (67%)**" in text
+    assert "**Overall pass rate (main prompts): 3/4 (75%)**" in text  # + the turret, rejected by the scope gate
     assert "Holdout pass rate (reported separately): 1/1 (100%)" in text
-    assert "Out-of-scope rejection accuracy: 1/1 (100%)" in text
+    assert "Out-of-scope rejection accuracy: 2/2 (100%)" in text
     assert "## Unfixed failures" in text and "Even at rest it is short" in text
     assert "## Not scored: errors" in text and "HTTP 500 boom" in text
     assert "| wheel_torque | saturated | 1 | 1 |" in text

@@ -26,6 +26,8 @@ import copy
 import math
 import re
 
+from taskbot.requirements import OUT_OF_SCOPE_PREFIX
+
 PAYLOAD_MARGIN = 1.25          # payload_kg = bare mass x 1.25 (applied here, once)
 REACH_MARGIN = 1.10            # reach_m = farthest workspace corner from the shoulder x 1.10
 WORKSPACE_LIMIT_M = 1.5        # an arm workspace lies within 1.5 m of the base (|x|, |y|, z)
@@ -49,6 +51,10 @@ NUMBER_FIELDS = ("reach_m", "payload_kg", "payload_bare_kg", "speed_m_s", "max_i
                  "base_payload_kg", "base_payload_bare_kg", "travel_distance_m", "max_budget_usd",
                  "position_tolerance_m", "min_joint_range_rad", "dof_min")
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?(?:[eE]-?\d+)?")
+# "OUT OF SCOPE:", "OUT_OF_SCOPE:", "Out-of-scope -", ... at the start of a string (an assumption
+# needs the colon or dash; a robot_type that starts with the words is a verdict either way).
+_OUT_OF_SCOPE = re.compile(r"out[\s_-]*of[\s_-]*scope\b\s*[:\-–—]?\s*", re.IGNORECASE)
+_OUT_OF_SCOPE_LEAD = re.compile(r"out[\s_-]*of[\s_-]*scope\s*[:\-–—]\s*", re.IGNORECASE)
 
 
 def _number(v):
@@ -160,6 +166,14 @@ def normalize_requirements(data: dict, task: str = "") -> tuple[dict, list[str]]
         d["task_summary"] = task or "unnamed task"
         notes.append("task_summary missing: used the task as given")
     rt = d.get("robot_type")
+    scope_notes = []
+    if isinstance(rt, str) and rt not in ("arm", "mobile", "mobile_manipulator") and _OUT_OF_SCOPE.match(rt.strip()):
+        # The model put its out-of-scope verdict in robot_type: keep it where TaskBot looks for it.
+        reason = _OUT_OF_SCOPE.sub("", rt.strip(), count=1).strip() or "the model's robot_type said so"
+        scope_notes.append(f"{OUT_OF_SCOPE_PREFIX} {reason}")
+        notes.append(f"robot_type {rt!r} is an out-of-scope verdict, not a robot type: kept it as an "
+                     f"'{OUT_OF_SCOPE_PREFIX}' assumption")
+        rt = d["robot_type"] = None
     if rt not in ("arm", "mobile", "mobile_manipulator"):
         d["robot_type"] = _robot_type(rt, d)
         notes.append(f"robot_type {rt!r} read as {d['robot_type']!r}" if rt else
@@ -271,12 +285,13 @@ def normalize_requirements(data: dict, task: str = "") -> tuple[dict, list[str]]
         notes.append(f"min_joint_range_rad {mjr:g} is outside (0, 2π]: used the default 90°")
         d.pop("min_joint_range_rad")
     a = d.get("assumptions")
-    if a is None:
-        d["assumptions"] = []
-    elif not isinstance(a, list):
-        d["assumptions"] = [str(a)]
-    else:
-        d["assumptions"] = [str(x) for x in a]
+    a = [] if a is None else [str(x) for x in a] if isinstance(a, list) else [str(a)]
+    for i, text in enumerate(a):
+        m = _OUT_OF_SCOPE_LEAD.match(text.strip())
+        if m and not text.strip().startswith(OUT_OF_SCOPE_PREFIX):
+            a[i] = f"{OUT_OF_SCOPE_PREFIX} {text.strip()[m.end():].strip()}"
+            notes.append(f"assumption starting {text.strip()[:m.end()]!r} read as '{OUT_OF_SCOPE_PREFIX}'")
+    d["assumptions"] = a + [n for n in scope_notes if n not in a]
     if d.get("max_budget_usd") is not None and d["max_budget_usd"] <= 0:
         d["max_budget_usd"] = None
     return d, notes

@@ -84,6 +84,16 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
         client.corrections.append(("FALLBACK", f"{step}: {what}"))
         emit(f"Fallback ({step}): {what}")
 
+    from taskbot.scope import scope_gate
+
+    gate = scope_gate(prompt)
+    if gate.out_of_scope:  # the task's own words name something TaskBot doesn't build: no LLM call
+        req = _gate_requirements(prompt, gate)
+        out = write_out_of_scope(req, out_root, gate=gate)
+        emit("Scope gate: " + " ".join(req.out_of_scope))
+        emit("Stopped: the task is out of scope, so no design was made (no LLM was called).")
+        return PipelineResult(req, None, out, usage_for(out, "OUT_OF_SCOPE", " ".join(req.out_of_scope)),
+                              design_mode=design_mode, fallbacks=fallbacks)
     emit("Extracting requirements...")
     try:
         req = extract_requirements(client, prompt)
@@ -178,6 +188,18 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
          f"{usage['total_tokens']} tokens, {usage['json_retries']} JSON retries")
     return PipelineResult(req, outcome, out, usage, infeasible=list(outcome.infeasible), design_mode=design_mode,
                           fallbacks=fallbacks)
+
+
+def _gate_requirements(prompt: str, gate) -> Requirements:
+    """Placeholder requirements for a run the scope gate stopped: nothing was extracted."""
+    from taskbot.normalize import DEFAULT_WORKSPACE, normalize_requirements
+
+    data = {"task_summary": prompt.strip() or "unnamed task", "robot_type": "arm", "payload_kg": 0.0,
+            "gripper_needed": False, "workspace": dict(DEFAULT_WORKSPACE), "dof_min": 1,
+            "position_tolerance_m": 0.005, "tolerance_reason": "not assessed: the scope gate stopped the run",
+            "assumptions": gate.reasons() + ["No requirements were extracted: the scope gate stopped the run "
+                                              "before the LLM was called; the other values are placeholders."]}
+    return Requirements(**normalize_requirements(data, prompt)[0])
 
 
 def _out_of_scope(client, req, out_root, usage_for, emit, design_mode, fallbacks) -> PipelineResult:

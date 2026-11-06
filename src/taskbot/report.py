@@ -283,15 +283,24 @@ def requirements_rows(req) -> list[str]:
     return lines
 
 
-def write_out_of_scope(req, out_root: Path) -> Path:
-    """out/<task>/{requirements.json, report.md} for a task TaskBot won't design."""
+def write_out_of_scope(req, out_root: Path, gate=None) -> Path:
+    """out/<task>/{requirements.json, report.md} for a task TaskBot won't design. `gate`: the
+    scope gate's verdict (taskbot.scope) when it stopped the run before the LLM was called."""
     import re
 
     slug = re.sub(r"[^A-Za-z0-9]+", "_", req.task_summary.lower()).strip("_")[:40] or "out_of_scope"
-    return _write_no_design(req, out_root, slug,
-                            "OUT OF SCOPE: no design was made. TaskBot designs fixed arms and wheeled "
-                            "robots; this task needs something else.", req.out_of_scope,
-                            "Requirements (best attempt, for reference)")
+    headline = ("OUT OF SCOPE: no design was made. TaskBot designs fixed arms and wheeled robots; this task "
+                "needs something else.")
+    if gate is None:
+        return _write_no_design(req, out_root, slug, headline, req.out_of_scope,
+                                "Requirements (best attempt, for reference)")
+    extra = ["## Scope gate", "",
+             "Stopped by TaskBot's scope gate (taskbot.scope), a fixed word list checked against the task's own "
+             "words before any LLM call; no requirements were extracted and no LLM was called.", "",
+             *[f"- {category}: " + ", ".join(f'"{w}"' for w in words) for category, words in gate.matches.items()]]
+    if gate.ignored:
+        extra += ["", "Ignored because the task negates them: " + "; ".join(f'"{w}"' for w in gate.ignored)]
+    return _write_no_design(req, out_root, slug, headline, req.out_of_scope, None, extra)
 
 
 def write_design_failed(req, out_root: Path, error: str) -> Path:
@@ -339,14 +348,16 @@ def write_llm_unusable(req, out_root: Path, reason: str, hint: str) -> Path:
 
 
 def _write_no_design(req, out_root: Path, slug: str, headline: str, reasons: list[str],
-                     req_title: str, extra: list[str] | None = None) -> Path:
+                     req_title: str | None, extra: list[str] | None = None) -> Path:
     out = unique_dir(out_root, slug)
     out.mkdir(parents=True)
     (out / "requirements.json").write_text(req.model_dump_json(indent=2) + "\n", "utf-8")
     lines = [f"# Design report: {slug}", "", f"**{headline}**", ""]
     if reasons:
         lines += ["Why:", *[f"- {_cell(a)}" for a in reasons], ""]
-    lines += [*(extra or []), *([""] if extra else []), f"## {req_title}", "", *requirements_rows(req)]
+    lines += [*(extra or []), *([""] if extra else [])]
+    if req_title:
+        lines += [f"## {req_title}", "", *requirements_rows(req)]
     (out / "report.md").write_text("\n".join(lines) + "\n", "utf-8")
     return out
 

@@ -4,7 +4,7 @@
         1. the last reply that parsed as JSON, normalised (taskbot.normalize) and filled with the
            documented defaults, if it then validates;
         2. otherwise rule-based requirements from keywords in the prompt (like the
-           text-to-robot example's interpreter): flying, swimming, legs, stairs -> out of scope;
+           text-to-robot example's interpreter): the scope gate's words (taskbot.scope) -> out of scope;
            pick up / collect / tidy + floor / room / around -> mobile_manipulator;
            carry / deliver / transport / drive / move ... across -> mobile; anything else (desk,
            windowsill, table, shelf) -> a fixed arm with a 0.3 m-wide workspace in front and a
@@ -17,11 +17,10 @@ from __future__ import annotations
 import re
 
 from taskbot.normalize import DEFAULT_ARM_PAYLOAD_KG, DEFAULT_WORKSPACE, normalize_requirements
-from taskbot.requirements import OUT_OF_SCOPE_PREFIX, Requirements
+from taskbot.requirements import Requirements
+from taskbot.scope import scope_gate
 
 FALLBACK_MARK = "REQUIREMENTS FALLBACK:"
-_OUT_OF_SCOPE = (r"\bfl(y|ies|ying)\b|\bdrones?\b|\bswim", r"\blegs?\b|\blegged\b|\bwalk(s|ing)?\b|\bstairs\b",
-                 r"\bhumanoid\b")
 _MM = re.compile(r"\b(pick(s|ing)? up|picks?|collect\w*|tidy\w*|gather\w*|fetch\w*)\b.*\b(floor|room|around|house|"
                  r"basket|bring)\b|\b(floor|room)\b.*\b(pick|collect|tidy)", re.S)
 _MOBILE = re.compile(r"\b(carr(y|ies|ying)|deliver\w*|transport\w*|drive\w*|patrol\w*|follow\w*|across)\b")
@@ -33,11 +32,10 @@ def rule_based(prompt: str) -> dict:
             "from keywords in the task; check them")
     base = {"task_summary": prompt.strip() or "unnamed task", "position_tolerance_m": 0.005,
             "tolerance_reason": "not known: TaskBot's default of 5 mm", "assumptions": [note]}
-    for pattern in _OUT_OF_SCOPE:
-        if re.search(pattern, p):
-            base["assumptions"].append(f"{OUT_OF_SCOPE_PREFIX} the task needs a robot that flies, swims, walks or "
-                                       "climbs stairs; TaskBot designs fixed arms and wheeled robots")
-            return base | {"robot_type": "arm", "payload_kg": DEFAULT_ARM_PAYLOAD_KG, "gripper_needed": True,
+    gate = scope_gate(prompt)
+    if gate.out_of_scope:
+        base["assumptions"] += gate.reasons()
+        return base | {"robot_type": "arm", "payload_kg": DEFAULT_ARM_PAYLOAD_KG, "gripper_needed": True,
                            "gripper_kind": "parallel", "workspace": dict(DEFAULT_WORKSPACE), "dof_min": 3}
     if _MM.search(p):
         return base | {"robot_type": "mobile_manipulator", "payload_kg": DEFAULT_ARM_PAYLOAD_KG, "gripper_needed": True,
