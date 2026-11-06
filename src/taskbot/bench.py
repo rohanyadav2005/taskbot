@@ -383,7 +383,8 @@ def run_bench(prompts: list[BenchPrompt], run_dir: Path, client_factory: Callabl
     lock = threading.Lock()
 
     def work(p: BenchPrompt) -> Record:
-        return run_one(p, client_factory(), run_dir, catalog, meta, max_rounds=max_rounds,
+        client = client_factory(p) if getattr(client_factory, "per_prompt", False) else client_factory()
+        return run_one(p, client, run_dir, catalog, meta, max_rounds=max_rounds,
                        simulate=simulate, record=record, nearest=nearest)
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
@@ -619,7 +620,21 @@ def _slug(text: str) -> str:
 
 
 def make_client_factory(backend: str, model: str | None, rate_limit_retries: int,
-                        backoff_s: float) -> Callable[[], LLMClient]:
+                        backoff_s: float, transcripts: Path | None = None) -> Callable[..., LLMClient]:
+    """A client per prompt. --backend replay reads <transcripts>/<prompt id>.jsonl."""
+    if backend == "replay":
+        from taskbot.llm import LLMError, ReplayClient
+
+        if transcripts is None:
+            raise LLMError("--backend replay needs --transcripts DIR with <prompt id>.jsonl files")
+
+        def replay(p=None) -> LLMClient:
+            # The probe for the run name has no prompt; a missing transcript replays nothing,
+            # so that prompt is recorded as an error like a dead backend.
+            return ReplayClient(Path(transcripts) / f"{p.id if p is not None else '_probe'}.jsonl")
+        replay.per_prompt = True
+        return replay
+
     from taskbot.fake import fake_client
     from taskbot.llm import make_client
     from taskbot.schema import load_motor_catalog, supported_motors
@@ -648,6 +663,7 @@ def main(argv: list[str] | None = None, bench_dir: Path = Path("bench")) -> int:
     ap.add_argument("--retries", type=int, default=4, help="waits after a rate-limit error, per call")
     ap.add_argument("--backoff", type=float, default=5.0, help="first rate-limit wait in s; doubles")
     ap.add_argument("--no-sim", action="store_true")
+    ap.add_argument("--transcripts", type=Path, help="--backend replay: a folder of <prompt id>.jsonl transcripts")
     ap.add_argument("--design-mode", choices=("hybrid", "llm"), default="hybrid",
                     help="hybrid (default): LLM chooses, code sizes; llm: the LLM writes the whole spec")
     ap.add_argument("--nearest", action="store_true",
@@ -669,7 +685,7 @@ def main(argv: list[str] | None = None, bench_dir: Path = Path("bench")) -> int:
         return 0
     try:
         prompts = select(load_suite(args.prompts_dir, args.split), args.category, args.limit)
-        factory = make_client_factory(args.backend, args.model, args.retries, args.backoff)
+        factory = make_client_factory(args.backend, args.model, args.retries, args.backoff, args.transcripts)
         probe = factory()  # fails fast on missing configuration
     except (PromptFileError, ValueError, LLMError) as exc:
         print(f"error: {exc}", file=sys.stderr)

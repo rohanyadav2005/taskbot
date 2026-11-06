@@ -31,4 +31,5 @@ def design_robot(client: LLMClient, req: Requirements, catalog: dict[str, Motor]
         design_user_message(req),
         RobotSpec,
         context={"motor_ids": set(supported_motors(catalog))},
+        step="design",
     )

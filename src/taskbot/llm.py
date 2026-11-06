@@ -7,17 +7,22 @@
 failure sends the validation errors back to the model and tries again.
 Backends only implement `_chat`, which turns a conversation into reply text.
 Rate-limit errors are retried with exponential backoff (honouring Retry-After).
-Each client counts its calls, tokens and JSON retries in `client.usage`.
-API keys are never put in messages, errors or `usage`.
+Each client counts its calls, tokens and JSON retries in `client.usage`, and records every
+attempt in `client.transcript` (step, system-prompt hash, user message, raw reply, error,
+model, time), which the pipeline writes to llm_transcript.jsonl. ReplayClient replays such a
+transcript, so a real run can be reproduced offline. API keys are never put in messages,
+errors, `usage` or the transcript.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import socket
 import time
+from collections import defaultdict, deque
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -103,6 +108,8 @@ class LLMClient(ABC):
         self.backoff_s = backoff_s
         self.usage = Usage(self.provider, "")
         self._sleep = time.sleep  # replaced in tests
+        self.transcript: list[dict] = []
+        self._step = "llm"
 
     def _call(self, system: str, messages: list[Message], schema: type[BaseModel]) -> str:
         """`_chat`, waiting and retrying on rate-limit errors."""
@@ -122,26 +129,50 @@ class LLMClient(ABC):
     def _chat(self, system: str, messages: list[Message], schema: type[BaseModel]) -> str:
         """Return the assistant's reply to `messages`."""
 
+    def _record(self, step: str, attempt: int, system: str, user: str, reply: str | None,
+                error: str | None, start: float, schema: type[BaseModel]) -> None:
+        redact = getattr(self, "_redact", lambda s: s)
+        self.transcript.append({
+            "step": step, "attempt": attempt, "schema": schema.__name__,
+            "system_sha256": hashlib.sha256(system.encode("utf-8")).hexdigest()[:16],
+            "user": redact(user), "reply": None if reply is None else redact(reply),
+            "error": None if error is None else redact(error),
+            "provider": self.usage.provider, "model": self.usage.model,
+            "time_s": round(time.monotonic() - start, 3)})
+
     def complete_json(
         self,
         system: str,
         user: str,
         schema: type[T],
         context: Mapping[str, Any] | None = None,
+        *,
+        step: str | None = None,
     ) -> T:
         """Get a validated `schema` instance. Makes 1 + max_retries attempts at most.
 
-        `context` is passed to Pydantic validators (see RobotSpec's motor check).
+        `context` is passed to Pydantic validators (see RobotSpec's motor check). `step` labels
+        the attempts in the transcript (requirements, feasibility_retry, intent, ...).
         """
+        step = step or schema.__name__.lower()
+        self._step = step
         messages: list[Message] = [{"role": "user", "content": user}]
         attempts = self.max_retries + 1
         for attempt in range(1, attempts + 1):
-            reply = self._call(system, messages, schema)
+            start = time.monotonic()
+            try:
+                reply = self._call(system, messages, schema)
+            except LLMError as exc:
+                self._record(step, attempt, system, messages[-1]["content"], None, str(exc), start, schema)
+                raise
             try:
                 data = extract_json(reply)
-                return schema.model_validate(data, context=dict(context or {}))
+                result = schema.model_validate(data, context=dict(context or {}))
+                self._record(step, attempt, system, messages[-1]["content"], reply, None, start, schema)
+                return result
             except ValueError as exc:  # ValidationError and JSON errors are ValueErrors
                 error = describe_error(exc)
+            self._record(step, attempt, system, messages[-1]["content"], reply, error, start, schema)
             if attempt == attempts:
                 raise LLMOutputError(schema, attempts, error, reply)
             self.usage.json_retries += 1
@@ -450,6 +481,33 @@ class FakeClient(LLMClient):
         else:
             raise LLMError(f"FakeClient ran out of replies for {schema.__name__}")
         return reply if isinstance(reply, str) else json.dumps(reply)
+
+
+class ReplayClient(LLMClient):
+    """Replays a recorded llm_transcript.jsonl: each step's recorded replies, in order. A step
+    with no recorded reply left raises LLMError, as a dead backend would."""
+
+    provider = "replay"
+
+    def __init__(self, path, max_retries: int = DEFAULT_MAX_RETRIES):
+        super().__init__(max_retries, rate_limit_retries=0)
+        from pathlib import Path
+
+        self.path = Path(path)
+        text = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
+        records = [json.loads(line) for line in text.splitlines() if line.strip()]
+        self._queues: dict[str, deque] = defaultdict(deque)
+        for r in records:
+            if r.get("reply") is not None:
+                self._queues[r["step"]].append(r["reply"])
+        first = next((r for r in records if r.get("model")), {})
+        self.usage = Usage(f"replay ({first.get('provider', 'unknown')})", first.get("model", "recorded"))
+
+    def _chat(self, system: str, messages: list[Message], schema: type[BaseModel]) -> str:
+        queue = self._queues.get(self._step)
+        if not queue:
+            raise LLMError(f"the transcript {self.path.name} has no more replies for step '{self._step}'")
+        return queue.popleft()
 
 
 def make_client(backend: str, model: str | None = None) -> LLMClient:

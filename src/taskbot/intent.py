@@ -92,4 +92,4 @@ def intent_user_message(req: Requirements, feedback: str | None = None) -> str:
 
 def request_intent(client: LLMClient, req: Requirements, feedback: str | None = None) -> DesignIntent:
     return client.complete_json(intent_system_prompt(), intent_user_message(req, feedback), DesignIntent,
-                                context={"requirements": req})
+                                context={"requirements": req}, step="intent_revision" if feedback else "intent")

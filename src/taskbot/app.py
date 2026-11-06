@@ -124,7 +124,7 @@ def build_app():
                 prompt = gr.Textbox(label="What must the robot do?", lines=2, value=EXAMPLES[2])
                 gr.Examples(EXAMPLES, inputs=prompt)
             with gr.Column(scale=1):
-                backend = gr.Radio(list(BACKENDS[::-1]), value="fake", label="Backend",
+                backend = gr.Radio([b for b in BACKENDS[::-1] if b != "replay"], value="fake", label="Backend",
                                    info="openai_compat reads TASKBOT_BASE_URL, TASKBOT_MODEL and "
                                         "TASKBOT_API_KEY from the environment")
                 mode = gr.Radio(["hybrid", "llm"], value="hybrid", label="Design mode",

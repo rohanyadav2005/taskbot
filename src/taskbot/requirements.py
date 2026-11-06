@@ -190,4 +190,4 @@ def requirements_system_prompt() -> str:
 
 
 def extract_requirements(client: LLMClient, task: str) -> Requirements:
-    return client.complete_json(requirements_system_prompt(), task, Requirements)
+    return client.complete_json(requirements_system_prompt(), task, Requirements, step="requirements")

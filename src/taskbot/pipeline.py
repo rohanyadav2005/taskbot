@@ -83,7 +83,8 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
         first = feasible
         emit("Feasibility: no design can meet these requirements. " + " ".join(feasible.problems))
         emit("Sending the requirements back once with these numbers...")
-        req = client.complete_json(requirements_system_prompt(), retry_message(prompt, req, feasible), Requirements)
+        req = client.complete_json(requirements_system_prompt(), retry_message(prompt, req, feasible), Requirements,
+                                   step="feasibility_retry")
         emit(f"Requirements (second try): {req.robot_type} robot. " + " ".join(f"[{a}]" for a in req.assumptions))
         if req.out_of_scope:
             return _out_of_scope(client, req, out_root, usage_for, emit, design_mode)
@@ -131,6 +132,8 @@ def record_usage(client: LLMClient, out: Path, start: float, design_mode: str = 
     """Write run.json and append an 'LLM usage' section to report.md."""
     usage = client.usage.as_dict() | {"time_s": round(time.monotonic() - start, 2), "design_mode": design_mode}
     (out / "run.json").write_text(json.dumps(usage, indent=2) + "\n", "utf-8")
+    (out / "llm_transcript.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in client.transcript), "utf-8")
     report = out / "report.md"
     if report.exists():
         with report.open("a", encoding="utf-8") as f:

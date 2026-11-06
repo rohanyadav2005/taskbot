@@ -424,7 +424,7 @@ def repair_loop(
         try:
             spec = client.complete_json(
                 system, repair_prompt(start.spec, req, start.failures, outcome.rounds, note), RobotSpec,
-                context={"motor_ids": set(supported_motors(catalog))},
+                context={"motor_ids": set(supported_motors(catalog))}, step="repair",
             )
         except LLMOutputError as exc:  # the model's fault; network/rate-limit errors propagate
             outcome.stop_reason = f"repair request after round {number} failed: {exc}"

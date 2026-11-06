@@ -18,10 +18,18 @@ from taskbot.report import verdict
 from taskbot.requirements import OUT_OF_SCOPE_PREFIX
 from taskbot.schema import ArmChain, Gripper, Motor, WheeledBase, load_motor_catalog, supported_motors
 
-BACKENDS = ("anthropic", "openai_compat", "ollama", "fake")
+BACKENDS = ("anthropic", "openai_compat", "ollama", "fake", "replay")
 
-def get_client(backend: str, model: str | None, catalog: dict[str, Motor]) -> LLMClient:
-    return fake_client(supported_motors(catalog)) if backend == "fake" else make_client(backend, model)
+def get_client(backend: str, model: str | None, catalog: dict[str, Motor], transcript=None) -> LLMClient:
+    if backend == "fake":
+        return fake_client(supported_motors(catalog))
+    if backend == "replay":
+        if transcript is None:
+            raise LLMError("--backend replay needs --transcript path/to/llm_transcript.jsonl")
+        from taskbot.llm import ReplayClient
+
+        return ReplayClient(transcript)
+    return make_client(backend, model)
 
 
 def summarize(outcome: RepairOutcome, catalog: dict[str, Motor], out: Path) -> str:
@@ -70,7 +78,7 @@ def summarize(outcome: RepairOutcome, catalog: dict[str, Motor], out: Path) -> s
 def cmd_design(args: argparse.Namespace) -> int:
     catalog = load_motor_catalog()
     try:
-        client = get_client(args.backend, args.model, catalog)
+        client = get_client(args.backend, args.model, catalog, args.transcript)
         result = run_pipeline(client, args.prompt, catalog, args.out, max_rounds=args.max_rounds,
                               simulate=not args.no_sim, record=not args.no_record,
                               on_event=lambda line: print(line, file=sys.stderr),
@@ -117,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--backend", choices=BACKENDS,
                    default=os.environ.get("TASKBOT_BACKEND", "anthropic"))
     d.add_argument("--model", help="model name (default: TASKBOT_MODEL or the backend's default)")
+    d.add_argument("--transcript", type=Path,
+                   help="--backend replay: an llm_transcript.jsonl from an earlier run to replay")
     d.add_argument("--out", type=Path, default=Path("out"), help="output root (default: out/)")
     d.add_argument("--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS)
     d.add_argument("--no-sim", action="store_true", help="static checks only")
