@@ -57,7 +57,10 @@ FAKE_PROMPTS = (
 
 
 class NoFakeResponse(LLMError):
-    """Strict fake backend: no canned answer for this prompt."""
+    """Strict fake backend: no canned answer for this prompt. Not a backend failure: the
+    pipeline lets it through so the benchmark can record 'no fake response'."""
+
+    propagate = True
 
 
 def _norm(prompt: str) -> str:

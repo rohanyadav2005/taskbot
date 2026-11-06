@@ -27,7 +27,7 @@ from typing import Any
 
 from taskbot.checks import CheckResult, run_checks
 from taskbot.design import design_robot, design_system_prompt
-from taskbot.llm import LLMClient, LLMOutputError
+from taskbot.llm import LLMClient, LLMError, LLMOutputError
 from taskbot.prompts import load_prompt
 from taskbot.requirements import Requirements
 from taskbot.schema import ArmChain, Motor, RobotSpec, load_motor_catalog, supported_motors
@@ -90,6 +90,7 @@ class RepairOutcome:
     rounds: list[Round] = field(default_factory=list)
     stop_reason: str | None = None  # set when the loop ended early
     infeasible: list[str] = field(default_factory=list)  # messages of checks no design can pass
+    llm_failure: str = ""  # "rate_limited" or "error" when the backend stopped answering mid-loop
 
     @property
     def passed(self) -> bool:
@@ -426,7 +427,15 @@ def repair_loop(
                 system, repair_prompt(start.spec, req, start.failures, outcome.rounds, note), RobotSpec,
                 context={"motor_ids": set(supported_motors(catalog))}, step="repair",
             )
-        except LLMOutputError as exc:  # the model's fault; network/rate-limit errors propagate
+        except LLMOutputError as exc:  # the model's fault
             outcome.stop_reason = f"repair request after round {number} failed: {exc}"
+            break
+        except LLMError as exc:  # the backend stopped answering: finish with what we have
+            if getattr(exc, "propagate", False):
+                raise
+            from taskbot.llm import LLMRateLimitError
+
+            outcome.llm_failure = "rate_limited" if isinstance(exc, LLMRateLimitError) else "error"
+            outcome.stop_reason = f"the LLM stopped answering after round {number}: {str(exc).splitlines()[0]}"
             break
     return outcome

@@ -83,9 +83,15 @@ def cmd_design(args: argparse.Namespace) -> int:
                               simulate=not args.no_sim, record=not args.no_record,
                               on_event=lambda line: print(line, file=sys.stderr),
                               design_mode=args.design_mode, nearest=args.nearest)
-    except LLMError as exc:
+    except LLMError as exc:  # configuration: e.g. TASKBOT_BASE_URL not set
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    for f in result.fallbacks:
+        print(f"Fallback used: {f}")
+    if result.llm_unusable:
+        print(f"error: {result.llm_unusable}", file=sys.stderr)
+        print(f"LLM UNUSABLE: no design was made. Saved to {result.out_dir}/ : report.md, run.json")
+        return 5
     if result.infeasible and result.outcome is None:
         print(f"INFEASIBLE: no design was made for: {result.requirements.task_summary}")
         for reason in result.infeasible:

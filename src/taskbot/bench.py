@@ -282,7 +282,12 @@ def run_one(p: BenchPrompt, client: LLMClient, run_dir: Path, catalog, meta: Run
         rec.status = ERROR
         rec.error = f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=4)}"
     else:
-        _score_result(rec, p, result, run_dir)
+        failure = result.llm_unusable_kind or getattr(result.outcome, "llm_failure", "")
+        if failure:  # the backend stopped answering: not the model's design; re-run on resume
+            rec.status = RATE_LIMITED if failure == "rate_limited" else ERROR
+            rec.error = result.llm_unusable or getattr(result.outcome, "stop_reason", "") or "LLM backend failed"
+        else:
+            _score_result(rec, p, result, run_dir)
     u = client.usage
     rec.tokens_in, rec.tokens_out = u.input_tokens, u.output_tokens
     rec.json_retries, rec.rate_limit_waits = u.json_retries, u.rate_limit_waits

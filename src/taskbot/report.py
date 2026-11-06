@@ -327,6 +327,13 @@ def write_infeasible(req, out_root: Path, feasibility, first=None) -> Path:
                             "these requirements.", [], "Requirements", extra)
 
 
+def write_llm_unusable(req, out_root: Path, reason: str, hint: str) -> Path:
+    """out/<task>/{requirements.json, report.md} when the LLM backend couldn't be used."""
+    return _write_no_design(req, out_root, "llm_unusable",
+                            "LLM UNUSABLE: no design was made, because the LLM backend couldn't be used.",
+                            [reason, f"Next step: {hint}"], "Requirements (TaskBot's guess from the task's words)")
+
+
 def _write_no_design(req, out_root: Path, slug: str, headline: str, reasons: list[str],
                      req_title: str, extra: list[str] | None = None) -> Path:
     out = unique_dir(out_root, slug)
