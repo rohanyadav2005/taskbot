@@ -35,6 +35,10 @@ def _spec_json(rnd: Round) -> str:
 
 def verdict(outcome: RepairOutcome) -> str:
     n = len(outcome.rounds)
+    if outcome.infeasible and getattr(outcome, "infeasible_options", None):  # the sizer's verdict
+        return (f"INFEASIBLE: no catalog motor can carry the arm TaskBot sized for these requirements, its own "
+                f"links and motors included; the run stopped after round {n}. Do not build it as is. "
+                "What would work is listed below.")
     if outcome.infeasible:
         return (f"INFEASIBLE: the requirements are beyond the motor catalog, so no design can pass; the loop "
                 f"stopped after round {n}. Do not build it as is.")

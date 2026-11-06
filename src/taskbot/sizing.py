@@ -488,6 +488,15 @@ def _size_design(intent: DesignIntent, req: Requirements, catalog: dict[str, Mot
             mount = None
         arm = _Arm(intent, req, catalog, base, mount)
         failing = _size_arm(arm, steps)
+        if failing is not None and intent.link_material == "auto":
+            # "auto" leaves the material to code: before giving up, try the lighter all-PLA arm.
+            lighter = _Arm(intent.model_copy(update={"link_material": "pla"}), req, catalog, base, mount)
+            pla_steps: list[str] = []
+            if _size_arm(lighter, pla_steps) is None:
+                steps.append(f"the 'auto' material arm was too heavy ({failing[0]} needs {failing[1]:.3g} Nm, "
+                             f"{failing[2]:.3g} Nm usable): sized again with all-PLA links, which can be carried")
+                steps += pla_steps
+                arm, failing = lighter, None
         if req.is_mobile:  # the arm's mass sizes the base; the chassis top moves the shoulder
             for _ in range(2):
                 b, why = _size_base(intent, req, catalog, arm, steps)
