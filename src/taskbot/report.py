@@ -39,6 +39,14 @@ def verdict(outcome: RepairOutcome) -> str:
         return (f"INFEASIBLE: no design TaskBot can size from this catalog holds the tool within the task's "
                 f"{outcome.requirements.position_tolerance_m * 1000:.3g} mm; the run stopped after round {n}. The "
                 "best precision reached, and what would work, are listed below.")
+    if len(outcome.infeasible) > 1:
+        return (f"INFEASIBLE: none of the {len(outcome.infeasible)} intents TaskBot tried can be built from the "
+                f"catalog; the run stopped after round {n}. Each is listed below with what blocks it, then what "
+                "would work. Do not build it as is.")
+    if outcome.infeasible and getattr(outcome, "infeasible_kind", "") == "base":
+        return (f"INFEASIBLE: no wheel motor, wheel size and chassis from the catalog drives the robot TaskBot sized "
+                f"as the task asks; the run stopped after round {n}. Do not build it as is. What would work is "
+                "listed below.")
     if outcome.infeasible and getattr(outcome, "infeasible_options", None):  # the sizer's verdict
         return (f"INFEASIBLE: no catalog motor can carry the arm TaskBot sized for these requirements, its own "
                 f"links and motors included; the run stopped after round {n}. Do not build it as is. "
@@ -364,13 +372,13 @@ def _infeasible_lines(problems: list[str], req, options: list[str] | None = None
     return lines
 
 
-def write_infeasible(req, out_root: Path, feasibility, first=None) -> Path:
+def write_infeasible(req, out_root: Path, feasibility, first=None, bound: bool = True) -> Path:
     """out/<task>/{requirements.json, report.md} when the feasibility gate stops the run.
     `first`: the gate's findings on the requirements' first version, sent back once."""
     import re
 
     slug = re.sub(r"[^A-Za-z0-9]+", "_", req.task_summary.lower()).strip("_")[:40] or "infeasible"
-    extra = _infeasible_lines(feasibility.problems, req, feasibility.options)
+    extra = _infeasible_lines(feasibility.problems, req, feasibility.options, bound=bound)
     if first is not None:
         extra += ["", "The first requirements were sent back to the model once with these numbers, and its "
                   "second version is still infeasible. First version:", "",

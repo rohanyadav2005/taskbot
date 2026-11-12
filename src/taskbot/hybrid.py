@@ -71,6 +71,11 @@ def _intent(client, req, feedback, fall_back) -> DesignIntent | None:
         return default_intent(req)
 
 
+def _label(intent: DesignIntent) -> str:
+    parts = [intent.arm_layout, intent.drive, f"arm mount {intent.arm_mount}" if intent.arm_mount else None]
+    return ", ".join(p for p in parts if p)
+
+
 def _alternative(req, tried, fall_back) -> DesignIntent | None:
     """Code's next untried intent, when the LLM gives no usable revision."""
     from taskbot.normalize import alternative_intent
@@ -111,6 +116,7 @@ def hybrid_loop(client: LLMClient, req: Requirements, catalog: dict[str, Motor],
         return results
 
     emit("Choosing the design intent...")
+    verdicts: list[str] = []
     intent = _intent(client, req, None, fall_back)
     for revision in range(MAX_INTENT_REVISIONS + 1):
         out.intents.append(intent)
@@ -130,13 +136,30 @@ def hybrid_loop(client: LLMClient, req: Requirements, catalog: dict[str, Motor],
             emit(f"  sizer: {s}")
         out.provenance = sized.provenance
         if isinstance(sized, SizingFailure) and sized.kind == "infeasible":
-            out.infeasible = [sized.reason]
-            out.infeasible_options = sized.options
-            out.stop_reason = "the sized design can't carry the load with any catalog motor"
+            # This intent can't be carried; another layout, mount or drive may be (smoke run 4, toys).
+            # Every intent tried and why it can't be built, so the report says what blocks each one.
+            verdicts.append(f"Intent {revision + 1} ({_label(intent)}): {sized.reason}")
+            out.infeasible = list(verdicts)
+            out.infeasible_options = list(dict.fromkeys(out.infeasible_options + sized.options))
+            out.infeasible_kind = "base" if sized.spec is None and len(verdicts) == 1 else ""
+            out.stop_reason = (f"none of the {len(verdicts)} intents tried can be built from the catalog" if len(verdicts) > 1
+                               else "no catalog wheel motor and chassis drives it as the task asks" if sized.spec is None
+                               else "the sized design can't carry the load with any catalog motor")
             if sized.spec is not None:
-                check(sized.spec, req)
-            emit(f"Stopping: {sized.reason}")
-            break
+                check(sized.spec, sized.requirements or req)
+            revised = None
+            if revision < MAX_INTENT_REVISIONS:
+                emit(f"This intent can't be carried ({sized.reason}); asking for a different intent...")
+                revised = _intent(client, req, f"Sizing your last intent {intent.model_dump_json(exclude_none=True)} "
+                                  f"found no catalog motor that can carry it: {sized.reason} "
+                                  + " ".join(sized.options) + "\nChoose a different intent (a lighter layout, "
+                                  "another arm mount or drive); don't give any numbers.", fall_back) \
+                    or _alternative(req, out.intents, fall_back)
+            if revised is None:
+                emit(f"Stopping: {sized.reason}")
+                break
+            intent = revised
+            continue
         if sized.spec is None:  # nothing to check: try another intent, if any revisions are left
             out.stop_reason = sized.reason
             emit(f"Sizing failed: {sized.reason}")
@@ -149,7 +172,11 @@ def hybrid_loop(client: LLMClient, req: Requirements, catalog: dict[str, Motor],
                 break
             intent = revised
             continue
-        target = req
+        verdicts.clear()  # an earlier intent's verdict no longer stands
+        out.infeasible, out.infeasible_options, out.infeasible_kind = [], [], ""
+        target = sized.requirements or req  # the sizer may have moved a mobile manipulator's targets
+        if target is not req:
+            out.sized_for = target
         if isinstance(sized, SizedDesign) and sized.approximate:
             out.approximate, out.sized_for, target = sized.approximate, sized.requirements, sized.requirements
             emit(f"APPROXIMATE: relaxed {sized.approximate}")

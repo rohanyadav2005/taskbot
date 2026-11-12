@@ -134,13 +134,15 @@ def _sim(spec, req, catalog, *, arm_pose=None, incline=0.0, gripper_payload=0.0)
 
 
 def _drive(sim: _MobileSim, distance: float, speed: float, timeout: float,
-           watch=None) -> tuple[float, bool]:
+           watch=None, stop=None) -> tuple[float, bool]:
     """Ramp up to `speed` at ACCEL_M_S2, stop (ramping down) when odometry says `distance`.
     Returns (time taken, reached). `watch(sim)` is called every step."""
     r = sim.radius
     start = sim.odometry()
     v, t = 0.0, 0.0
     while t < timeout:
+        if stop is not None and stop():
+            return t, False  # the caller already knows the verdict
         travelled = sim.odometry() - start
         remaining = distance - travelled
         if remaining <= 0:
@@ -241,7 +243,9 @@ def turn_in_place(spec: RobotSpec, req: Requirements, catalog=None) -> SimRun:
     return _run("turn_in_place", result, sim)
 
 
-def incline(spec: RobotSpec, req: Requirements, catalog=None) -> SimRun:
+def incline(spec: RobotSpec, req: Requirements, catalog=None, stop_at_verdict: bool = False) -> SimRun:
+    """`stop_at_verdict` (the sizer's search): stop once the base has slid back past the limit, which
+    no later moment can undo; the verdict is the same, the reported distances are those at the stop."""
     sim = _sim(spec, req, catalog, incline=req.max_incline_deg)
     p0 = sim.position()
     track = {"min_x": 0.0, "last_x": 0.0}
@@ -252,7 +256,8 @@ def incline(spec: RobotSpec, req: Requirements, catalog=None) -> SimRun:
         track["last_x"] = dx
 
     nominal = INCLINE_M / req.speed_m_s + req.speed_m_s / ACCEL_M_S2
-    _, reached = _drive(sim, INCLINE_M, req.speed_m_s, timeout=3 * nominal + 3, watch=watch)
+    _, reached = _drive(sim, INCLINE_M, req.speed_m_s, timeout=3 * nominal + 3, watch=watch,
+                        stop=(lambda: track["min_x"] < -0.01) if stop_at_verdict else None)
     climbed = float(sim.position()[0] - p0[0])
     slid_back = track["min_x"] < -0.01
     slip = (sim.odometry() - climbed) / max(sim.odometry(), 1e-9)

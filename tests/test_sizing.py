@@ -52,11 +52,9 @@ def test_sized_arm_passes_every_static_check_or_says_why(i):
         assert failed == [], f"silently failing design: {failed}"
         RESULTS[f"arm {i}"] = "sized"
     else:
-        assert isinstance(res, SizingFailure) and res.reason
-        if res.kind == "infeasible":
-            assert "strongest catalog motor gives" in res.reason and res.options
-        else:
-            assert res.failures
+        # Never a design that fails a static check: infeasible, with a reason and what would work.
+        assert isinstance(res, SizingFailure) and res.kind == "infeasible", (res.kind, res.reason)
+        assert "strongest catalog motor gives" in res.reason and res.options
         RESULTS[f"arm {i}"] = res.kind
 
 
@@ -70,7 +68,8 @@ def test_sized_mobile_base_passes_every_static_check_or_says_why(i):
         assert [r.check for r in run_checks(res.spec, req, CATALOG) if not r.passed] == []
         RESULTS[f"mobile {i}"] = "sized"
     else:
-        assert res.reason
+        assert isinstance(res, SizingFailure) and res.kind == "infeasible", (res.kind, res.reason)
+        assert res.reason.startswith("no catalog wheel motor, wheel size and chassis") and res.options
         RESULTS[f"mobile {i}"] = res.kind
 
 
@@ -84,6 +83,7 @@ def test_property_pass_count(capsys):
               f"{sum(v == 'infeasible' for v in RESULTS.values())} infeasible with a reason; "
               f"{sum(v == 'checks' for v in RESULTS.values())} returned as failing checks")
     assert sized >= 30
+    assert sum(v == "checks" for v in RESULTS.values()) == 0  # the sizer never hands back a failing design
 
 
 # --------------------------------------------------------------------------- golden cases

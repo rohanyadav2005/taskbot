@@ -89,7 +89,15 @@ benchmark CSV.
   `incline` sims (and `turn_in_place` for skid-steered four_wheel bases: at most 3 wheel sizes per
   motor, and no larger chassis once only turning fails, since a scaled-up chassis is heavier in the
   same proportions); the smallest chassis that does; a mobile manipulator's base yaw is made stiffer until `drive_with_arm_extended` holds
-  the tool (the arm swings when the chassis speeds up with it to the side).
+  the tool (the arm swings when the chassis speeds up with it to the side). A mobile manipulator's
+  targets start 0.05 m ahead of the robot as sized (chassis and front wheels): when big wheels reach
+  further, the targets move forward and the arm is sized again for them. Wheel sims that failed are
+  remembered by robot mass (a heavier robot on the same wheels fails too), and the incline sim stops
+  once the base has slid back past its limit, so each new intent's search is quick.
+
+When the sizer finds an intent that no catalog part can carry or drive, the loop asks for a
+different intent (or tries code's next untried one) rather than stopping; the run is INFEASIBLE
+only when every intent tried fails, and the report lists each one with what blocks it.
 
 **Where each margin lives (each applied exactly once):**
 
@@ -104,8 +112,9 @@ The sizer sizes the arm to exactly the points the requirements ask for (the work
 the reach check's point at `reach_m`), with no reach margin of its own.
 
 Every sized design is checked; the sizer returns a design that passes every static check, or a
-reason ("infeasible", with the largest payload at this reach and the longest reach with this
-payload, exit code 4). The report lists who chose each number (LLM intent, sizer, or sizer then
+reason ("infeasible": no catalog motor carries the arm, with the largest payload at this reach and
+the longest reach with this payload; or no catalog wheel motor, wheel size and chassis drives it,
+with what would; exit code 4), or a design that still fails a check, handed to autofix. The report lists who chose each number (LLM intent, sizer, or sizer then
 autofix), every sizing and autofix step, and what the prompt asked for that TaskBot didn't use.
 
 The design is checked (static torque, reach, workspace corners, self-collision,

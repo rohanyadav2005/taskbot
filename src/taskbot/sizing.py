@@ -76,6 +76,9 @@ CHASSIS_M = (0.30, 0.24, 0.06)
 CHASSIS_SCALES = (1.0, 1.25, 1.5, 1.75, 2.0)
 WHEEL_WIDTH_M = 0.025
 WHEEL_RADIUS_MAX_M = 0.12
+MM_TARGET_CLEARANCE_M = 0.05  # a mobile manipulator's targets start this far ahead of the robot's front
+MM_TARGET_MOVES = 3           # how many times the targets may follow a base that grew
+WHEEL_STEP_M = 0.005          # wheel radius grid
 TURN_TRIES = 3              # turn_in_place sims per wheel motor and chassis size before the next motor
 
 # Joints per layout: (joint name, axis, link name). The first is the base yaw on the riser.
@@ -92,7 +95,7 @@ ARM_LAYOUTS: dict[str, list[tuple[str, str, str]]] = {
 @dataclass
 class SizedDesign:
     spec: RobotSpec
-    requirements: Requirements          # what it was sized for (relaxed when approximate)
+    requirements: Requirements          # what it was sized for (relaxed when approximate, or targets moved)
     steps: list[str] = field(default_factory=list)       # what was computed, and why
     provenance: dict[str, str] = field(default_factory=dict)  # "part.field" -> who chose it
     approximate: str | None = None      # the requirement relaxed (nearest mode)
@@ -107,6 +110,7 @@ class SizingFailure:
     failures: list[CheckResult] = field(default_factory=list)
     steps: list[str] = field(default_factory=list)
     provenance: dict[str, str] = field(default_factory=dict)
+    requirements: Requirements | None = None  # what it was sized for, if code moved the targets
 
 
 def _position_motors(catalog: dict[str, Motor]) -> list[Motor]:
@@ -367,7 +371,7 @@ def _carry_anyway(arm: _Arm, intent, req, catalog, base, mount, failing, steps: 
     return t, None
 
 
-def _stiffen_yaw_for_driving(arm: _Arm, req, catalog, steps: list[str]) -> None:
+def _stiffen_yaw_for_driving(arm: _Arm, req, catalog, steps: list[str]) -> bool:
     """A mobile manipulator's base yaw holds no weight, but holds the arm when the chassis speeds up
     and slows down with the arm to the side (drive_with_arm_extended). If that sim moves the tool
     out of tolerance through compliance, try stiffer motors on the base yaw, least stiff first."""
@@ -376,7 +380,7 @@ def _stiffen_yaw_for_driving(arm: _Arm, req, catalog, steps: list[str]) -> None:
     yaw = arm.layout[0][0]
     run = drive_with_arm_extended(arm.spec(), req, catalog).result
     if run.passed or run.cause != "compliance":
-        return
+        return False
     current = motor_model(catalog[arm.motors[yaw]]).kp
     stiffer = sorted((m for m in _position_motors(catalog) if motor_model(m).kp > current * 1.01),
                      key=lambda m: (motor_model(m).kp, m.price_usd))
@@ -389,8 +393,9 @@ def _stiffen_yaw_for_driving(arm: _Arm, req, catalog, steps: list[str]) -> None:
             steps.append(f"{yaw}: {m.id} (stiffer than {old}): driving with the arm to the side moved the tool "
                          f"{first.value * 1000:.3g} mm with {old} (limit {req.position_tolerance_m * 1000:g} mm); "
                          f"the least stiff motor that holds it, verified in drive_with_arm_extended")
-            return
+            return True
         arm.motors[yaw] = old
+    return False
 
 
 def _size_arm(arm: _Arm, steps: list[str]) -> tuple[str, float, float] | None:
@@ -420,6 +425,31 @@ def _base_dict(intent: DesignIntent, scale: float, r: float, motor: str, caster:
             "chassis_material": "aluminium", "wheel_motor_id": motor, "caster": caster}
 
 
+# Wheel sims that failed, by (sim, drive, caster, chassis scale, motor, radius, slope, terrain, speed,
+# base payload): the lightest robot it failed with. A heavier robot on the same wheels fails too
+# (more to lift up the slope and turn), so the sim isn't run again: the search for each new intent,
+# and each re-size after the arm grows, skips what is already known to fail.
+_SIM_FAILS: dict[tuple, tuple[float, object]] = {}
+
+
+def _verify(tests, spec, req, catalog, model, key):
+    """The first of `tests` the base fails (its CheckResult), or None; known failures from cache."""
+    mass = float(model.body_mass.sum())
+    for t in tests:
+        k = (t.__name__,) + key + (req.max_incline_deg, req.terrain, req.speed_m_s, req.base_payload_kg)
+        known = _SIM_FAILS.get(k)
+        if known is not None and mass >= known[0] - 1e-6:
+            return known[1]
+        result = (t(spec, req, catalog, stop_at_verdict=True) if t.__name__ == "incline" else t(spec, req, catalog)).result
+        if not result.passed:
+            if known is None or mass < known[0]:
+                if len(_SIM_FAILS) > 20000:
+                    _SIM_FAILS.clear()
+                _SIM_FAILS[k] = (mass, result)
+            return result
+    return None
+
+
 def _size_base(intent, req, catalog, arm: _Arm | None, steps: list[str]) -> tuple[dict | None, str | None]:
     """The cheapest wheel motor and smallest radius with wheel_torque margin and top_speed, that
     drives straight and climbs the incline in simulation, on the smallest chassis that passes
@@ -429,7 +459,9 @@ def _size_base(intent, req, catalog, arm: _Arm | None, steps: list[str]) -> tupl
 
     # Skid steering (four_wheel) scrubs its wheels sideways to turn, which takes far more torque
     # than driving: verify that too (smoke run 6 failed turn_in_place after sizing for speed).
-    verify = (drive_straight, incline) + ((turn_in_place,) if intent.drive == "four_wheel" else ())
+    # The incline first (most likely to fail, and it stops early once failed), then turn_in_place, so
+    # its TURN_TRIES only count wheels that climb (a bigger wheel can turn better).
+    verify = (incline,) + ((turn_in_place,) if intent.drive == "four_wheel" else ()) + (drive_straight,)
 
     caster = bool(intent.caster) if intent.drive == "differential" else False
     if intent.drive == "differential" and not caster:
@@ -452,31 +484,43 @@ def _size_base(intent, req, catalog, arm: _Arm | None, steps: list[str]) -> tupl
             if any(m.rated_torque_nm <= f.rated_torque_nm and m.no_load_speed_rad_s <= f.no_load_speed_rad_s
                    for f in cant_turn):
                 continue  # no more torque and no more speed than one that couldn't: it can't either
-            r, turn_tries = max(MOTOR_MARGIN * req.speed_m_s / (0.8 * m.no_load_speed_rad_s), 0.02), 0
-            while r <= WHEEL_RADIUS_MAX_M:
+            r0, turn_tries = max(MOTOR_MARGIN * req.speed_m_s / (0.8 * m.no_load_speed_rad_s), 0.02), 0
+
+            def candidate(r):
+                """(passes, stop trying this motor, base, wheel_torque result)."""
+                nonlocal last, turn_tries
                 b = _base_dict(intent, scale, r, m.id, caster)
                 spec = spec_for(b)
                 model = build_model(spec, catalog)
                 (wt,), (ts,) = wheel_torque(spec, req, model, catalog), top_speed(spec, req, model, catalog)
-                if wt.value * MOTOR_MARGIN <= wt.limit and ts.passed:
-                    # The static tip_over and traction checks first: no sim can pass a base they fail.
-                    (tip,), (tr,) = tip_over(spec, req, model, catalog), traction(spec, req, model, catalog)
-                    if not (tip.passed and tr.passed):
-                        last = tip.message if not tip.passed else tr.message
-                        break  # this motor at this chassis size: a bigger wheel won't fix it
-                    failed = next((x for x in (t(spec, req, catalog).result for t in verify) if not x.passed), None)
-                    if failed is None:
-                        chosen = (b, m, r, wt)
-                        break
-                    last = failed.message
-                    if failed.check == "turn_in_place":
-                        turn_tries += 1  # a slightly bigger wheel can turn better (less speed-limited), but
-                        if turn_tries >= TURN_TRIES:  # not without end: then try the next motor
-                            cant_turn.append(m)
-                            break
-                else:
+                if not (wt.value * MOTOR_MARGIN <= wt.limit and ts.passed):
                     last = f"wheel_torque with {m.id}: {wt.message}"
-                r += 0.005
+                    return False, False, b, wt
+                # The static tip_over and traction checks first: no sim can pass a base they fail.
+                (tip,), (tr,) = tip_over(spec, req, model, catalog), traction(spec, req, model, catalog)
+                if not (tip.passed and tr.passed):
+                    last = tip.message if not tip.passed else tr.message
+                    return False, True, b, wt  # this motor at this chassis size: a bigger wheel won't fix it
+                failed = _verify(verify, spec, req, catalog, model, (intent.drive, caster, scale, m.id, round(r, 4)))
+                if failed is None:
+                    return True, True, b, wt
+                last = failed.message
+                if failed.check == "turn_in_place":
+                    turn_tries += 1  # a slightly bigger wheel can turn better (less speed-limited), but
+                    if turn_tries >= TURN_TRIES:  # not without end: then try the next motor
+                        cant_turn.append(m)
+                        return False, True, b, wt
+                return False, False, b, wt
+
+            k = 0
+            while (r := r0 + k * WHEEL_STEP_M) <= WHEEL_RADIUS_MAX_M:
+                ok, stop, b, wt = candidate(r)
+                if ok:
+                    chosen = (b, m, r, wt)
+                    break
+                if stop:
+                    break
+                k += 1
             if chosen:
                 break
         if chosen is None:
@@ -580,8 +624,24 @@ def size_design(intent: DesignIntent, req: Requirements, catalog: dict[str, Moto
     return copy.deepcopy(_CACHE[key])
 
 
+def _base_failure(intent, req, why: str, steps: list[str]) -> SizingFailure:
+    """No catalog wheel motor, wheel size and chassis drives this robot as the task asks."""
+    other = "four_wheel" if intent.drive == "differential" else "differential"
+    return SizingFailure(
+        "infeasible", f"no catalog wheel motor, wheel size and chassis TaskBot tried drives this {intent.drive} "
+        f"robot as the task asks: {why}",
+        [f"The other drive ({other}), in a revised intent.",
+         f"A gentler slope than {req.max_incline_deg:g}°, less than {req.base_payload_kg:g} kg on the base or a lower "
+         f"speed than {req.speed_m_s:g} m/s, if the task allows it."], steps=steps, requirements=req)
+
+
+def robot_front_m(base: dict) -> float:
+    """How far the chassis or a front wheel reaches ahead of the chassis centre."""
+    return max(base["chassis_size_m"][0] / 2, base["wheelbase_m"] / 2 + base["wheel_radius_m"])
+
+
 def _size_design(intent: DesignIntent, req: Requirements, catalog: dict[str, Motor], *,
-                 nearest: bool = False) -> SizedDesign | SizingFailure:
+                 nearest: bool = False, _moves: int = 0, _moved: str = "") -> SizedDesign | SizingFailure:
     steps: list[str] = []
     arm = None
     if req.has_arm:
@@ -611,7 +671,7 @@ def _size_design(intent: DesignIntent, req: Requirements, catalog: dict[str, Mot
             for _ in range(2):
                 b, why = _size_base(intent, req, catalog, arm, steps)
                 if b is None:
-                    return SizingFailure("checks", f"no wheel motor, radius and chassis passed: {why}", steps=steps)
+                    return _base_failure(intent, req, why, steps)
                 old_top = arm.base_top()
                 arm.base = b
                 if intent.arm_mount == "front":
@@ -619,8 +679,28 @@ def _size_design(intent: DesignIntent, req: Requirements, catalog: dict[str, Mot
                 if abs(arm.base_top() - old_top) < 1e-3:
                     break
                 failing = _size_arm(arm, steps)
-        if req.is_mobile and failing is None:
-            _stiffen_yaw_for_driving(arm, req, catalog, steps)
+        if req.is_mobile and failing is None and _moves < MM_TARGET_MOVES:
+            # The base drives to each target, so the arm's targets start ahead of the robot as sized:
+            # its chassis and front wheels (smoke run 4 of 2026-11-07: 0.11 m wheels sized for a 15°
+            # slope reached 0.28 m forward, over targets that started 0.2 m ahead).
+            from taskbot.normalize import shift_workspace_forward
+
+            need = robot_front_m(arm.base) + MM_TARGET_CLEARANCE_M
+            if req.workspace.x_min < need - 0.005:
+                moved = shift_workspace_forward(req, round(need - req.workspace.x_min, 3))
+                note = (f"the sized base reaches {robot_front_m(arm.base):.3g} m ahead of the chassis centre (chassis "
+                        f"and front wheels), less than {MM_TARGET_CLEARANCE_M:g} m short of the arm's targets, which "
+                        f"started {req.workspace.x_min:g} m ahead: the base stops further back, so the targets were "
+                        f"moved forward to x "
+                        f"{moved.workspace.x_min:g} to {moved.workspace.x_max:g} m (reach_m {moved.reach_m:g} m, "
+                        "derived as before) and the robot sized again")
+                why = (f"the base sized for this task ({arm.base['wheel_radius_m']:.3g} m wheels driven by "
+                       f"{arm.base['wheel_motor_id']}, a {arm.base['chassis_size_m'][0]:.3g} m chassis) reaches "
+                       f"{robot_front_m(arm.base):.3g} m ahead of the chassis centre, so the targets start "
+                       f"{moved.workspace.x_min:g} m ahead instead of {req.workspace.x_min:g} m")
+                res = _size_design(intent, moved, catalog, nearest=nearest, _moves=_moves + 1, _moved=why)
+                res.steps = [note] + res.steps
+                return res
         spec = arm.spec()
         if failing is not None:
             joint, need, usable = failing
@@ -628,21 +708,31 @@ def _size_design(intent: DesignIntent, req: Requirements, catalog: dict[str, Mot
                       f"(its own links and motors included), but the strongest catalog motor gives {usable:.3g} Nm "
                       "usable (80% of rated).")
             options = _options(arm, joint)
+            if _moved:
+                reason += f" The arm has to reach that far because {_moved}."
+                options.append(f"Smaller wheels, so the targets sit nearer the arm: a gentler slope than "
+                               f"{req.max_incline_deg:g}°, less than {req.base_payload_kg:g} kg on the base or a lower "
+                               "speed, if the task allows it (the wheels are sized to climb and carry that).")
             if nearest:
                 return _nearest(intent, req, catalog, options, reason, steps)
             return SizingFailure("infeasible", reason, options, spec, steps=steps,
-                                 provenance=_provenance(intent, spec))
+                                 provenance=_provenance(intent, spec), requirements=req)
     else:
         b, why = _size_base(intent, req, catalog, None, steps)
         if b is None:
-            return SizingFailure("checks", f"no wheel motor, radius and chassis passed: {why}", steps=steps)
+            return _base_failure(intent, req, why, steps)
         spec = RobotSpec.model_validate({"name": "sized_robot", "description": "", "modules": [b]})
     spec = spec.model_copy(update={"name": _name(req), "description": f"Sized by TaskBot from the intent: {intent.rationale}"})
     failures = [r for r in run_checks(spec, req, catalog) if not r.passed]
+    if not failures and arm is not None and req.is_mobile and _stiffen_yaw_for_driving(arm, req, catalog, steps):
+        # Only a design that passes is worth the driving sims; a stiffer base yaw changes its mass.
+        spec = arm.spec().model_copy(update={"name": spec.name, "description": spec.description})
+        failures = [r for r in run_checks(spec, req, catalog) if not r.passed]
     prov = _provenance(intent, spec)
     if failures:
         return SizingFailure("checks", "after sizing, " + "; ".join(
-            f"{r.check} still fails" for r in failures), spec=spec, failures=failures, steps=steps, provenance=prov)
+            f"{r.check} still fails" for r in failures), spec=spec, failures=failures, steps=steps, provenance=prov,
+            requirements=req)
     return SizedDesign(spec, req, steps, prov)
 
 

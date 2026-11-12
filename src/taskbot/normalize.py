@@ -413,6 +413,17 @@ def alternative_intent(req, tried: list):
     return None
 
 
+def shift_workspace_forward(req, dx: float):
+    """A mobile manipulator's requirements with the arm's targets dx further ahead of the chassis
+    (the base stops further back) and reach_m derived again, the same way."""
+    from taskbot.requirements import Workspace, reach_corner
+
+    ws = req.workspace
+    moved = Workspace(**(ws.model_dump() | {"x_min": round(ws.x_min + dx, 3), "x_max": round(ws.x_max + dx, 3)}))
+    _, dist, _ = reach_corner(req.robot_type, moved)
+    return req.model_copy(update={"workspace": moved, "reach_m": math.ceil(dist * REACH_MARGIN * 1000 - 1e-9) / 1000})
+
+
 def default_intent(req):
     """The intent code uses when the LLM gives none it can use: no LLM needed."""
     from taskbot.intent import DesignIntent

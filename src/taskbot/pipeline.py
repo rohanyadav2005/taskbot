@@ -172,7 +172,8 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
             from taskbot.feasibility import Feasibility
 
             out = write_infeasible(req, out_root, Feasibility(list(outcome.infeasible),
-                                                              list(getattr(outcome, "infeasible_options", []))))
+                                                              list(getattr(outcome, "infeasible_options", []))),
+                                   bound=False)  # from the sizer's designs, not the gate's bounds
             emit(f"Stopped: {' '.join(outcome.infeasible)}")
             return PipelineResult(req, None, out, usage_for(out, "INFEASIBLE", _with_short(req, outcome.infeasible)),
                                   infeasible=list(outcome.infeasible), design_mode=design_mode, fallbacks=fallbacks)
@@ -195,6 +196,8 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
     state = ("INFEASIBLE" if outcome.infeasible else "APPROXIMATE" if approx
              else ("PASSED" if outcome.passed else "FAILED"))
     reason = outcome.stop_reason or ""
+    if state == "INFEASIBLE":
+        reason = " ".join(outcome.infeasible)  # each intent tried and what blocks it
     if state == "APPROXIMATE":
         reason = getattr(outcome, "approximate", "") or reason
     elif state == "FAILED":

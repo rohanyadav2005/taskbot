@@ -23,7 +23,7 @@ builds the URDF, runs engineering checks and MuJoCo sims, applies known numeric 
 
 ## Working in this repo
 
-- Tests: `pytest -q` (about 12 minutes: MuJoCo sims, sims inside sizing, and a 200-run sloppy-model
+- Tests: `pytest -q` (about 18 minutes: MuJoCo sims, sims inside sizing, and a 200-run sloppy-model
   property test). Lint:
   `python -m pyflakes src tests bench`.
 - Headless rendering needs `MUJOCO_GL=osmesa` or `egl`; tests skip rendering if neither works.

@@ -74,6 +74,9 @@ def test_base_centred_workspace_is_trimmed_to_the_same_targets_in_front_and_desi
 def test_double_margin_finishes_with_what_would_work(tmp_path):
     code, out, run, report, transcript = replay("windowsill_double_margin", tmp_path, "--no-sim")
     assert code == 4 and run["status"] == "INFEASIBLE"
-    assert "INFEASIBLE: no catalog motor can carry the arm TaskBot sized" in report
+    # The fixture records no intent: code's default and its next untried intents are each sized, and
+    # none can be carried (Task 10: an infeasible intent no longer ends the run).
+    assert "**INFEASIBLE: none of the 3 intents TaskBot tried can be built from the catalog" in report
+    assert report.count("strongest catalog motor gives") >= 3
     assert "a payload under" in report and "an arm reaching under" in report
     corrections_listed(report, transcript, run)
