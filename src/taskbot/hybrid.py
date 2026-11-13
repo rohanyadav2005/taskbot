@@ -174,6 +174,7 @@ def hybrid_loop(client: LLMClient, req: Requirements, catalog: dict[str, Motor],
             continue
         verdicts.clear()  # an earlier intent's verdict no longer stands
         out.infeasible, out.infeasible_options, out.infeasible_kind = [], [], ""
+        out.stop_reason = ""
         target = sized.requirements or req  # the sizer may have moved a mobile manipulator's targets
         if target is not req:
             out.sized_for = target

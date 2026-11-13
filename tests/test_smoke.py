@@ -3,11 +3,14 @@
 import re
 from pathlib import Path
 
+import pytest
+
 from taskbot import smoke
 
 ROOT = Path(__file__).parent.parent
 
 
+@pytest.mark.slow
 def test_smoke_prints_one_line_per_prompt_and_saves_transcripts(tmp_path, capsys):
     code = smoke.main(["--backend", "fake", "--model", "scripted", "--no-sim", "--out", str(tmp_path)])
     lines = [ln for ln in capsys.readouterr().out.splitlines() if re.match(r"\d\. ", ln)]

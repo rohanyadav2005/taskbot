@@ -6,8 +6,11 @@ documented fallback stands in (said in the test)."""
 import json
 from pathlib import Path
 
+import pytest
+
 from taskbot.cli import main
 
+pytestmark = pytest.mark.slow
 SMOKE = Path(__file__).parent / "fixtures" / "real_runs" / "smoke_2026-11-07"
 TOYS = "a robot that picks toys off the floor and drops them in a basket"
 
@@ -38,38 +41,31 @@ def test_3_box_passes(tmp_path):
     assert code == 0 and run["status"] == "PASSED"
 
 
-def test_4_toys_on_a_15_degree_ramp_is_infeasible_and_says_why(tmp_path):
-    """qwen asked for a 15° ramp and 4 kg (x1.25) on the base. Two driven wheels only climb that with
-    xm540_w270 on ~0.1 m wheels, which reach 0.28-0.30 m ahead of the chassis centre, so the floor
-    targets start 0.33-0.35 m ahead and 0.3 kg out there needs 3.4-3.9 Nm at the shoulder (2.83 usable);
-    four-wheel skid steering can't turn in place. The run stopped after the first infeasible intent;
-    now every intent is tried (the replay's later ones are code's: the run recorded only two)."""
-    code, _, run, report = replay(SMOKE / "4_toys.jsonl", TOYS, tmp_path, "--no-sim")
+def test_4_toys_passes_once_the_invented_ramp_and_base_load_are_removed(tmp_path):
+    """qwen wrote a 15° ramp and 4 kg (x1.25) on the base; the task names no slope and drops the toys
+    into a basket, so the normaliser makes them 5° and 0 kg (Task 11). qwen's own first intent then
+    passes on the cheapest wheel motor, with every sizer sim inside 70% of its test's limit, so the
+    outcome doesn't depend on the platform (on Windows the old sizer passed a different, borderline
+    four-wheel design on code's fourth intent; here it failed turn_in_place)."""
+    code, _, run, report = replay(SMOKE / "4_toys.jsonl", TOYS, tmp_path)
+    assert code == 0 and run["status"] == "PASSED" and run["calls"] == 3 and run["fallbacks"] == []
+    assert "max_incline_deg 15° reduced to 5°: the task names no ramp" in report
+    assert "base_payload_kg 5 kg set to 0: the task drops the items into a separate container" in report
+    assert "wheels: jgb37_520_110" in report and run["reason"] == ""
+
+
+def test_4_toys_up_a_named_ramp_is_infeasible_and_says_why(tmp_path):
+    """The same replies for a task that does name a ramp keep the 15°. No intent can be built, and
+    each reason clears its limit by a wide margin (static torque 3.1-3.4 Nm against 2.83 usable;
+    four-wheel turning 5.9° off against 5°), so the verdict is the same on every platform."""
+    prompt = "a robot that picks toys off the floor, drives up the ramp to the playroom and drops them in a basket"
+    code, _, run, report = replay(SMOKE / "4_toys.jsonl", prompt, tmp_path, "--no-sim")
     assert code == 4 and run["status"] == "INFEASIBLE"
     assert "**INFEASIBLE: none of the 4 intents TaskBot tried can be built from the catalog" in report
-    assert "0.11 m wheels driven by xm540_w270" in report and "so the targets start 0.327 m ahead instead of 0.2 m" in report
-    assert "shoulder_pitch needs 3.43 Nm" in run["reason"] and "four_wheel" in run["reason"]
-    assert "a gentler slope than 15°" in report
+    assert "max_incline_deg 15° reduced" not in report and "Drove up a 15° slope" not in run["reason"]
+    assert run["reason"].count("strongest catalog motor gives 2.83 Nm") == 3 and "turn_in_place" in run["reason"]
     sizing = sum(t["time_s"] for t in run["timings"] if t["kind"] == "sizing")
-    assert sizing < 120  # four intents; the run spent 110 s on two before the sizer cache and early stops
-
-
-def test_4_toys_on_a_10_degree_ramp_passes(tmp_path):
-    """The fix the report names, checked: the same replies with the ramp at 10° size small wheels
-    (pololu_25d_34_hp, 0.03 m) and pass every check and sim with qwen's own first intent."""
-    lines = []
-    for line in (SMOKE / "4_toys.jsonl").read_text(encoding="utf-8").splitlines():
-        r = json.loads(line)
-        if r["schema"] == "Requirements":
-            r["reply"] = json.dumps(json.loads(r["reply"]) | {"max_incline_deg": 10})
-        lines.append(json.dumps(r))
-    gentler = tmp_path / "toys_10deg.jsonl"
-    gentler.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    out_root = tmp_path / "out"
-    out_root.mkdir()
-    code, _, run, report = replay(gentler, TOYS, out_root)
-    assert code == 0 and run["status"] == "PASSED" and run["fallbacks"] == []
-    assert "wheels: pololu_25d_34_hp, radius 0.03 m" in report
+    assert sizing < 120
 
 
 def test_5_high_shelf_is_infeasible(tmp_path):

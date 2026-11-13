@@ -14,6 +14,8 @@ from taskbot.repair import Round
 from taskbot.report import render_report, verdict
 from taskbot.timing import KINDS
 
+
+pytestmark = pytest.mark.slow
 SMOKE = Path(__file__).parent / "fixtures" / "real_runs" / "smoke_2026-11-06"
 
 

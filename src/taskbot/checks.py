@@ -44,7 +44,7 @@ if TYPE_CHECKING:  # requirements imports the LLM layer; only needed for annotat
 
 
 FailureCause = Literal["saturated", "speed_limited", "compliance", "unreachable", "unstable", "slip",
-                       "wrong_type", "infeasible"]
+                       "clearance", "wrong_type", "infeasible"]
 CAUSE_ADVICE: dict[str, str] = {
     "saturated": "torque limit hit; use a stronger motor, or shorter or lighter outer links",
     "speed_limited": "motor too slow for the move; use a faster motor or a different gear ratio",
@@ -55,6 +55,8 @@ CAUSE_ADVICE: dict[str, str] = {
                  "the arm mount towards the middle, or shorten the reach"),
     "slip": ("the driven wheels would slip; put more weight over them, lower the centre of mass, "
              "or drive all four wheels"),
+    "clearance": ("the base sits too low or its wheels are too small for the terrain; use larger wheels "
+                  "(the chassis bottom sits at half the wheel radius)"),
     "wrong_type": "the design is a different kind of robot than the requirements ask for",
     "infeasible": ("the requirements are beyond the motor catalog: no design can pass, so the repair "
                    "loop stops"),

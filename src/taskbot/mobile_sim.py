@@ -27,6 +27,7 @@ from taskbot.requirements import Requirements
 from taskbot.schema import ArmChain, Motor, RobotSpec, WheeledBase, load_motor_catalog
 from taskbot.sim.control import DEFAULT_PAYLOAD_MASS_ERROR, MotorController
 from taskbot.sim.model import SimRobot, build_scene
+from taskbot.sim.motor import clip
 from taskbot.sim.record import FPS
 from taskbot.sim_tests import SATURATION_MAX_S, SimRun
 
@@ -36,6 +37,8 @@ TURN_ERROR_MAX_DEG = 5.0
 TILT_MAX_DEG = 20.0
 STRAIGHT_M = 1.0
 INCLINE_M = 0.5
+INCLINE_SLIDE_MAX_M = 0.01
+INCLINE_SPARE = 0.2        # the sizer's incline sim climbs 20% further than the test's
 ARM_DRIVE_M = 0.5
 TURN_GAIN = 2.0            # yaw-rate command per rad of heading error (1/s)
 TURN_RATE_MAX = 1.0        # rad/s
@@ -66,7 +69,7 @@ class WheelController:
                 self.sat_time[i] += dt
                 self.slow_time[i] += dt * slow
             else:
-                self._integral[i] = np.clip(self._integral[i] + m.ki * e * dt, -m.rated, m.rated)
+                self._integral[i] = clip(self._integral[i] + m.ki * e * dt, -m.rated, m.rated)
 
 
 class _MobileSim:
@@ -107,7 +110,7 @@ class _MobileSim:
     def tilt_deg(self) -> float:
         """Angle between the chassis z axis and the world z axis (roll and pitch combined)."""
         R = self.data.xmat[self.robot.chassis_body].reshape(3, 3)
-        return float(np.degrees(np.arccos(np.clip(R[2, 2], -1, 1))))
+        return float(np.degrees(np.arccos(clip(R[2, 2], -1.0, 1.0))))
 
     def odometry(self) -> float:
         """Mean distance rolled by the wheels (radius x angle)."""
@@ -193,7 +196,13 @@ def _msg(text: str, cause: str | None) -> str:
 # --------------------------------------------------------------------------- tests
 
 
-def drive_straight(spec: RobotSpec, req: Requirements, catalog=None) -> SimRun:
+def _margin_note(margin: float) -> str:
+    return "" if margin >= 1 else f" (the sizer's margin: {margin:.0%} of the test's limits)"
+
+
+def drive_straight(spec: RobotSpec, req: Requirements, catalog=None, margin: float = 1.0) -> SimRun:
+    """`margin` < 1 (the sizer): pass only within that fraction of the limits, so a design that
+    barely passes on one platform isn't chosen (the test itself always runs with 1)."""
     sim = _sim(spec, req, catalog)
     p0, yaw0 = sim.position(), sim.yaw()
     nominal = STRAIGHT_M / req.speed_m_s + req.speed_m_s / ACCEL_M_S2
@@ -202,19 +211,19 @@ def drive_straight(spec: RobotSpec, req: Requirements, catalog=None) -> SimRun:
     heading = abs(np.degrees(np.angle(np.exp(1j * (sim.yaw() - yaw0)))))
     dist_err = abs(actual - STRAIGHT_M) / STRAIGHT_M
     slip = (sim.odometry() - actual) / max(sim.odometry(), 1e-9)
-    ok = reached and heading < HEADING_MAX_DEG and dist_err < DISTANCE_ERROR_MAX
+    ok = reached and heading < margin * HEADING_MAX_DEG and dist_err < margin * DISTANCE_ERROR_MAX
     sat_cause, sat_text = _wheel_saturation(sim)
     cause = None if ok else (sat_cause or "slip")
     text = (f"Drove {STRAIGHT_M:g} m by wheel odometry at {req.speed_m_s:g} m/s on {req.terrain}"
             f"{'' if reached else ' (gave up: the odometry never got there)'}: actually moved {actual:.3f} m "
-            f"(error {dist_err:.1%}, limit {DISTANCE_ERROR_MAX:.0%}; wheel slip {slip:.1%}), heading "
-            f"error {heading:.2f}° (limit {HEADING_MAX_DEG:g}°).{sat_text}")
-    result = CheckResult(check="drive_straight", passed=ok, value=dist_err, limit=DISTANCE_ERROR_MAX,
+            f"(error {dist_err:.1%}, limit {margin * DISTANCE_ERROR_MAX:.1%}; wheel slip {slip:.1%}), heading "
+            f"error {heading:.2f}° (limit {margin * HEADING_MAX_DEG:g}°){_margin_note(margin)}.{sat_text}")
+    result = CheckResult(check="drive_straight", passed=ok, value=dist_err, limit=margin * DISTANCE_ERROR_MAX,
                          message=_msg(text, cause), cause=cause)
     return _run("drive_straight", result, sim)
 
 
-def turn_in_place(spec: RobotSpec, req: Requirements, catalog=None) -> SimRun:
+def turn_in_place(spec: RobotSpec, req: Requirements, catalog=None, margin: float = 1.0) -> SimRun:
     base: WheeledBase = spec.base
     sim = _sim(spec, req, catalog)
     yaw0 = sim.yaw()
@@ -223,29 +232,34 @@ def turn_in_place(spec: RobotSpec, req: Requirements, catalog=None) -> SimRun:
     rate = 0.0
     for _ in range(round(8.0 / sim.dt)):
         err = float(np.angle(np.exp(1j * (yaw0 + target - sim.yaw()))))
-        rate_cmd = float(np.clip(TURN_GAIN * err, -TURN_RATE_MAX, TURN_RATE_MAX))
+        rate_cmd = float(clip(TURN_GAIN * err, -TURN_RATE_MAX, TURN_RATE_MAX))
         # ramp the wheel rim speed at 0.5 m/s²
-        rate += np.clip(rate_cmd - rate, -ACCEL_M_S2 / half_track * sim.dt, ACCEL_M_S2 / half_track * sim.dt)
+        rate += clip(rate_cmd - rate, -ACCEL_M_S2 / half_track * sim.dt, ACCEL_M_S2 / half_track * sim.dt)
         w = -sim.robot.wheel_side * rate * half_track / base.wheel_radius_m
         sim.step(w)
     for _ in range(round(SETTLE_S / sim.dt)):
         sim.step(np.zeros(len(sim.robot.wheel_names)))
     turned = np.degrees(np.angle(np.exp(1j * (sim.yaw() - yaw0))))
     err = abs(turned - 90.0)
-    ok = err < TURN_ERROR_MAX_DEG
+    ok = err < margin * TURN_ERROR_MAX_DEG
     sat_cause, sat_text = _wheel_saturation(sim)
     cause = None if ok else (sat_cause or "slip")
     text = (f"Turned on the spot towards 90° with yaw feedback ({base.drive} drive"
             f"{', skid steering' if base.drive == 'four_wheel' else ''}): ended at {turned:.2f}° "
-            f"(error {err:.2f}°, limit {TURN_ERROR_MAX_DEG:g}°).{sat_text}")
-    result = CheckResult(check="turn_in_place", passed=ok, value=err, limit=TURN_ERROR_MAX_DEG,
+            f"(error {err:.2f}°, limit {margin * TURN_ERROR_MAX_DEG:g}°){_margin_note(margin)}.{sat_text}")
+    result = CheckResult(check="turn_in_place", passed=ok, value=err, limit=margin * TURN_ERROR_MAX_DEG,
                          message=_msg(text, cause), cause=cause)
     return _run("turn_in_place", result, sim)
 
 
-def incline(spec: RobotSpec, req: Requirements, catalog=None, stop_at_verdict: bool = False) -> SimRun:
+def incline(spec: RobotSpec, req: Requirements, catalog=None, stop_at_verdict: bool = False,
+            margin: float = 1.0) -> SimRun:
     """`stop_at_verdict` (the sizer's search): stop once the base has slid back past the limit, which
-    no later moment can undo; the verdict is the same, the reported distances are those at the stop."""
+    no later moment can undo; the verdict is the same, the reported distances are those at the stop.
+    `margin` < 1 (the sizer): climb INCLINE_SPARE further and slide back under that fraction of
+    the limit."""
+    distance = INCLINE_M * (1 + INCLINE_SPARE) if margin < 1 else INCLINE_M
+    slide = margin * INCLINE_SLIDE_MAX_M
     sim = _sim(spec, req, catalog, incline=req.max_incline_deg)
     p0 = sim.position()
     track = {"min_x": 0.0, "last_x": 0.0}
@@ -255,22 +269,22 @@ def incline(spec: RobotSpec, req: Requirements, catalog=None, stop_at_verdict: b
         track["min_x"] = min(track["min_x"], dx)
         track["last_x"] = dx
 
-    nominal = INCLINE_M / req.speed_m_s + req.speed_m_s / ACCEL_M_S2
-    _, reached = _drive(sim, INCLINE_M, req.speed_m_s, timeout=3 * nominal + 3, watch=watch,
-                        stop=(lambda: track["min_x"] < -0.01) if stop_at_verdict else None)
+    nominal = distance / req.speed_m_s + req.speed_m_s / ACCEL_M_S2
+    _, reached = _drive(sim, distance, req.speed_m_s, timeout=3 * nominal + 3, watch=watch,
+                        stop=(lambda: track["min_x"] < -slide) if stop_at_verdict else None)
     climbed = float(sim.position()[0] - p0[0])
-    slid_back = track["min_x"] < -0.01
+    slid_back = track["min_x"] < -slide
     slip = (sim.odometry() - climbed) / max(sim.odometry(), 1e-9)
     ok = reached and not slid_back  # distance accuracy is drive_straight's job; slip is reported
     sat_cause, sat_text = _wheel_saturation(sim)
     cause = None if ok else (sat_cause or "slip")
     progress = (f"climbed {climbed:.3f} m (wheel slip {slip:.1%}, reported only)" if climbed > 0
                 else f"went {-climbed:.3f} m backwards down the slope instead")
-    text = (f"Drove up a {req.max_incline_deg:g}° slope on {req.terrain} for {INCLINE_M:g} m by odometry: "
+    text = (f"Drove up a {req.max_incline_deg:g}° slope on {req.terrain} for {distance:g} m by odometry: "
             f"{progress}; slid back at most "
-            f"{max(0.0, -track['min_x']) * 1000:.0f} mm (limit 10 mm)"
+            f"{max(0.0, -track['min_x']) * 1000:.0f} mm (limit {slide * 1000:.0f} mm){_margin_note(margin)}"
             f"{'' if reached else '; stalled: never covered the distance'}.{sat_text}")
-    result = CheckResult(check="incline", passed=ok, value=-track["min_x"], limit=0.01,
+    result = CheckResult(check="incline", passed=ok, value=-track["min_x"], limit=slide,
                          message=_msg(text, cause), cause=cause)
     return _run("incline", result, sim)
 
@@ -309,11 +323,18 @@ def _extended_poses(spec: RobotSpec, robot: SimRobot) -> list[tuple[str, np.ndar
     return poses
 
 
-def drive_with_arm_extended(spec: RobotSpec, req: Requirements, catalog=None) -> SimRun:
-    tol = req.position_tolerance_m
+def drive_with_arm_extended(spec: RobotSpec, req: Requirements, catalog=None, margin: float = 1.0,
+                            stop_at_verdict: bool = False, directions: tuple[str, ...] | None = None) -> SimRun:
+    """`stop_at_verdict` (the sizer): stop after the first arm direction that fails; the verdict
+    is the same, the message lists only the directions run. `directions` (the sizer): only these
+    arm directions (front, left, back, right)."""
+    tol = margin * req.position_tolerance_m
+    tilt_max = margin * TILT_MAX_DEG
     probe = build_scene(spec, catalog)
     results, last = [], None
     for label, pose in _extended_poses(spec, probe):
+        if directions is not None and label not in directions:
+            continue
         sim = _sim(spec, req, catalog, arm_pose=pose, gripper_payload=req.payload_kg)
         for _ in range(round(SETTLE_S / sim.dt)):
             sim.step(np.zeros(len(sim.robot.wheel_names)))
@@ -327,15 +348,17 @@ def drive_with_arm_extended(spec: RobotSpec, req: Requirements, catalog=None) ->
         _, reached = _drive(sim, ARM_DRIVE_M, req.speed_m_s, timeout=3 * nominal + 3, watch=watch)
         results.append((label, sim.max_tilt, dev["max"], reached, sim))
         last = sim
-    tipped = [r for r in results if r[1] >= TILT_MAX_DEG]
+        if stop_at_verdict and (sim.max_tilt >= tilt_max or dev["max"] >= tol or not reached):
+            break
+    tipped = [r for r in results if r[1] >= tilt_max]
     sagged = [r for r in results if r[2] >= tol]
     stuck = [r for r in results if not r[3]]
     ok = not tipped and not sagged and not stuck
     parts = "; ".join(f"arm {lab}: max tilt {tilt:.1f}°, tool moved {d * 1000:.1f} mm"
                       for lab, tilt, d, _, _ in results)
     text = (f"Drove {ARM_DRIVE_M:g} m at {req.speed_m_s:g} m/s with the arm extended and "
-            f"{req.payload_kg:g} kg in the gripper (limits: tilt {TILT_MAX_DEG:g}°, tool within "
-            f"{tol * 1000:g} mm of its pose relative to the chassis): {parts}.")
+            f"{req.payload_kg:g} kg in the gripper (limits: tilt {tilt_max:g}°, tool within "
+            f"{tol * 1000:g} mm of its pose relative to the chassis){_margin_note(margin)}: {parts}.")
     cause = None
     if tipped:
         cause = "unstable"
@@ -355,7 +378,7 @@ def drive_with_arm_extended(spec: RobotSpec, req: Requirements, catalog=None) ->
             text += (" With the arm forward or back, speeding up and slowing down tips it about the pitch joints: "
                      "stiffer motors on the shoulder and elbow, or a shorter reach.")
     value, limit = ((max(r[2] for r in results), tol) if cause == "compliance"
-                    else (max(r[1] for r in results), TILT_MAX_DEG))
+                    else (max(r[1] for r in results), tilt_max))
     result = CheckResult(check="drive_with_arm_extended", passed=ok, value=value, limit=limit,
                          message=_msg(text, cause), cause=cause)
     return _run("drive_with_arm_extended", result, last)

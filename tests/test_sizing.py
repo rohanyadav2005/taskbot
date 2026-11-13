@@ -58,6 +58,7 @@ def test_sized_arm_passes_every_static_check_or_says_why(i):
         RESULTS[f"arm {i}"] = res.kind
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("i", range(10))
 def test_sized_mobile_base_passes_every_static_check_or_says_why(i):
     req = MOBILE_CASES[i]
@@ -73,6 +74,7 @@ def test_sized_mobile_base_passes_every_static_check_or_says_why(i):
         RESULTS[f"mobile {i}"] = res.kind
 
 
+@pytest.mark.slow
 def test_property_pass_count(capsys):
     """Runs after the parametrized cases: prints the tally (and keeps it from regressing)."""
     if len(RESULTS) < 40:
@@ -82,7 +84,10 @@ def test_property_pass_count(capsys):
         print(f"\nsizer property test: {sized}/40 sized and pass every static check; "
               f"{sum(v == 'infeasible' for v in RESULTS.values())} infeasible with a reason; "
               f"{sum(v == 'checks' for v in RESULTS.values())} returned as failing checks")
-    assert sized >= 30
+    # 29 since Task 11: three random differential bases (11.5 kg, outdoor or carpet) drove straight
+    # only with 4.9-5.6% error against the test's 5% limit; the sizer now asks for 70% of each sim
+    # limit, so it rejects them with the closest candidate in the reason instead of a borderline pass.
+    assert sized >= 29
     assert sum(v == "checks" for v in RESULTS.values()) == 0  # the sizer never hands back a failing design
 
 

@@ -5,10 +5,14 @@ design, and every other run is infeasible or out of scope with a stated reason."
 import json
 from collections import Counter
 
+import pytest
+
 from taskbot.pipeline import run_pipeline
 from taskbot.schema import load_motor_catalog
 from taskbot.sloppy import SloppyClient
 
+
+pytestmark = pytest.mark.slow
 RUNS = 200
 SIZED = {"PASSED", "FAILED", "APPROXIMATE"}
 

@@ -1,4 +1,4 @@
-"""Static checks for wheeled bases: wheel_torque, top_speed, tip_over, traction.
+"""Static checks for wheeled bases: wheel_torque, top_speed, tip_over, traction, ground_clearance.
 
 Same contract as the arm checks: each takes (spec, requirements, model, catalog) and
 returns a list of CheckResults with a cause on failure. `model` is the robot with its base
@@ -296,4 +296,41 @@ def traction(spec: RobotSpec, req: Requirements, model: mujoco.MjModel,
                         cause=None if ok else "slip")]
 
 
-MOBILE_CHECKS = [wheel_torque, top_speed, tip_over, traction]
+# Ground clearance by terrain (design conventions, unverified): the obstacle a base must roll over
+# without touching (flat: thresholds and cable covers about 15 mm; carpet: pile, rug edges and
+# carpet-to-floor strips about 20-25 mm; outdoor: kerb gaps, roots and stones about 40 mm). The
+# chassis bottom must clear it, and a wheel rolls over a step of up to about half its radius, so
+# the wheel radius must be at least about twice the step it meets (flat 0.03 m, carpet 0.04 m,
+# outdoor 0.06 m, rounded). In this model the chassis bottom sits at half the wheel radius.
+MIN_CLEARANCE_M = {"flat": 0.015, "carpet": 0.025, "outdoor": 0.04}
+MIN_WHEEL_RADIUS_M = {"flat": 0.03, "carpet": 0.04, "outdoor": 0.06}
+
+
+def min_wheel_radius_m(terrain: str) -> float:
+    """The smallest wheel that passes ground_clearance on this terrain (both rules)."""
+    return max(MIN_WHEEL_RADIUS_M[terrain], 2 * MIN_CLEARANCE_M[terrain])
+
+
+def ground_clearance(spec: RobotSpec, req: Requirements, model: mujoco.MjModel,
+                     catalog: dict[str, Motor] | None = None) -> list[CheckResult]:
+    """The chassis bottom clears the terrain's typical obstacle, and the wheels are big enough to
+    roll over it (MIN_CLEARANCE_M, MIN_WHEEL_RADIUS_M)."""
+    base: WheeledBase = spec.base
+    terrain = req.terrain
+    need_c, need_r = MIN_CLEARANCE_M[terrain], MIN_WHEEL_RADIUS_M[terrain]
+    fix = (f"Use wheels of at least {min_wheel_radius_m(terrain):g} m radius (the chassis bottom sits at half "
+           "the wheel radius).")
+    c_ok, r_ok = base.chassis_bottom_m >= need_c - 1e-9, base.wheel_radius_m >= need_r - 1e-9
+    return [
+        CheckResult(check="ground_clearance", passed=c_ok, value=base.chassis_bottom_m, limit=need_c,
+                    cause=None if c_ok else "clearance",
+                    message=f"chassis bottom {base.chassis_bottom_m * 1000:.0f} mm above the ground; {terrain} needs "
+                            f"at least {need_c * 1000:.0f} mm (design convention)." + ("" if c_ok else " " + fix)),
+        CheckResult(check="ground_clearance", passed=r_ok, value=base.wheel_radius_m, limit=need_r,
+                    cause=None if r_ok else "clearance",
+                    message=f"wheel radius {base.wheel_radius_m * 1000:.0f} mm; rolling over {terrain} obstacles needs "
+                            f"at least {need_r * 1000:.0f} mm (design convention)." + ("" if r_ok else " " + fix)),
+    ]
+
+
+MOBILE_CHECKS = [wheel_torque, top_speed, tip_over, traction, ground_clearance]

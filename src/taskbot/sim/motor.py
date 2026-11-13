@@ -62,6 +62,12 @@ PID_PRESET_DYNAMIXEL_I = 100
 FIRMWARE_CYCLE_S = 0.001
 
 
+
+def clip(x, lo, hi):
+    """np.clip for one number, the same value without numpy's per-call overhead (it runs every
+    joint at every sim step)."""
+    return lo if x < lo else hi if x > hi else x
+
 @dataclass(frozen=True)
 class MotorModel:
     motor_id: str
@@ -112,8 +118,8 @@ class MotorModel:
         electrical part (applied - kd*w, i.e. stall * PWM fraction) is limited to ±stall.
         """
         cap, slowed = self.limits(desired, w)
-        total = float(np.clip(desired, -cap, cap))
-        electrical = float(np.clip(total + self.damping * w, -self.stall, self.stall))
+        total = float(clip(desired, -cap, cap))
+        electrical = float(clip(total + self.damping * w, -self.stall, self.stall))
         applied = electrical + self.kd * w
         total = electrical - self.damping * w
         over = abs(desired) > cap + 1e-12

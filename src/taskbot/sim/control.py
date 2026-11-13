@@ -32,6 +32,7 @@ import mujoco
 import numpy as np
 
 from taskbot.sim.model import SimRobot
+from taskbot.sim.motor import clip
 
 DEFAULT_PAYLOAD_MASS_ERROR = 0.2
 
@@ -78,7 +79,7 @@ class MotorController:
             applied, tau[i], sat[i], slow[i] = m.command(desired, qd[i])
             data.qfrc_applied[r.dadr[i]] = applied
             if m.ki and not sat[i]:
-                self._integral[i] = np.clip(self._integral[i] + m.ki * e * dt, -m.rated, m.rated)
+                self._integral[i] = clip(self._integral[i] + m.ki * e * dt, -m.rated, m.rated)
 
         for k, m in enumerate(r.aux_motors):  # fingers hold closed with the gripper motor
             qa, da = r.aux_qadr[k], r.aux_dadr[k]

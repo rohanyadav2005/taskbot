@@ -6,7 +6,7 @@
       "kind": "wheeled_base",
       "name": "base",
       "drive": "differential",
-      "wheel_radius_m": 0.04,
+      "wheel_radius_m": 0.05,
       "wheel_width_m": 0.025,
       "track_width_m": 0.3,
       "wheelbase_m": 0.34,

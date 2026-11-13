@@ -26,4 +26,5 @@ taskbot = ["data/*.json", "data/fake/*.json", "prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: end-to-end replays and property tests with sims; run by default, skip with -m \"not slow\""]
 pythonpath = ["src"]

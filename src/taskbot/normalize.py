@@ -283,6 +283,7 @@ def normalize_requirements(data: dict, task: str = "") -> tuple[dict, list[str]]
             d["speed_m_s"] = MOBILE_DEFAULTS["speed_m_s"]
         if d.get("travel_distance_m") is not None and d["travel_distance_m"] <= 0:
             d["travel_distance_m"] = None
+        _uninvent(d, task, notes)
     if has_arm:
         d["workspace"] = _workspace(d.get("workspace"), d["robot_type"], notes, shrunk)
         dof = d.get("dof_min")
@@ -325,6 +326,39 @@ def normalize_requirements(data: dict, task: str = "") -> tuple[dict, list[str]]
     if d.get("max_budget_usd") is not None and d["max_budget_usd"] <= 0:
         d["max_budget_usd"] = None
     return d, notes
+
+
+# Words in the task that make a slope or an outdoor route plausible; without one, the model's slope
+# is an invention (smoke runs 2026-11-07 and -12: "a flat surface, such as a carpeted floor, with
+# a maximum incline of 15 degrees" for picking toys) and an indoor robot gets INDOOR_MAX_INCLINE_DEG.
+_SLOPE_WORDS = re.compile(r"\b(ramps?|slopes?|sloped|sloping|hills?|hilly|inclines?|inclined|steps?|thresholds?|"
+                          r"outdoors?|outside|gardens?|yards?|backyard|driveways?|kerbs?|curbs?|uphill|downhill|"
+                          r"lawns?|paths?|pavements?|sidewalks?|stairs?)\b")
+INDOOR_MAX_INCLINE_DEG = 5.0  # door thresholds and gentle indoor ramps (design convention, unverified)
+# Items dropped into a separate container: the robot doesn't carry them on its body...
+_INTO_CONTAINER = re.compile(r"\b(drops?|dropping|puts?|putting|places?|placing|toss(es)?|throws?|sorts?)\b.*?"
+                             r"\b(in|into|onto)\s+(an?|the|its|my|their)?\s*(basket|bin|box|jar|bucket|container|"
+                             r"hamper|crate|tub)s?\b")
+# ...unless the task says it does.
+_CARRIES = re.compile(r"\b(carr(y|ies|ying)|deliver\w*|transport\w*|bring\w*|brings|fetch\w*|haul\w*|"
+                      r"on (its|the) (back|top|body|base))\b")
+
+
+def _uninvent(d: dict, task: str, notes: list[str]) -> None:
+    """Mobile requirements the task's own words don't support: a slope steeper than an indoor
+    threshold, and a load on the base when the items go into a separate container."""
+    text = (task or "").lower()
+    if not text.strip():
+        return
+    if d["max_incline_deg"] > INDOOR_MAX_INCLINE_DEG and not _SLOPE_WORDS.search(text):
+        notes.append(f"max_incline_deg {d['max_incline_deg']:g}° reduced to {INDOOR_MAX_INCLINE_DEG:g}°: the task "
+                     "names no ramp, slope, step, threshold or outdoor area, so the robot meets only indoor "
+                     f"thresholds (indoor convention {INDOOR_MAX_INCLINE_DEG:g}°)")
+        d["max_incline_deg"] = INDOOR_MAX_INCLINE_DEG
+    if (d.get("base_payload_kg") or 0) > 0 and _INTO_CONTAINER.search(text) and not _CARRIES.search(text):
+        notes.append(f"base_payload_kg {d['base_payload_kg']:g} kg set to 0: the task drops the items into a "
+                     "separate container and says nothing about carrying anything on the robot")
+        d["base_payload_kg"], d["base_payload_bare_kg"] = 0.0, None
 
 
 def normalize_intent(data: dict, req) -> tuple[dict, list[str]]:

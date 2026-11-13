@@ -84,7 +84,8 @@ benchmark CSV.
   where the stiffest motors with pd held about 0.5 mm). When even they can't meet the tolerance
   in the sims (every remaining failure a compliance miss), the run is INFEASIBLE with the best
   precision any design reached ("holds about X mm");
-- mobile bases: the cheapest wheel motor and smallest radius with `wheel_torque` margin and
+- mobile bases: the cheapest wheel motor (on the smallest chassis it works on) and the smallest
+  radius, at least the terrain's `ground_clearance` minimum, with `wheel_torque` margin and
   `top_speed`, passing `tip_over` and `traction` and verified with the `drive_straight` and
   `incline` sims (and `turn_in_place` for skid-steered four_wheel bases: at most 3 wheel sizes per
   motor, and no larger chassis once only turning fails, since a scaled-up chassis is heavier in the
@@ -94,6 +95,11 @@ benchmark CSV.
   further, the targets move forward and the arm is sized again for them. Wheel sims that failed are
   remembered by robot mass (a heavier robot on the same wheels fails too), and the incline sim stops
   once the base has slid back past its limit, so each new intent's search is quick.
+
+The sizer's own sim verifications pass only within 70% of each test's limit (the incline climbed
+20% further), so a design that only just passes isn't chosen; floating-point differences between
+platforms then can't flip the test that follows (the smoke test's toy picker passed on Windows and
+failed on Linux with the same replies before this).
 
 When the sizer finds an intent that no catalog part can carry or drive, the loop asks for a
 different intent (or tries code's next untried one) rather than stopping; the run is INFEASIBLE
@@ -402,6 +408,10 @@ the base, never a box centred on it. The normaliser runs first and fixes both:
 - A mobile manipulator drives to each target, so its workspace is what the arm covers once the
   base stops: at most 0.25 m deep from 0.2 m ahead of the chassis centre and 0.2 m to each side, at
   the heights the task gives (a design convention, unverified).
+- A mobile robot's slope above 5° is cut to 5° when the task names no ramp, slope, step,
+  threshold or outdoor place, and its base load is 0 when the task drops the items into a separate
+  basket, bin, box or jar and says nothing about carrying them (the 7B model invented a 15° ramp
+  and 4 kg on the base for picking up toys); each with a note.
 - Targets beyond 1.5 m are cut to 1.5 m, and the requirements get a `CUT SHORT:` assumption; so do
   requirements code guessed (`REQUIREMENTS FALLBACK:`). A design for them is APPROXIMATE at best,
   never PASSED (exit 2), and an infeasible verdict says what was cut.
@@ -455,6 +465,7 @@ loads are the whole robot, `payload_kg` at the tool point and `base_payload_kg` 
 | `top_speed` | 80% of the wheel motor's no-load speed × wheel radius > `speed_m_s` |
 | `tip_over` | Centre of mass inside the support polygon shrunk 15%, for the arm stowed and extended in 8 directions, on flat ground and on the incline facing 8 directions (COM shifts h·tanθ downhill); cause `unstable` |
 | `traction` | Climbing force < μ × normal load on the driven wheels (moment balance; a differential robot climbs forwards); cause `slip` |
+| `ground_clearance` | Chassis bottom (half a wheel radius up) ≥ 15 / 25 / 40 mm and wheel radius ≥ 0.03 / 0.04 / 0.06 m on flat / carpet / outdoor: the terrain's typical obstacle (thresholds, rug edges, kerb gaps), and a wheel rolls over a step of about half its radius (design conventions, unverified); cause `clearance` |
 
 Reach uses 2000 random poses and then refines the nearest ones with IK, because random
 samples alone are too sparse for a 1 cm tolerance. All sampling uses fixed seeds.
