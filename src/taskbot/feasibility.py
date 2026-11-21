@@ -158,6 +158,8 @@ def check_feasibility(req: Requirements, catalog: dict[str, Motor]) -> Feasibili
     return out
 
 
+_WHEELS = re.compile(r"each of (\d) driven wheels needs ([\d.]+) Nm to accelerate ([\d.]+) kg at [\d.]+ m/s² "
+                     r"up ([\d.]+)° on (\w+).*?gives ([\d.]+) Nm")
 _SIZED = re.compile(r"(\w+) needs ([\d.]+) Nm to hold the sized arm out straight with ([\d.]+) kg")
 
 
@@ -188,7 +190,20 @@ def in_short(req: Requirements, catalog: dict[str, Motor], problems: list[str], 
         return (f"In short: holding {p:.3g} kg at {lever:.2g} m needs about {need:.2g} Nm at the shoulder; the "
                 f"strongest motor here ({strongest.id}) gives {usable:.3g} Nm. That needs "
                 + ", or ".join(ways) + ".")
-    first = (problems[0] if problems else "").split(". ")[0].rstrip(".")
+    wheels = _WHEELS.search(text)
+    if wheels:
+        n, need, kg, deg, terrain, gives = wheels.groups()
+        return (f"In short: moving {float(kg):.3g} kg up {float(deg):g}° on {terrain} ground needs about "
+                f"{float(need):.2g} Nm at each of {n} driven wheels; the best wheel motor here gives "
+                f"{float(gives):.2g} Nm. That needs stronger wheel motors than this catalog has, a lighter load, "
+                "or a flatter, smoother route.")
+    if "drives this" in text and req.is_mobile:
+        tests = list(dict.fromkeys(re.findall(r"\b(turn_in_place|drive_straight|incline|traction|tip_over|top_speed|"
+                                             r"drive_with_arm_extended)\b", text)))
+        return (f"In short: no wheel motor, wheel size and chassis from this catalog passes the drive tests on "
+                f"{req.terrain} ground" + (f" ({', '.join(tests)})" if tests else "") + "."
+                + (f" What would work: {options[0]}" if options else ""))
+    first = re.sub(r"^Intent \d+ \([^)]*\): ", "", (problems[0] if problems else "")).split(". ")[0].rstrip(".")
     return f"In short: {first}." + (f" What would work: {options[0]}" if options else "")
 
 

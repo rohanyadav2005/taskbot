@@ -143,12 +143,44 @@ def test_cast_iron_pan_stays_infeasible_and_says_what_would_work(tmp_path):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("pid", ["easy_arm_cat_feeder", "mm_shelf_restock", "mm_tennis_balls"])
+@pytest.mark.parametrize("pid", ["easy_arm_cat_feeder", "mm_shelf_restock"])
 def test_scene_fixes_pass(pid, tmp_path):
     """Benchmark: INFEASIBLE. Cat feeder: heights from the floor for a bin on the counter. Shelf: the
-    bottom shelf up to 1.2 m. Tennis: an "outdoor" court needed 0.08 m wheels and a 0.5 kg ball."""
+    bottom shelf up to 1.2 m, 0.25 kg for a packet of crisps, 10 kg on the base."""
     code, run, _ = replay(pid, tmp_path)
     assert code == 0 and run["status"] == "PASSED", run["reason"]
+
+
+@pytest.mark.slow
+def test_laundry_basket_carries_its_stated_5_kg(tmp_path):
+    """Benchmark: PASSED, but sized for 0 kg on the base (qwen left the load out and code's default
+    was 0). The task carries a stated 5 kg: 6.25 kg with the margin, and it still passes."""
+    code, run, report = replay("mobile_laundry_basket", tmp_path)
+    assert code == 0 and run["status"] == "PASSED"
+    assert "base_payload_bare_kg 0 kg set to 5 kg: the task carries" in report
+
+
+@pytest.mark.slow
+def test_fetching_the_remote_gets_an_arm(tmp_path):
+    """Benchmark: PASSED as a "mobile" robot with no arm, for a task that picks up the remote."""
+    code, run, report = replay("mm_remote_fetch", tmp_path)
+    assert code == 0 and run["status"] == "PASSED"
+    assert "robot_type 'mobile' read as 'mobile_manipulator'" in report
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pid, words", [
+    ("mm_tennis_balls", "no wheel motor, wheel size and chassis from this catalog passes the drive tests on outdoor"),
+    ("mobile_garden_cart", "on outdoor ground needs about 3.2 Nm at each of 2 driven wheels"),
+])
+def test_outdoor_places_are_outdoor_and_say_why_they_are_infeasible(pid, words, tmp_path):
+    """A court and a garden path are outdoor ground (Task 12 E): 0.08 m wheels for clearance,
+    rolling resistance 0.05. No catalog base passes the drive tests there; the verdict says so in one line."""
+    code, run, report = replay(pid, tmp_path)
+    assert code == 4 and run["status"] == "INFEASIBLE"
+    assert run["reason"].startswith("In short:") and words in run["reason"]
+    if pid == "mobile_garden_cart":  # qwen wrote "paved" (read as flat); for the court it wrote outdoor itself
+        assert "terrain 'flat' read as 'outdoor': the task drives outdoors" in report
 
 
 @pytest.mark.slow
