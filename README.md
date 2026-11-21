@@ -55,7 +55,7 @@ taskbot design "..." --backend fake                                   # offline,
 (`taskbot/intent.py`, prompt `prompts/intent.md`): robot type, arm layout (`yaw_pitch_pitch`,
 `yaw_pitch_pitch_pitch`, `yaw_pitch_pitch_wristroll`), gripper, link material policy, drive, caster
 and arm mount. `taskbot/sizing.py` computes every number (below), every static check runs on the
-result, then the sims; `taskbot/autofix.py` applies fixes with known numbers (a stronger motor,
+result, then the sims; `taskbot/autofix.py` applies fixes with known numbers (a stronger motor, a stiffer motor on the joint a sim names when the tool misses its tolerance through compliance,
 the missing length, a verified collision fix, a wider joint range) for up to 5 rounds, and only
 then is the LLM asked for a different intent (at most 3 times; when its reply can't be used, code
 tries its next untried layout, drive or mount instead). `--nearest` builds the nearest
@@ -65,7 +65,9 @@ up to `--max-rounds` (default 5). The mode is recorded in `run.json`, `report.md
 benchmark CSV.
 
 **What the sizer computes** (`taskbot/sizing.py`):
-- arm: a riser at mid-workspace height, raised until `self_collision` passes (the same verified
+- arm: a riser at mid-workspace height (0.04–0.35 m on a fixed base; on a mobile manipulator a mast
+  up to 0.9 m, so the shoulder sits near table, counter and shelf heights; tip_over and the drive
+  sims check the base with it; a design convention, unverified), raised until `self_collision` passes (the same verified
   search as the collision fixes); upper arm and forearm reaching the farthest target from the
   shoulder exactly (reach_m already holds the reach margin), split so the nearest target lies inside
   the inner radius; hollow tube links
@@ -252,6 +254,11 @@ A prompt passes when an in-scope task ends with a design passing every check and
 out-of-scope task is rejected. A **strict pass** also meets every expectation about the
 extracted requirements (robot type, reach, payload, tolerance, terrain): a design that passes
 its checks for the wrong requirements is a pass, not a strict pass. Both rates are reported.
+Each prompt also has an expected outcome (`expect.outcome`: `pass`, `infeasible` or
+`out_of_scope`, judged from the task's own numbers and the catalog, never from a run), and the
+report gives a **correct outcome rate** next to the pass rate: PASS where a pass is expected,
+INFEASIBLE where no robot from the catalog can do the task (a 1.5 kg pan, a full 1 litre jug), and
+rejections of out-of-scope tasks.
 
 The run's state is in `bench/results/<name>/results.jsonl`. If it stops (rate limit, crash,
 Ctrl-C), run the same command again to continue; on a later day add `--name <name>`.
@@ -394,13 +401,13 @@ beat, using the same numbers as the checks:
 
 A `Requirements` validator also rejects a workspace whose corners are farther than `reach_m` from
 the nearest plausible shoulder position (on the base axis 0.03–0.38 m up for an arm; over the
-workspace centre 0.05–0.47 m up for a mobile manipulator), and one that reaches into the robot's own
+workspace centre 0.05–1.02 m up for a mobile manipulator), and one that reaches into the robot's own
 base (|x| and |y| under 0.08 m below z = 0.1 m): the workspace is where the targets are, relative to
 the base, never a box centred on it. The normaliser runs first and fixes both:
 
 - `reach_m` is derived from the workspace: its farthest corner from TaskBot's own shoulder (on the
   base axis, or the chassis centre's axis, at mid-workspace height within what the riser allows:
-  0.07–0.38 m for an arm, 0.11–0.47 m for a mobile manipulator) × 1.10, rounded up to 1 mm. That
+  0.07–0.38 m for an arm, 0.11–1.02 m for a mobile manipulator, whose riser is a mast up to 0.9 m) × 1.10, rounded up to 1 mm. That
   shoulder is never nearer than the validator's, so a derived `reach_m` always passes.
 - A box around the base or turret is the same targets in front of it, since the base yaw turns the
   arm to any side: it is turned a multiple of 90° so its longest reach points forward and its near
@@ -408,10 +415,31 @@ the base, never a box centred on it. The normaliser runs first and fixes both:
 - A mobile manipulator drives to each target, so its workspace is what the arm covers once the
   base stops: at most 0.25 m deep from 0.2 m ahead of the chassis centre and 0.2 m to each side, at
   the heights the task gives (a design convention, unverified).
-- A mobile robot's slope above 5° is cut to 5° when the task names no ramp, slope, step,
-  threshold or outdoor place, and its base load is 0 when the task drops the items into a separate
-  basket, bin, box or jar and says nothing about carrying them (the 7B model invented a 15° ramp
-  and 4 kg on the base for picking up toys); each with a note.
+- What the task's own words say (`taskbot/scene.py`; the first real benchmark showed the 7B model
+  getting these wrong). Each change is a note in the report:
+  - **Robot type**, like the scope gate: travel words (deliver, fetch, bring, carry, drive,
+    collect; across/around/through a room, office, house, warehouse; off or on the floor) make it
+    mobile, or a mobile manipulator when the task also picks up, holds or handles something;
+    fixed-place words with no travel word (desk, table, tray, conveyor, workbench, board, jig,
+    stand, counter, next to it) make it an arm. Neither: the model's choice stands, except that a
+    task that handles objects is never a plain `mobile` robot (it gets an arm, a parallel gripper
+    and targets up to just above the surfaces it names).
+  - **Terrain**: any outdoor place (garden, yard, outside, street, lawn, park, court, path) makes it
+    outdoor; otherwise an indoor place (office, house, room, kitchen, warehouse, shop) makes it
+    flat, or carpet when the task says carpet.
+  - **Slope**: capped when the task names no ramp, slope, hill or step: 5° indoors, 8° outdoors.
+  - **Base load**: none unless the task says the robot carries something (carry, bring, deliver,
+    transport, "a full ..."). A stated mass it carries is the load ("a full 5 kg laundry basket");
+    with one kind of object and no mass, its typical mass (up to 10 of a plural).
+  - **Payload**: the requirements name the object held (`held_object`) and how many at once
+    (`held_count`); code takes the payload from a table of about 100 everyday household, kitchen,
+    office, workshop, garden and toy objects (typical masses, unverified) when it knows the object.
+    Without that, a payload more than twice the heaviest object the task names is lowered to it.
+    A mass the task states always stands.
+  - **Heights**: a fixed arm on a desk, table or counter whose targets all start 0.5 m or more up
+    has them measured from the floor, so they are lowered to start at the surface; "the bottom
+    shelf" (and no higher one) caps the targets at 0.4 m.
+  - **Budget**: none unless the task names a price, cost or budget.
 - Targets beyond 1.5 m are cut to 1.5 m, and the requirements get a `CUT SHORT:` assumption; so do
   requirements code guessed (`REQUIREMENTS FALLBACK:`). A design for them is APPROXIMATE at best,
   never PASSED (exit 2), and an infeasible verdict says what was cut.
@@ -419,7 +447,11 @@ the base, never a box centred on it. The normaliser runs first and fixes both:
 If the gate fails, the requirements go back to the requirements step once, with the numbers and
 "keep them realistic for the described scene, don't just shrink them to fit". If they are still
 infeasible, the run stops without a design: `report.md` says why and what would make it possible
-(the largest payload at this reach, the longest reach with this payload), exit code 4.
+(the largest payload at this reach, the longest reach with this payload), exit code 4. Every
+INFEASIBLE run starts its report, its CLI output and its `run.json` reason with one line a user
+understands: "In short: holding 1.88 kg at 0.62 m needs about 12 Nm at the shoulder; the strongest
+motor here (xm540_w270) gives 2.83 Nm. That needs an industrial arm, or a load under 0.38 kg
+(margin included) at that distance, or the work within 0.15 m of the base."
 
 The repair loop also stops early:
 - when a check says no design can pass (cause `infeasible`, from `static_torque`), with the same

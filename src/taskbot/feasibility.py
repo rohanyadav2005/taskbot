@@ -2,7 +2,8 @@
 requirements step and the design step, with bounds no design can beat:
 
     arm types   holding torque at the shoulder with weightless links and motors: payload at
-                the needed reach plus the lightest catalog gripper of the required kind just
+                the needed reach (reach_m, from the sizer's shoulder rule, a mobile
+                manipulator's mast included) plus the lightest catalog gripper of the required kind just
                 behind it, against the strongest supported motor's usable torque (80% of
                 rated). static_torque uses the same floor (holding_torque_floor_nm).
     mobile      traction: the slope, rolling resistance and 0.5 m/s² acceleration need a
@@ -15,6 +16,7 @@ The workspace-within-reach rule is a Requirements validator (requirements.farthe
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -74,7 +76,10 @@ def holding_torque_floor_nm(payload_kg: float, gripper_kg: float, tool_m: float,
 
 
 def needed_reach_m(req: Requirements) -> float:
-    """Farthest horizontal distance the task needs: reach_m or the farthest workspace corner."""
+    """Farthest distance the task needs: reach_m or the farthest workspace corner. reach_m is derived
+    from the shoulder where the sizer puts it (requirements.shoulder_point, a mobile manipulator's
+    mast included), and static_torque holds the arm out straight at that length, so the gate and the
+    sizer use the same lever."""
     ws = req.workspace
     corners = max(np.hypot(x, y) for x in (ws.x_min, ws.x_max) for y in (ws.y_min, ws.y_max)) if ws else 0.0
     return max(req.reach_m or 0.0, float(corners))
@@ -151,6 +156,40 @@ def check_feasibility(req: Requirements, catalog: dict[str, Motor]) -> Feasibili
     if req.is_mobile:
         _mobile(req, catalog, out)
     return out
+
+
+_SIZED = re.compile(r"(\w+) needs ([\d.]+) Nm to hold the sized arm out straight with ([\d.]+) kg")
+
+
+def in_short(req: Requirements, catalog: dict[str, Motor], problems: list[str], options: list[str]) -> str:
+    """One line a user understands for an INFEASIBLE run: what it needs, what the catalog gives, and
+    what would work. Arm torque cases get numbers (the gate's weightless-arm floor, or the sized
+    arm's shoulder torque); anything else, the first problem's first sentence and the first option."""
+    text = " ".join(problems)
+    sized = _SIZED.search(text)
+    if req.has_arm and ("at the shoulder" in text or sized):
+        strongest = strongest_position_motor(catalog)
+        usable = TORQUE_SAFETY_FRACTION * strongest.rated_torque_nm
+        m_g, tool, _ = lightest_gripper(req.gripper_kind if req.gripper_needed else None, catalog)
+        lever = needed_reach_m(req)
+        p = req.payload_kg
+        need = holding_torque_floor_nm(p, m_g, tool, lever)
+        own = 0.0
+        if sized:  # the sized arm: its own links and motors take part of the torque
+            need = max(need, float(sized[2]))
+            own = max(need - G * p * lever, 0.0)
+        max_payload = (usable - own) / (G * lever) - m_g * max(lever - tool, 0.0) / lever
+        max_reach = (usable - own) / G / (p + m_g) if p + m_g > 0 else float("inf")
+        ways = ["an industrial arm"]
+        if max_payload > 0.005:
+            ways.append(f"a load under {max_payload:.2g} kg (margin included) at that distance")
+        if 0.05 < max_reach < lever:
+            ways.append(f"the work within {max_reach:.2g} m of the base")
+        return (f"In short: holding {p:.3g} kg at {lever:.2g} m needs about {need:.2g} Nm at the shoulder; the "
+                f"strongest motor here ({strongest.id}) gives {usable:.3g} Nm. That needs "
+                + ", or ".join(ways) + ".")
+    first = (problems[0] if problems else "").split(". ")[0].rstrip(".")
+    return f"In short: {first}." + (f" What would work: {options[0]}" if options else "")
 
 
 def retry_message(task: str, req: Requirements, f: Feasibility) -> str:

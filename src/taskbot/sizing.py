@@ -57,6 +57,11 @@ BASE_FOOTPRINT_M = 0.12
 BASE_HEIGHT_M = 0.03
 RISER_MIN_M = 0.04
 RISER_MAX_M = 0.35
+# A mobile manipulator's riser is a mast: tables, counters and shop shelves are 0.45-1.0 m up, and a
+# 0.35 m riser left the arm 0.7-1.3 m long to reach them (benchmark 2026-11-20: cafe cups, shelves).
+# The mast puts the shoulder near the targets' height; tip_over and the drive sims check the base
+# with it. Design convention (a light aluminium tube mast), unverified.
+MAST_MAX_M = 0.9
 RISER_RADIUS_M = 0.025
 MAX_PITCH_RAD = 2.6
 WRIST_PITCH_RAD = 2.0
@@ -179,6 +184,9 @@ class _Arm:
         self.shift = 0.0        # upper arm this much shorter than the even split (forearm longer)
         self.near = 0.0
         self.stiff = req.position_tolerance_m <= TIGHT_TOLERANCE_M  # tight tolerance: the stiffest motors
+
+    def riser_max(self) -> float:
+        return RISER_MAX_M if self.base["kind"] == "fixed_base" else MAST_MAX_M
 
     def base_top(self) -> float:
         b = self.base
@@ -326,7 +334,7 @@ class _Arm:
 
         def make(h):
             return self.as_dict(riser=h)
-        found = checks._search(make, self.riser, RISER_MAX_M, self.req, self.catalog, smallest=True, step=0.005)
+        found = checks._search(make, self.riser, self.riser_max(), self.req, self.catalog, smallest=True, step=0.005)
         if found is None or abs(found[0] - self.riser) < 1e-6:
             return False
         steps.append(f"turret {found[0]:.3g} m (was {self.riser:.3g} m): links hit the base in {frac:.0%} of "
@@ -420,9 +428,10 @@ def _stiffen_yaw_for_driving(arm: _Arm, req, catalog, steps: list[str]) -> bool:
 
 def _size_arm(arm: _Arm, steps: list[str]) -> tuple[str, float, float] | None:
     ws = arm.req.workspace
-    arm.riser = float(np.clip((ws.z_min + ws.z_max) / 2 - arm.base_top(), RISER_MIN_M, RISER_MAX_M))
-    steps.append(f"turret {arm.riser:.3g} m: puts the shoulder at mid-workspace height "
-                 f"({(ws.z_min + ws.z_max) / 2:.3g} m), at least {RISER_MIN_M} m")
+    arm.riser = float(np.clip((ws.z_min + ws.z_max) / 2 - arm.base_top(), RISER_MIN_M, arm.riser_max()))
+    what = "turret" if arm.riser_max() == RISER_MAX_M else "mast"
+    steps.append(f"{what} {arm.riser:.3g} m: puts the shoulder at mid-workspace height "
+                 f"({(ws.z_min + ws.z_max) / 2:.3g} m), at least {RISER_MIN_M} m, at most {arm.riser_max():g} m")
     failing = None
     for _ in range(GEOMETRY_PASSES):
         arm.size_lengths(steps)

@@ -16,13 +16,13 @@ from taskbot.prompts import load_prompt
 # the base and riser allow (taskbot.sizing: base top + RISER_MIN_M to RISER_MAX_M). The normaliser
 # derives reach_m from this shoulder (taskbot.normalize). Design conventions, not measured data.
 ARM_SHOULDER_Z_M = (0.07, 0.38)      # fixed base 0.03 m + riser 0.04-0.35 m
-MOBILE_SHOULDER_Z_M = (0.11, 0.47)   # chassis top about 0.07-0.12 m + riser 0.04-0.35 m
+MOBILE_SHOULDER_Z_M = (0.11, 1.02)   # chassis top about 0.07-0.12 m + mast 0.04-0.9 m (sizing.MAST_MAX_M)
 # The validator only checks that reach_m and the workspace agree, from the nearest plausible
 # shoulder: on the base axis 0.03-0.38 m up (an arm), anywhere over the workspace centre 0.05-0.47 m
 # up (a mobile manipulator). That is never farther than TaskBot's own shoulder, so a reach_m the
 # normaliser derived always passes.
 PLAUSIBLE_ARM_SHOULDER_Z_M = (0.03, 0.38)
-PLAUSIBLE_MOBILE_SHOULDER_Z_M = (0.05, 0.47)
+PLAUSIBLE_MOBILE_SHOULDER_Z_M = (0.05, 1.02)
 WORKSPACE_REACH_TOLERANCE_M = 0.01
 # The robot's own base occupies |x|, |y| < BASE_HALF_WIDTH_M below BASE_REGION_TOP_M; a workspace
 # reaching into that region would ask the tool to go through the base (design convention).
@@ -118,6 +118,13 @@ class Requirements(BaseModel):
     payload_bare_kg: NonNegativeFloat | None = Field(
         default=None, description="Arm types: the bare mass the gripper holds in one go, NO margin "
         "(e.g. a cup with 250 ml of water: 0.27 kg). Code adds the 25% margin.")
+    held_object: str | None = Field(
+        default=None, description="Arm types: the object the gripper holds, in plain words (e.g. "
+        "\"a chess piece\", \"a coffee mug\", \"a soldering iron\"). Code looks it up in a table of "
+        "everyday objects and computes the payload from it when it is there.")
+    held_count: int | None = Field(
+        default=None, ge=1, le=50, description="Arm types: how many of held_object the gripper holds at once "
+        "(usually 1).")
     workspace: Workspace | None = Field(
         default=None, description="Arm types only. For a mobile_manipulator, in the robot frame: "
         "origin on the ground under the chassis centre, x forward, z up.")

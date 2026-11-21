@@ -71,6 +71,13 @@ class Expectations(BaseModel):
     base_payload_kg: Range | None = None
     tolerance_m: Range | None = None
     terrain: Literal["flat", "carpet", "outdoor"] | None = None
+    # The right outcome for this prompt: a passing design, an honest INFEASIBLE (no robot from the
+    # catalog can do the task as stated), or a rejection as out of scope. Default: from should_reject.
+    outcome: Literal["pass", "infeasible", "out_of_scope"] | None = None
+
+    @property
+    def expected_outcome(self) -> str:
+        return self.outcome or ("out_of_scope" if self.should_reject else "pass")
 
     @field_validator("payload_kg", "base_payload_kg", "tolerance_m")
     @classmethod
@@ -81,9 +88,12 @@ class Expectations(BaseModel):
 
     @model_validator(mode="after")
     def _reject_alone(self) -> Expectations:
-        others = [k for k in type(self).model_fields if k != "should_reject" and getattr(self, k) is not None]
+        others = [k for k in type(self).model_fields if k not in ("should_reject", "outcome")
+                  and getattr(self, k) is not None]
         if self.should_reject and others:
             raise ValueError(f"should_reject: true can't be combined with {others}")
+        if self.outcome is not None and (self.outcome == "out_of_scope") != self.should_reject:
+            raise ValueError("outcome: out_of_scope goes with should_reject: true, and only with it")
         return self
 
     @property
@@ -229,6 +239,8 @@ class Record:
     provider: str = ""
     design_mode: str = "hybrid"
     approximate: str | None = None  # --nearest relaxed this requirement: never a pass
+    expected_outcome: str = "pass"   # pass, infeasible or out_of_scope (prompts.yaml expect.outcome)
+    outcome_correct: bool | None = None  # PASS where a pass is expected, INFEASIBLE where that is, rejections
 
     @property
     def scored(self) -> bool:
@@ -259,7 +271,8 @@ def run_one(p: BenchPrompt, client: LLMClient, run_dir: Path, catalog, meta: Run
         shutil.rmtree(out_root)  # a re-run (after an error) starts clean
     out_root.mkdir(parents=True)
     rec = Record(p.id, p.category, p.split, p.prompt, DONE, p.expect.should_reject,
-                 backend=meta.backend, model=meta.model, provider=meta.provider, design_mode=meta.design_mode)
+                 backend=meta.backend, model=meta.model, provider=meta.provider, design_mode=meta.design_mode,
+                 expected_outcome=p.expect.expected_outcome)
     start = time.monotonic()
     try:
         result = run_pipeline(client, p.prompt, catalog, out_root, max_rounds=max_rounds,
@@ -293,7 +306,33 @@ def run_one(p: BenchPrompt, client: LLMClient, run_dir: Path, catalog, meta: Run
     rec.json_retries, rec.rate_limit_waits = u.json_retries, u.rate_limit_waits
     rec.time_s = round(time.monotonic() - start, 2)
     rec.strict_pass = bool(rec.passed and rec.expectations_met)
+    if rec.scored:
+        rec.outcome_correct = outcome_correct(rec)
     return rec
+
+
+def outcome_correct(r: Record) -> bool:
+    """The run ended the way the prompt's expected outcome says: a pass, an INFEASIBLE stop, or a
+    rejection. An APPROXIMATE design is never correct."""
+    if r.expected_outcome == "out_of_scope":
+        return bool(r.rejected)
+    if r.rejected or r.approximate:
+        return False
+    if r.expected_outcome == "infeasible":
+        return r.infeasible
+    return r.passed
+
+
+_UNUSABLE_REPLY = re.compile(r"no usable|repair request after round|invalid json|not valid json", re.I)
+
+
+def stop_entry(reason: str) -> dict:
+    """Why the loop stopped, for the unfixed failures: a model reply that couldn't be used is
+    invalid_json at repair_request; anything else (fixes ran out, repeating designs, infeasible
+    intents) is cause "stopped" at stop_reason, with the reason itself."""
+    if _UNUSABLE_REPLY.search(reason):
+        return {"check": "repair_request", "cause": "invalid_json", "message": reason}
+    return {"check": "stop_reason", "cause": "stopped", "message": reason}
 
 
 def _score_result(rec: Record, p: BenchPrompt, result, run_dir: Path) -> None:
@@ -337,7 +376,7 @@ def _score_result(rec: Record, p: BenchPrompt, result, run_dir: Path) -> None:
         rec.unfixed = [{"check": r.check, "cause": r.cause or "none", "message": r.message}
                        for r in o.final.failures]
         if o.stop_reason:
-            rec.unfixed.append({"check": "repair_request", "cause": "invalid_json", "message": o.stop_reason})
+            rec.unfixed.append(stop_entry(o.stop_reason))
 
 
 # --------------------------------------------------------------------------- running
@@ -428,7 +467,7 @@ CSV_FIELDS = ["id", "split", "category", "status", "passed", "strict_pass", "rej
               "robot_type_correct", "expectations_met", "expectation_failures", "rounds",
               "final_failures", "unfixed_count", "tokens_in", "tokens_out", "json_retries",
               "rate_limit_waits", "time_s", "report", "backend", "model", "provider", "design_mode",
-              "approximate", "error"]
+              "approximate", "expected_outcome", "outcome_correct", "error"]
 
 
 def _yn(v: bool | None) -> str:
@@ -444,7 +483,7 @@ def write_csv(records: list[Record], path: Path, run_name: str) -> None:
             row |= {k: _yn(getattr(r, k)) for k in ("passed", "strict_pass", "rejected", "infeasible", "should_reject",
                                                      "rejection_correct",
                                                      "requirements_valid", "valid_spec", "robot_type_correct",
-                                                     "expectations_met")}
+                                                     "expectations_met", "outcome_correct")}
             row["expectation_failures"] = "; ".join(r.expectation_failures)
             row["final_failures"] = "; ".join(f"{c['check']}:{c['cause'] or 'none'}"
                                               for c in r.final_checks if not c["passed"])
@@ -497,6 +536,9 @@ def render_markdown(records: list[Record], meta: RunMeta, run_name: str) -> str:
     else:
         passed_rounds = [r.rounds for r in main if r.passed and r.rounds]
         out += [f"- **Overall pass rate (main prompts): {_pct(sum(r.passed for r in main), len(main))}**",
+                f"- **Correct outcome rate (main prompts): {_pct(sum(bool(r.outcome_correct) for r in main), len(main))}**"
+                " (PASS where a pass is expected, INFEASIBLE where the task is beyond the catalog, rejections of "
+                "out-of-scope tasks; expect.outcome in the prompts file)",
                 f"- **Strict pass rate (main prompts): {_pct(sum(r.strict_pass for r in main), len(main))}**",
                 f"- Holdout pass rate (reported separately): {_pct(sum(r.passed for r in hold), len(hold))}, "
                 f"strict {_pct(sum(r.strict_pass for r in hold), len(hold))}"
@@ -552,14 +594,16 @@ def render_markdown(records: list[Record], meta: RunMeta, run_name: str) -> str:
             out.append(f"- **{pid}** `{u['check']}`: {msg}")
         out.append("")
     out += ["## Every prompt", "",
-            "| Id | Split | Category | Result | Robot type | Expectations | Rounds | Tokens | JSON retries | Time (s) | Report |",
-            "|---|---|---|---|---|---|---|---|---|---|---|"]
+            "| Id | Split | Category | Result | Expected outcome | Robot type | Expectations | Rounds | Tokens | JSON retries | Time (s) | Report |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in records:
         exp = "" if r.expectations_met is None else ("met" if r.expectations_met else
                                                        "missed: " + "; ".join(r.expectation_failures))
         rtype = (r.robot_type or "") + ("" if r.robot_type_correct is None else (" ✓" if r.robot_type_correct else " ✗"))
         link = f"[report]({run_name}/{r.report})" if r.report else ""
-        out.append(f"| {r.id} | {r.split} | {r.category} | {_outcome(r)} | {rtype} | {exp.replace('|', '/')} | "
+        expected = r.expected_outcome.replace("_", " ") + ("" if r.outcome_correct is None else
+                                                           (" ✓" if r.outcome_correct else " ✗"))
+        out.append(f"| {r.id} | {r.split} | {r.category} | {_outcome(r)} | {expected} | {rtype} | {exp.replace('|', '/')} | "
                    f"{r.rounds or ''} | {r.tokens_in + r.tokens_out} | {r.json_retries} | {r.time_s:g} | {link} |")
     errs = [r for r in records if r.status in (ERROR, RATE_LIMITED)]
     if errs:

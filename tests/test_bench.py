@@ -154,8 +154,10 @@ def test_fake_runner_scores_each_prompt(fake_run):
     assert stuck.status == "done" and not stuck.passed and stuck.rounds == 3
     assert stuck.stop_reason.startswith("repeating designs: round 3 is the same as round 1")
     unfixed = {u["check"]: u for u in stuck.unfixed}
-    assert unfixed["wheel_torque"]["cause"] == "saturated"
-    assert "stronger wheel motor" in unfixed["wheel_torque"]["message"]
+    # Task 12: the task names no carpet, so the terrain is flat and the wheels run out of speed, not torque.
+    assert unfixed["wheel_torque"]["cause"] == "speed_limited"
+    assert "use a faster wheel motor" in unfixed["wheel_torque"]["message"]
+    assert unfixed["stop_reason"]["cause"] == "stopped"  # not "invalid_json at repair_request"
 
 
 def test_prompts_without_a_fake_answer_are_not_failures(fake_run):
@@ -310,7 +312,7 @@ def test_fake_report_has_the_warning_and_no_headline_rate(fake_run, tmp_path):
     assert FAKE_WARNING in "\n".join(text.splitlines()[:5])
     assert "Overall pass rate" not in text and "No headline pass rate" in text
     assert "1 with no fake response (not counted)" in text  # the turret prompt is stopped by the scope gate
-    assert "### saturated" in text and "mobile_laundry_basket** `wheel_torque`" in text
+    assert "### speed_limited" in text and "mobile_laundry_basket** `wheel_torque`" in text
     assert "[report](test_run/out/mobile_office_box/" in text
     assert "| mobile | 2 | 1/2 (50%)" in text
 
@@ -326,9 +328,9 @@ def test_real_backend_report_has_headline_holdout_and_unfixed_messages(fake_run,
     assert "**Overall pass rate (main prompts): 3/4 (75%)**" in text  # + the turret, rejected by the scope gate
     assert "Holdout pass rate (reported separately): 1/1 (100%)" in text
     assert "Out-of-scope rejection accuracy: 2/2 (100%)" in text
-    assert "## Unfixed failures" in text and "Even at rest it is short" in text
+    assert "## Unfixed failures" in text and "It has the torque at rest but not at this speed" in text
     assert "## Not scored: errors" in text and "HTTP 500 boom" in text
-    assert "| wheel_torque | saturated | 1 | 1 |" in text
+    assert "| wheel_torque | speed_limited | 2 | 1 |" in text
 
 
 def test_csv_has_one_row_per_prompt(fake_run, tmp_path):
@@ -338,7 +340,7 @@ def test_csv_has_one_row_per_prompt(fake_run, tmp_path):
     rows = {r["id"]: r for r in csv.DictReader(path.open(newline="", encoding="utf-8"))}
     assert set(rows) == set(recs)
     stuck = rows["mobile_laundry_basket"]
-    assert stuck["passed"] == "n" and stuck["rounds"] == "3" and "wheel_torque:saturated" in stuck["final_failures"]
+    assert stuck["passed"] == "n" and stuck["rounds"] == "3" and "wheel_torque:speed_limited" in stuck["final_failures"]
     assert rows["oos_coffee_drone"]["rejection_correct"] == "y"
     assert rows["vague_grandma"]["status"] == "no_fake_response"
 

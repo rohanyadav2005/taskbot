@@ -71,7 +71,10 @@ def test_invented_slope_and_base_load_are_removed_with_notes():
     ("a cart that drives up the garden ramp and drops leaves in a bin", 15, 0.0),
     ("a robot that carries a 2 kg box across my office", 5.0, 5.0),
     ("a robot that picks toys off the floor and carries them in its own basket to the toy box", 5.0, 5.0),
-    ("a robot that picks toys off the floor in the yard", 15, 5.0),
+    # Task 12: outdoors without a ramp, slope or step, the grade is capped at 8° (was kept at 15°), and no
+    # load on the base unless the task says the robot carries something (was kept at 5 kg).
+    ("a robot that picks toys off the floor in the yard", 8.0, 0.0),
+    ("a robot that picks toys off the floor and carries them up the slope in the yard", 15, 5.0),
     ("", 15, 5.0),  # no task text to judge by: values kept
 ])
 def test_values_the_task_supports_are_kept(prompt, incline, base):

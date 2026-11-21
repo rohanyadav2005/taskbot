@@ -8,6 +8,9 @@
            proportion to their lengths, then re-check the motors
     self_collision -> the verified fix that changes the design least (checks.verified_collision_fixes)
     joint_limits   -> widen each short range to the required one, inside ±pi
+    a sim test, cause compliance, whose first option is a stiffer motor on one joint
+        -> the first of the stiffer motors the sim names for that joint that carries its load
+           (cheap servos sag at the corners; the controller keeps its datasheet gains)
     structural     -> swapped joint limits, duplicate part names (on raw spec dicts)
 
 Each change is logged as text. autofix_loop applies one round of fixes per iteration, up to
@@ -34,6 +37,7 @@ MAX_ITERATIONS = 5
 TORQUE_CHECKS = {"static_torque", "torque_at_speed"}
 REACH_CHECKS = {"reach", "workspace_corners"}
 _SIM_SATURATED = re.compile(r"(\w+) (?:saturated|speed-limited) for [\d.]+ s")
+_STIFFER = re.compile(r"Options, most promising first: 1\) a stiffer motor on (\w+): ([^;.]+)")
 DEGENERATE = ("can only spin in place", "None of the", "Only one joint bends the arm")
 
 
@@ -152,6 +156,32 @@ def _fix_torque(d, req, catalog, failures, steps) -> bool:
     return changed
 
 
+def _fix_compliance(d, req, catalog, failures, steps) -> bool:
+    """A tool that misses its tolerance because one joint's position loop is too soft: that joint
+    gets the first stiffer motor the sim names (stiffness order) that carries its holding load."""
+    joints = {s["joint"]["name"]: s["joint"] for s in _segments(d)}
+    changed = False
+    for r in failures:
+        m = _STIFFER.search(r.message) if r.cause == "compliance" else None
+        if m is None or m[1] not in joints:
+            continue
+        j = joints[m[1]]
+        current = j["motor_id"]
+        need = _loads(d, req, catalog)[j["name"]]
+        ids = re.findall(r"(\w+) \(Kp", m[2])
+        pick = next((catalog[i] for i in ids if i in catalog and usable_torque(catalog[i], j["type"]) >= need), None)
+        if pick is None or pick.id == current:
+            continue
+        j["motor_id"] = pick.id
+        changed = True
+        steps.append(f"{j['name']}: {current} → {pick.id} (stiffer position loop: the sims missed the tolerance "
+                     f"through compliance, most of it at {j['name']}; needs {need:.3g} Nm, usable "
+                     f"{usable_torque(pick, j['type']):.3g} Nm)")
+    if changed:
+        _upgrade_inward(d, req, catalog, steps, "re-checked after the motor change outboard")
+    return changed
+
+
 def _fix_reach(d, spec, req, catalog, failures, steps) -> bool:
     if not any(r.check in REACH_CHECKS for r in failures):
         return False
@@ -245,6 +275,8 @@ def propose(spec: RobotSpec, req: Requirements, results: list[CheckResult], cata
         d, changed = collision, True
     changed |= _fix_limits(d, req, failures, steps)
     changed |= _fix_torque(d, req, catalog, failures, steps)
+    if not changed:  # a stiffer motor only once nothing stronger was needed
+        changed |= _fix_compliance(d, req, catalog, failures, steps)
     changed |= _fix_reach(d, RobotSpec.model_validate(d), req, catalog, failures, steps)
     if not changed:
         return None

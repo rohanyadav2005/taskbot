@@ -94,6 +94,8 @@ def cmd_design(args: argparse.Namespace) -> int:
         return 5
     if result.infeasible and result.outcome is None:
         print(f"INFEASIBLE: no design was made for: {result.requirements.task_summary}")
+        if result.in_short:
+            print(f"  {result.in_short}")
         for reason in result.infeasible:
             print(f"  {reason}")
         print(f"Saved to {result.out_dir}/ : report.md, requirements.json")
@@ -114,6 +116,8 @@ def cmd_design(args: argparse.Namespace) -> int:
     print(summarize(result.outcome, catalog, result.out_dir))
     if result.infeasible:
         print("INFEASIBLE: no design from the motor catalog can meet these requirements.")
+        if result.in_short:
+            print(f"  {result.in_short}")
         for reason in result.infeasible:
             print(f"  {reason}")
         for option in getattr(result.outcome, "infeasible_options", []):

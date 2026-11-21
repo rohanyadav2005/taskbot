@@ -28,6 +28,7 @@ import copy
 import math
 import re
 
+from taskbot import scene
 from taskbot.requirements import CUT_SHORT_PREFIX, OUT_OF_SCOPE_PREFIX
 
 PAYLOAD_MARGIN = 1.25          # payload_kg = bare mass x 1.25 (applied here, once)
@@ -47,7 +48,7 @@ MM_ARM_DEPTH_M = 0.25
 MM_ARM_HALF_WIDTH_M = 0.2
 DEFAULT_WORKSPACE = {"x_min": 0.15, "x_max": 0.35, "y_min": -0.15, "y_max": 0.15, "z_min": 0.0, "z_max": 0.25}
 
-ARM_FIELDS = ("reach_m", "workspace", "dof_min")
+ARM_FIELDS = ("reach_m", "workspace", "dof_min", "held_object", "held_count")
 MOBILE_FIELDS = ("speed_m_s", "max_incline_deg", "terrain", "base_payload_kg", "base_payload_bare_kg",
                  "travel_distance_m")
 NUMBER_FIELDS = ("reach_m", "payload_kg", "payload_bare_kg", "speed_m_s", "max_incline_deg",
@@ -125,7 +126,7 @@ def _turn_and_trim(out: dict, clearance: float) -> tuple[dict, str]:
     return new, how
 
 
-def _workspace(ws, robot_type: str, notes: list[str], shrunk: list[str]) -> dict:
+def _workspace(ws, robot_type: str, notes: list[str], shrunk: list[str], task: str = "") -> dict:
     from taskbot.requirements import BASE_HALF_WIDTH_M, Workspace, shoulder_point
 
     if not isinstance(ws, dict):
@@ -150,10 +151,14 @@ def _workspace(ws, robot_type: str, notes: list[str], shrunk: list[str]) -> dict
             v = min(max(out[k], lo), hi)
             text = f"workspace {k} {out[k]:g} m is outside {lo:g} to {hi:g} m: clipped to {v:g} m"
             notes.append(text)
-            if k != "z_min" or out[k] > hi:  # below the floor is no target; anything else is cut off
+            # Below the floor is no target, and a mobile manipulator drives to far x and y (mm_tennis_balls:
+            # a +-5 m court); anything else is cut off.
+            if k.startswith("z") and (k != "z_min" or out[k] > hi) or (not k.startswith("z") and robot_type != "mobile_manipulator"):
                 shrunk.append(f"targets up to {k} = {out[k]:g} m were cut to {v:g} m (TaskBot designs for "
                               f"targets within {WORKSPACE_LIMIT_M:g} m of the base)")
             out[k] = v
+    if task:
+        out = _scene_heights(out, robot_type, task, notes)
     if robot_type == "mobile_manipulator":
         # The base drives to each target, so the arm only covers MM_ARM_DEPTH_M by 2 x MM_ARM_HALF_WIDTH_M
         # in front of the chassis, at the heights the task needs.
@@ -212,6 +217,8 @@ def normalize_requirements(data: dict, task: str = "") -> tuple[dict, list[str]]
         d["robot_type"] = _robot_type(rt, d)
         notes.append(f"robot_type {rt!r} read as {d['robot_type']!r}" if rt else
                      f"robot_type missing: {d['robot_type']!r} from the fields given")
+    if task and not scope_notes:
+        _type_from_words(d, task, notes)
     has_arm = d["robot_type"] in ("arm", "mobile_manipulator")
     mobile = d["robot_type"] in ("mobile", "mobile_manipulator")
     for k in ARM_FIELDS if not has_arm else ():
@@ -243,6 +250,8 @@ def normalize_requirements(data: dict, task: str = "") -> tuple[dict, list[str]]
     elif needed is None:
         needed = False
     d["gripper_needed"], d["gripper_kind"] = bool(needed), kind
+    if has_arm and task:
+        _typical_payload(d, task, notes)
     # Payloads: the margin is applied here, exactly once, when the bare value is given.
     for bare_key, key, applies in (("payload_bare_kg", "payload_kg", has_arm), ("base_payload_bare_kg", "base_payload_kg", mobile)):
         bare = d.get(bare_key)
@@ -285,7 +294,7 @@ def normalize_requirements(data: dict, task: str = "") -> tuple[dict, list[str]]
             d["travel_distance_m"] = None
         _uninvent(d, task, notes)
     if has_arm:
-        d["workspace"] = _workspace(d.get("workspace"), d["robot_type"], notes, shrunk)
+        d["workspace"] = _workspace(d.get("workspace"), d["robot_type"], notes, shrunk, task)
         dof = d.get("dof_min")
         if dof is None or not 1 <= dof <= 7:
             notes.append(f"dof_min {dof!r}: used {DEFAULT_DOF}" if dof is not None else f"dof_min missing: used {DEFAULT_DOF}")
@@ -325,40 +334,179 @@ def normalize_requirements(data: dict, task: str = "") -> tuple[dict, list[str]]
     d["assumptions"] = a + [n for n in scope_notes if n not in a] + [f"{CUT_SHORT_PREFIX} {x}" for x in shrunk]
     if d.get("max_budget_usd") is not None and d["max_budget_usd"] <= 0:
         d["max_budget_usd"] = None
+    if d.get("max_budget_usd") is not None and task and not scene.states_a_budget(task):
+        notes.append(f"max_budget_usd {d['max_budget_usd']:g} removed: the task states no budget or price")
+        d["max_budget_usd"] = None
     return d, notes
 
 
-# Words in the task that make a slope or an outdoor route plausible; without one, the model's slope
-# is an invention (smoke runs 2026-11-07 and -12: "a flat surface, such as a carpeted floor, with
-# a maximum incline of 15 degrees" for picking toys) and an indoor robot gets INDOOR_MAX_INCLINE_DEG.
-_SLOPE_WORDS = re.compile(r"\b(ramps?|slopes?|sloped|sloping|hills?|hilly|inclines?|inclined|steps?|thresholds?|"
-                          r"outdoors?|outside|gardens?|yards?|backyard|driveways?|kerbs?|curbs?|uphill|downhill|"
-                          r"lawns?|paths?|pavements?|sidewalks?|stairs?)\b")
+# Without a slope word in the task (scene.SLOPE), the model's slope is an invention (smoke runs
+# 2026-11-07 and -12: 15° for picking toys) and is capped by the place the task names.
 INDOOR_MAX_INCLINE_DEG = 5.0  # door thresholds and gentle indoor ramps (design convention, unverified)
-# Items dropped into a separate container: the robot doesn't carry them on its body...
+OUTDOOR_MAX_INCLINE_DEG = 8.0  # garden paths and driveways without a named slope (design convention, unverified)
+# Items dropped into a separate container (named in the note when the base load is set to 0).
 _INTO_CONTAINER = re.compile(r"\b(drops?|dropping|puts?|putting|places?|placing|toss(es)?|throws?|sorts?)\b.*?"
                              r"\b(in|into|onto)\s+(an?|the|its|my|their)?\s*(basket|bin|box|jar|bucket|container|"
                              r"hamper|crate|tub)s?\b")
-# ...unless the task says it does.
-_CARRIES = re.compile(r"\b(carr(y|ies|ying)|deliver\w*|transport\w*|bring\w*|brings|fetch\w*|haul\w*|"
-                      r"on (its|the) (back|top|body|base))\b")
+
+
+def _type_from_words(d: dict, task: str, notes: list[str]) -> None:
+    """The robot type the task's own words decide (scene.robot_type_from_words), like the scope gate:
+    clear words decide and the change is noted; otherwise the model's type stands, except that a task
+    that must pick up or hold something is never a 'mobile' robot (it has no arm)."""
+    said = d["robot_type"]
+    want, why = scene.robot_type_from_words(task)
+    if want is None and said == "mobile" and scene.handles_objects(task):
+        hq = ", ".join(f'"{w}"' for w in dict.fromkeys(scene.handles_objects(task)))
+        want, why = "mobile_manipulator", f"a mobile robot has no arm, and the task handles objects ({hq})"
+    if want is None or want == said:
+        return
+    notes.append(f"robot_type {said!r} read as {want!r}: {why} (TaskBot's robot-type words)")
+    d["robot_type"] = want
+    if want in ("arm", "mobile_manipulator") and said == "mobile":
+        # The reply described a robot without an arm: fill what the arm needs from the task's words.
+        if not d.get("gripper_needed"):
+            d["gripper_needed"], d["gripper_kind"] = True, d.get("gripper_kind") or "parallel"
+            notes.append("gripper_needed set true (parallel): the task handles objects")
+        if not isinstance(d.get("workspace"), dict) and want == "mobile_manipulator":
+            heights = scene.surface_heights(task)
+            top = max([z for _, z in heights], default=0.25)
+            d["workspace"] = {"x_min": 0.2, "x_max": 0.45, "y_min": -0.2, "y_max": 0.2,
+                              "z_min": 0.0, "z_max": round(max(top + 0.05, 0.25), 3)}
+            named = ", ".join(f"{w} ~{z:g} m" for w, z in heights)
+            notes.append(f"workspace set to {_box(d['workspace'])}: in front of the chassis, from the floor to "
+                         + (f"just above the highest surface the task names ({named}; design conventions, "
+                            "unverified)" if heights else "0.25 m (no surface named)"))
+
+
+def _typical_payload(d: dict, task: str, notes: list[str]) -> None:
+    """The gripper's payload from TaskBot's table of everyday objects (scene.OBJECT_KG), unless the
+    task states a mass itself. The object the model says the gripper holds (held_object x
+    held_count) sets it; with no such object, a payload more than MAX_RATIO times the heaviest object
+    the task names is lowered to it (the model counted the gripper, several objects or a guess)."""
+    bare = d.get("payload_bare_kg")
+    if bare is None and d.get("payload_kg") is not None:
+        bare = d["payload_kg"] / PAYLOAD_MARGIN
+    count = d.get("held_count")
+    count = int(count) if isinstance(count, (int, float)) and not isinstance(count, bool) and 1 <= count <= 50 else 1
+    if d.get("held_count") is not None and d["held_count"] != count:
+        notes.append(f"held_count {d['held_count']!r} isn't 1 to 50: used {count}")
+    if d.get("held_count") is not None:
+        d["held_count"] = count
+    if scene.states_a_mass(task):
+        return
+    named = scene.object_named(str(d.get("held_object") or ""))
+    if named is not None:
+        words, kg, what = named
+        new = round(kg * count, 4)
+        if bare is None or abs(bare - new) > 0.01 * new:
+            notes.append(f"payload_bare_kg {'missing' if bare is None else f'{bare:.3g} kg'} set to {new:g} kg: the "
+                         f"gripper holds {count} x {d.get('held_object')!r} ({what}, about {kg:g} kg each in "
+                         "TaskBot's table of everyday objects, unverified); TaskBot adds the gripper's own mass")
+            d["payload_bare_kg"], d["payload_kg"] = new, None
+        return
+    found = scene.objects_in(task)
+    if not found or bare is None:
+        return
+    words, kg, what = max(found, key=lambda f: f[1])
+    if bare <= scene.MAX_RATIO * kg:
+        return
+    notes.append(f"payload_bare_kg {bare:.3g} kg lowered to {kg:g} kg: the task names {words!r}, and {what} weighs "
+                 f"about {kg:g} kg (TaskBot's table of everyday objects, unverified); the gripper holds one at a "
+                 "time and TaskBot adds the gripper's own mass itself")
+    d["payload_bare_kg"], d["payload_kg"] = kg, None
+
+
+def _scene_heights(ws: dict, robot_type: str, task: str, notes: list[str]) -> dict:
+    """Target heights the task's words contradict: a fixed arm on a desk or counter with every target
+    at desk height or above (measured from the floor, not from the surface the arm stands on), and
+    targets far above "the bottom shelf"."""
+    if robot_type == "arm" and scene.on_a_surface(task) and ws["z_min"] >= scene.SURFACE_FLOOR_Z_M:
+        dz = ws["z_min"]
+        new = dict(ws, z_min=0.0, z_max=round(ws["z_max"] - dz, 3))
+        notes.append(f"workspace z {ws['z_min']:g} to {ws['z_max']:g} m read as measured from the floor: the arm "
+                     f"stands on the surface the task names, and TaskBot measures heights from the arm's base, so "
+                     f"every target was lowered by {dz:g} m to z {new['z_min']:g} to {new['z_max']:g} m (the lowest "
+                     f"at the surface; a target {scene.SURFACE_FLOOR_Z_M:g} m or more above a desk or counter top "
+                     "is the top's own height from the floor)")
+        ws = new
+    if scene.bottom_shelf_only(task) and ws["z_max"] > scene.BOTTOM_SHELF_Z_M:
+        cap = scene.BOTTOM_SHELF_Z_M
+        new = dict(ws, z_max=cap, z_min=min(ws["z_min"], round(cap / 2, 3)))
+        notes.append(f"workspace z_max {ws['z_max']:g} m lowered to {cap:g} m: the task names the bottom shelf "
+                     f"and no higher one, and a bottom shelf is at most about {cap:g} m up (design convention, "
+                     "unverified)")
+        ws = new
+    return ws
 
 
 def _uninvent(d: dict, task: str, notes: list[str]) -> None:
-    """Mobile requirements the task's own words don't support: a slope steeper than an indoor
-    threshold, and a load on the base when the items go into a separate container."""
+    """Mobile requirements from the task's own words: the terrain of the places it names, a slope no
+    steeper than those places have, and the load on the base (_base_load)."""
     text = (task or "").lower()
     if not text.strip():
         return
-    if d["max_incline_deg"] > INDOOR_MAX_INCLINE_DEG and not _SLOPE_WORDS.search(text):
-        notes.append(f"max_incline_deg {d['max_incline_deg']:g}° reduced to {INDOOR_MAX_INCLINE_DEG:g}°: the task "
-                     "names no ramp, slope, step, threshold or outdoor area, so the robot meets only indoor "
-                     f"thresholds (indoor convention {INDOOR_MAX_INCLINE_DEG:g}°)")
-        d["max_incline_deg"] = INDOOR_MAX_INCLINE_DEG
-    if (d.get("base_payload_kg") or 0) > 0 and _INTO_CONTAINER.search(text) and not _CARRIES.search(text):
-        notes.append(f"base_payload_kg {d['base_payload_kg']:g} kg set to 0: the task drops the items into a "
-                     "separate container and says nothing about carrying anything on the robot")
-        d["base_payload_kg"], d["base_payload_bare_kg"] = 0.0, None
+    terrain, words = scene.terrain_from_words(text)
+    if terrain is not None and d.get("terrain") != terrain:
+        quoted = ", ".join(f'"{w}"' for w in dict.fromkeys(words))
+        why = {"outdoor": f"the task drives outdoors ({quoted})",
+               "carpet": f"the task names carpet ({quoted})",
+               "flat": "the task names an indoor place and nowhere outside"}[terrain]
+        notes.append(f"terrain {d.get('terrain')!r} read as {terrain!r}: {why}")
+        d["terrain"] = terrain
+    cap = OUTDOOR_MAX_INCLINE_DEG if scene.outdoors(text) else INDOOR_MAX_INCLINE_DEG
+    if d["max_incline_deg"] > cap and not scene.names_a_slope(text):
+        where = ("an outdoor route but no ramp, slope, hill or step, so the robot meets only the gentle grades of "
+                 f"paths and driveways (outdoor convention {cap:g}°)" if cap == OUTDOOR_MAX_INCLINE_DEG else
+                 "no ramp, slope, step, threshold or outdoor area, so the robot meets only indoor thresholds "
+                 f"(indoor convention {cap:g}°)")
+        notes.append(f"max_incline_deg {d['max_incline_deg']:g}° reduced to {cap:g}°: the task names {where}")
+        d["max_incline_deg"] = cap
+    _base_load(d, text, notes)
+
+
+# A plural object on the base: at most this many of them (design convention, unverified).
+MAX_ITEMS_ON_BASE = 10
+
+
+def _base_load(d: dict, text: str, notes: list[str]) -> None:
+    """The load on the base from the task's words: none unless the task says the robot carries
+    something (carry, bring, deliver, transport, "a full ..."); a stated mass it carries is the load;
+    otherwise the object's typical mass (scene.OBJECT_KG), up to MAX_ITEMS_ON_BASE of a plural."""
+    base = d.get("base_payload_kg") or 0.0
+    carry = scene.carries(text)
+    if not carry:
+        if base > 0:
+            why = ("drops the items into a separate container and says nothing about carrying anything on the "
+                   "robot" if _INTO_CONTAINER.search(text) else "says nothing about carrying anything on the robot")
+            notes.append(f"base_payload_kg {base:g} kg set to 0: the task {why}")
+            d["base_payload_kg"], d["base_payload_bare_kg"] = 0.0, None
+        return
+    bare = d.get("base_payload_bare_kg")
+    bare = base / PAYLOAD_MARGIN if bare is None else bare
+    quoted = ", ".join(f'"{w}"' for w in dict.fromkeys(carry))
+    stated = scene.stated_kg(text)
+    kinds = scene.objects_in(text)
+    found = kinds[0] if len(kinds) == 1 else None  # several kinds (letters and parcels): the model's guess stands
+    new, why = None, ""
+    if stated is not None:
+        if bare < 0.9 * stated:
+            new, why = stated, f"the task carries ({quoted}) a stated {stated:g} kg"
+    elif found is not None:
+        words, kg, what = found
+        n = MAX_ITEMS_ON_BASE if words.endswith("s") else 1
+        if bare <= 0:
+            new, why = kg * n, (f"the task carries ({quoted}) {words!r}: {what} weighs about {kg:g} kg"
+                                + (f", up to {n} of them" if n > 1 else "") + " (TaskBot's table, unverified)")
+        elif bare > scene.MAX_RATIO * kg * n:
+            new, why = kg * n, (f"the task carries {words!r} and states no mass: {what} weighs about {kg:g} kg"
+                                + (f", up to {n} of them" if n > 1 else "") + " (TaskBot's table, unverified)")
+    if new is None:
+        return
+    value = round(new * PAYLOAD_MARGIN, 3)
+    notes.append(f"base_payload_bare_kg {bare:.3g} kg set to {new:.3g} kg: {why}; base_payload_kg = "
+                 f"{new:.3g} x {PAYLOAD_MARGIN} = {value:g} kg")
+    d["base_payload_bare_kg"], d["base_payload_kg"] = round(new, 4), value
 
 
 def normalize_intent(data: dict, req) -> tuple[dict, list[str]]:

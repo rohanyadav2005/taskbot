@@ -359,7 +359,10 @@ def _infeasible_lines(problems: list[str], req, options: list[str] | None = None
 
     if options is None:
         options = check_feasibility(req, load_motor_catalog()).options
-    lines = ["## Why no design can pass", "", *[f"- {_cell(p)}" for p in problems]]
+    from taskbot.feasibility import in_short
+
+    lines = ["## Why no design can pass", "", f"**{_cell(in_short(req, load_motor_catalog(), problems, options))}**",
+             "", *[f"- {_cell(p)}" for p in problems]]
     if req.short_of_task:
         lines += ["", "Code had already cut these requirements short of the task:",
                   *[f"- {_cell(a)}" for a in req.short_of_task]]

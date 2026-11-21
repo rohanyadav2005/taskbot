@@ -27,7 +27,7 @@ from taskbot.llm import LLMClient, LLMError, LLMOutputError, LLMRateLimitError
 from taskbot.repair import DEFAULT_MAX_ROUNDS, Event, RepairOutcome, repair_loop
 
 DESIGN_MODES = ("hybrid", "llm")
-from taskbot.feasibility import check_feasibility, retry_message
+from taskbot.feasibility import check_feasibility, in_short, retry_message
 from taskbot.report import write_design_failed, write_infeasible, write_out_of_scope, write_outputs
 from taskbot.requirements import Requirements, extract_requirements, requirements_system_prompt
 from taskbot.schema import Motor
@@ -45,6 +45,7 @@ class PipelineResult:
     llm_unusable: str | None = None  # the LLM couldn't be reached: no design was attempted
     llm_unusable_kind: str = ""      # "rate_limited" or "error"
     fallbacks: list[str] = field(default_factory=list)  # where code stood in for an unusable reply
+    in_short: str = ""               # INFEASIBLE: one line on what it needs and what would work
 
     @property
     def approximate(self) -> str | None:
@@ -135,10 +136,13 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
         feasible = check_feasibility(req, catalog)
         if not feasible.ok:
             out = write_infeasible(req, out_root, feasible, first)
+            short = in_short(req, catalog, feasible.problems, feasible.options)
             emit("Stopped: the requirements are still infeasible, so no design was made. "
                  + " ".join(feasible.problems))
-            return PipelineResult(req, None, out, usage_for(out, "INFEASIBLE", _with_short(req, feasible.problems)),
-                                  infeasible=feasible.problems, design_mode=design_mode, fallbacks=fallbacks)
+            return PipelineResult(req, None, out, usage_for(out, "INFEASIBLE",
+                                                            short + " " + _with_short(req, feasible.problems)),
+                                  infeasible=feasible.problems, design_mode=design_mode, fallbacks=fallbacks,
+                                  in_short=short)
         emit("Feasibility: the second version can be built.")
     try:
         if design_mode == "hybrid":
@@ -174,9 +178,12 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
             out = write_infeasible(req, out_root, Feasibility(list(outcome.infeasible),
                                                               list(getattr(outcome, "infeasible_options", []))),
                                    bound=False)  # from the sizer's designs, not the gate's bounds
+            short = in_short(req, catalog, outcome.infeasible, list(getattr(outcome, "infeasible_options", [])))
             emit(f"Stopped: {' '.join(outcome.infeasible)}")
-            return PipelineResult(req, None, out, usage_for(out, "INFEASIBLE", _with_short(req, outcome.infeasible)),
-                                  infeasible=list(outcome.infeasible), design_mode=design_mode, fallbacks=fallbacks)
+            return PipelineResult(req, None, out, usage_for(out, "INFEASIBLE",
+                                                            short + " " + _with_short(req, outcome.infeasible)),
+                                  infeasible=list(outcome.infeasible), design_mode=design_mode, fallbacks=fallbacks,
+                                  in_short=short)
         out = write_design_failed(req, out_root, reason, "FAILED: no design could be sized for these requirements "
                                   "with any intent tried, so nothing was checked. The last sizing failure is below.")
         emit(f"Stopped: {reason}")
@@ -196,8 +203,10 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
     state = ("INFEASIBLE" if outcome.infeasible else "APPROXIMATE" if approx
              else ("PASSED" if outcome.passed else "FAILED"))
     reason = outcome.stop_reason or ""
+    short_line = ""
     if state == "INFEASIBLE":
-        reason = " ".join(outcome.infeasible)  # each intent tried and what blocks it
+        short_line = in_short(req, catalog, outcome.infeasible, list(getattr(outcome, "infeasible_options", [])))
+        reason = short_line + " " + " ".join(outcome.infeasible)  # each intent tried and what blocks it
     if state == "APPROXIMATE":
         reason = getattr(outcome, "approximate", "") or reason
     elif state == "FAILED":
@@ -212,7 +221,7 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
     emit(f"LLM: {usage['provider']} / {usage['model']}: {usage['calls']} calls, "
          f"{usage['total_tokens']} tokens, {usage['json_retries']} JSON retries")
     return PipelineResult(req, outcome, out, usage, infeasible=list(outcome.infeasible), design_mode=design_mode,
-                          fallbacks=fallbacks)
+                          fallbacks=fallbacks, in_short=short_line)
 
 
 def _with_short(req: Requirements, problems: list[str]) -> str:

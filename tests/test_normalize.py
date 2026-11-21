@@ -121,7 +121,7 @@ def test_fields_for_the_other_robot_type_are_dropped_and_mobile_defaults_filled(
     assert req.speed_m_s is None and "speed_m_s doesn't apply to an arm: set to null" in notes
     mobile = {"task_summary": "carry", "robot_type": "mobile", "payload_kg": 1.0, "gripper_needed": True,
               "workspace": ARM["workspace"], "position_tolerance_m": 0.05, "tolerance_reason": "r"}
-    req, notes = norm(mobile)
+    req, notes = norm(mobile, "carry a box across the office")
     assert (req.speed_m_s, req.max_incline_deg, req.terrain, req.base_payload_kg) == (0.3, 5.0, "flat", 0.0)
     assert req.workspace is None and req.payload_kg == 0 and not req.gripper_needed
     assert "speed_m_s missing: used the indoor default 0.3" in notes

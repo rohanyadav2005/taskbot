@@ -102,3 +102,29 @@ def test_loop_fixes_and_logs(bad):
     assert out.stop == "all checks pass", [r.message for r in out.results if not r.passed]
     assert out.steps[0].startswith(f"autofix 1: {bad}: mg996r → ")
     assert json.loads(out.spec.model_dump_json())  # a valid spec
+
+
+# --------------------------------------------------------------------------- Task 12: compliance
+
+
+def test_compliance_gets_the_first_stiffer_motor_the_sim_names_that_carries_the_joint():
+    """easy_arm_lego_sort (benchmark 2026-11-20): cheap servos on base_yaw missed 5 mm at two far
+    corners, with no motor saturating. The sim names stiffer motors for that joint; autofix uses
+    the first that carries the joint's holding load. The controller keeps its datasheet gains."""
+    from conftest import example_dict
+
+    from taskbot.checks import CheckResult
+
+    spec = RobotSpec.model_validate(example_dict("arm_4dof"))
+    msg = ("Without payload: 7/9 targets met the 5 mm task tolerance. Sag by joint position-loop stiffness: "
+           "elbow_pitch (xm430_w350, Kp 18.9 Nm/rad) 3.2 mm. Options, most promising first: 1) a stiffer motor on "
+           "elbow_pitch: xl430_w250 (Kp 1), xm540_w270 (Kp 48.8); 2) shorter or lighter links outboard of the "
+           "sagging joints.")
+    failure = CheckResult(check="reach_targets", passed=False, value=0.003, limit=0.005, cause="compliance",
+                          message=msg)
+    steps: list[str] = []
+    new = propose(spec, Requirements(**DESK_REQ), [failure], CATALOG, steps)
+    joints = {s["joint"]["name"]: s["joint"]["motor_id"] for m in new.model_dump()["modules"]
+              for s in m.get("segments") or []}
+    assert joints["elbow_pitch"] == "xm540_w270"  # xl430_w250 can't hold the elbow's load
+    assert any(s.startswith("elbow_pitch: xm430_w350 → xm540_w270 (stiffer position loop") for s in steps)
