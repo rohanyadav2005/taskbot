@@ -46,6 +46,7 @@ OBJECT_KG: dict[str, tuple[float, str]] = {
     r"pills?|tablets? of": (0.001, "a pill"),
     r"medicine bottles?|pill bottles?": (0.1, "a pill bottle"),
     # -- kitchen
+    r"(plastic|paper|disposable|takeaway|styrofoam|polystyrene) (cups?|tumblers?)": (0.015, "an empty plastic cup"),
     r"(empty |coffee |tea )?(cups?|mugs?)": (0.3, "a ceramic mug or a cup of coffee"),
     r"(drinking )?glass(es)?( of (water|wine|juice|milk))?": (0.25, "a drinking glass"),
     r"plates?|dishes": (0.4, "a dinner plate"),
@@ -207,8 +208,8 @@ def surface_heights(task: str) -> list[tuple[str, float]]:
 
 # An arm standing on a work surface. Its heights are measured from that surface (TaskBot puts the base
 # at z = 0); the model measured them from the floor for a bin on the counter (cat feeder: z 0.6-0.8 m).
-_ON_SURFACE = re.compile(r"\bon (my|the|a|our) (desk|table|kitchen counter|counter|countertop|workbench|bench|"
-                         r"windowsill)\b")
+_ON_SURFACE = re.compile(r"\b(on|onto|from|off|at) (my|the|a|our) (desk|table|kitchen counter|counter|countertop|"
+                         r"workbench|bench|windowsill)\b")
 # Targets this high above a desk or counter top are the floor-measured height of the top itself:
 # desks and tables stand about 0.75 m, kitchen counters about 0.9 m (design conventions, unverified).
 SURFACE_FLOOR_Z_M = 0.5
@@ -244,9 +245,27 @@ def object_in(task: str) -> tuple[str, float, str] | None:
     return found[0] if found else None
 
 
+_CONTENTS = re.compile(r"\b(with|containing|full of|filled with|holding)\b")
+_LIQUID = re.compile(r"\b(\d+(?:\.\d+)?)\s*(ml|millilit(?:re|er)s?|cl|l|lit(?:re|er)s?)\s+of\s+"
+                     r"(water|milk|juice|coffee|tea|wine|soup|beer|soda|liquid)\b")
+
+
 def object_named(name: str) -> tuple[str, float, str] | None:
-    """The table entry for an object the model named ("a ceramic mug" -> mug), if any."""
-    return object_in(name or "")
+    """The table entry for the object the model says the gripper holds, if any: the head noun of
+    its name, before any contents ("a plastic cookbook page" -> page, "a plastic cup with 250 ml of
+    water" -> plastic cup), plus a stated volume of liquid in it (1 kg per litre)."""
+    text = (name or "").lower()
+    head = _CONTENTS.split(text, maxsplit=1)[0]
+    found = objects_in(head) or objects_in(text)
+    if not found:
+        return None
+    words, kg, what = found[-1]
+    liquid = _LIQUID.search(text)
+    if liquid:
+        unit = liquid[2]
+        litres = float(liquid[1]) * (1e-3 if unit == "ml" or unit.startswith("milli") else 1e-2 if unit == "cl" else 1.0)
+        kg, what = round(kg + litres, 4), f"{what} with {litres * 1000:g} ml of {liquid[3]} ({litres:g} kg)"
+    return words, kg, what
 
 
 def states_a_mass(task: str) -> bool:
@@ -276,12 +295,45 @@ def carries(task: str) -> list[str]:
 _CARPET = re.compile(r"\b(carpet\w*|rugs?)\b")
 
 
+# A sports court is outdoors but hard and level, like a concrete floor (build_urdf.TERRAIN "flat":
+# tile, wood, concrete); grass and clay courts would be named. Design convention, unverified.
+_COURT = re.compile(r"\b((tennis|basketball|badminton|netball|squash|sports|hard) )?courts?\b")
+
+
+def vague(task: str) -> bool:
+    """The task names no object, mass, number, surface or place to work at or travel to: TaskBot
+    has to guess what the robot handles ("make my mornings easier")."""
+    text = task.lower()
+    return not (objects_in(text) or states_a_mass(text) or re.search(r"\d", text) or surface_heights(text)
+                or robot_type_from_words(text)[0] or names_a_height(text))
+
+
+def court_only(words: list[str]) -> bool:
+    return bool(words) and all(_COURT.fullmatch(w) for w in words)
+
+
+# Words that give a height: a shelf, a cupboard, the top, a wall, "1.6 m up" ...
+_HEIGHT = re.compile(r"\b(high|higher|highest|tall|top|shel(f|ves)|cupboards?|cabinets?|wardrobes?|walls?|"
+                     r"ceiling|overhead|above|stairs|upstairs|hang\w*|hook|\d+(\.\d+)?\s*(m|metres?|meters?|cm)\s+"
+                     r"(up|high|tall|above))\b")
+
+
+def names_a_height(task: str) -> bool:
+    return bool(_HEIGHT.search(task.lower()))
+
+
 def terrain_from_words(task: str) -> tuple[str | None, list[str]]:
-    """("outdoor" | "carpet" | "flat" | None, the words): any outdoor place makes it outdoor (the
-    roughest ground the robot drives on); otherwise an indoor place is flat, or carpet when the task
-    says carpet; no place word: None."""
+    """("outdoor" | "carpet" | "flat" | None, the words): any rough outdoor place makes it outdoor
+    (the roughest ground the robot drives on); a sports court alone is hard and level (flat);
+    otherwise an indoor place is flat, or carpet when the task says carpet; no place word: None."""
     text = task.lower()
     out = [m.group(0) for m in _OUTDOOR.finditer(text)]
+    court = [m.group(0) for m in _COURT.finditer(text)]
+    rough = [w for w in out if not _COURT.fullmatch(w)]
+    if rough or (out and not court and not _CARPET.search(text)):
+        return "outdoor", rough or out
+    if court and not re.search(r"\b(grass|clay|lawn)\b", text):
+        return "flat", court
     if out:
         return "outdoor", out
     inside = [m.group(0) for m in _INDOOR.finditer(text)]

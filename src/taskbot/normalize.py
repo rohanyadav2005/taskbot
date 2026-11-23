@@ -145,6 +145,8 @@ def _workspace(ws, robot_type: str, notes: list[str], shrunk: list[str], task: s
         if out[f"{a}_min"] > out[f"{a}_max"]:
             out[f"{a}_min"], out[f"{a}_max"] = out[f"{a}_max"], out[f"{a}_min"]
             notes.append(f"workspace {a}_min and {a}_max were reversed: swapped")
+    if task:  # heights the task's words decide, before anything is cut short
+        out = _scene_heights(out, robot_type, task, notes)
     for k in out:
         lo, hi = (0.0, WORKSPACE_LIMIT_M) if k.startswith("z") else (-WORKSPACE_LIMIT_M, WORKSPACE_LIMIT_M)
         if not lo <= out[k] <= hi:
@@ -157,8 +159,6 @@ def _workspace(ws, robot_type: str, notes: list[str], shrunk: list[str], task: s
                 shrunk.append(f"targets up to {k} = {out[k]:g} m were cut to {v:g} m (TaskBot designs for "
                               f"targets within {WORKSPACE_LIMIT_M:g} m of the base)")
             out[k] = v
-    if task:
-        out = _scene_heights(out, robot_type, task, notes)
     if robot_type == "mobile_manipulator":
         # The base drives to each target, so the arm only covers MM_ARM_DEPTH_M by 2 x MM_ARM_HALF_WIDTH_M
         # in front of the chassis, at the heights the task needs.
@@ -370,13 +370,13 @@ def _type_from_words(d: dict, task: str, notes: list[str]) -> None:
             notes.append("gripper_needed set true (parallel): the task handles objects")
         if not isinstance(d.get("workspace"), dict) and want == "mobile_manipulator":
             heights = scene.surface_heights(task)
-            top = max([z for _, z in heights], default=0.25)
+            top = max([z for _, z in heights], default=0.0)
             d["workspace"] = {"x_min": 0.2, "x_max": 0.45, "y_min": -0.2, "y_max": 0.2,
-                              "z_min": 0.0, "z_max": round(max(top + 0.05, 0.25), 3)}
+                              "z_min": 0.0, "z_max": round(max(top + ON_SURFACE_Z_M, 0.25), 3)}
             named = ", ".join(f"{w} ~{z:g} m" for w, z in heights)
             notes.append(f"workspace set to {_box(d['workspace'])}: in front of the chassis, from the floor to "
-                         + (f"just above the highest surface the task names ({named}; design conventions, "
-                            "unverified)" if heights else "0.25 m (no surface named)"))
+                         + (f"{ON_SURFACE_Z_M:g} m above the highest surface the task names ({named}; design "
+                            "conventions, unverified)" if heights else "0.25 m (no surface named)"))
 
 
 def _typical_payload(d: dict, task: str, notes: list[str]) -> None:
@@ -430,6 +430,7 @@ def _scene_heights(ws: dict, robot_type: str, task: str, notes: list[str]) -> di
                      f"at the surface; a target {scene.SURFACE_FLOOR_Z_M:g} m or more above a desk or counter top "
                      "is the top's own height from the floor)")
         ws = new
+    ws = _invented_heights(ws, robot_type, task, notes)
     if scene.bottom_shelf_only(task) and ws["z_max"] > scene.BOTTOM_SHELF_Z_M:
         cap = scene.BOTTOM_SHELF_Z_M
         new = dict(ws, z_max=cap, z_min=min(ws["z_min"], round(cap / 2, 3)))
@@ -438,6 +439,42 @@ def _scene_heights(ws: dict, robot_type: str, task: str, notes: list[str]) -> di
                      "unverified)")
         ws = new
     return ws
+
+
+# Targets the task gives no height for (design conventions, unverified): a fixed arm works at most
+# this high above the surface it stands on; a mobile manipulator up to just above the surfaces the
+# task names (things stand at most this high on them), or up to a table or counter top when it names none.
+ARM_UNNAMED_Z_MAX_M = 0.5
+ON_SURFACE_Z_M = 0.2
+MM_UNNAMED_Z_MAX_M = 1.0
+
+
+def _invented_heights(ws: dict, robot_type: str, task: str, notes: list[str]) -> dict:
+    """Heights the task's words don't support: targets far above anything the task names, and, for a
+    mobile manipulator working on raised surfaces only, targets far below them."""
+    if scene.names_a_height(task):
+        return ws
+    surfaces = [(w, z) for w, z in scene.surface_heights(task) if z > 0]
+    floor = any(z == 0 for _, z in scene.surface_heights(task))
+    if robot_type == "mobile_manipulator":
+        cap = (max(z for _, z in surfaces) + ON_SURFACE_Z_M) if surfaces else MM_UNNAMED_Z_MAX_M
+        named = (", ".join(f"{w} ~{z:g} m" for w, z in surfaces) + f", plus {ON_SURFACE_Z_M:g} m for what stands "
+                 "on them") if surfaces else "no surface or height, so up to a table or counter top"
+    else:
+        cap, named = ARM_UNNAMED_Z_MAX_M, "no height, so a desk-scale reach above the surface the arm stands on"
+    new = dict(ws)
+    if ws["z_max"] > cap + 1e-9:
+        new["z_max"] = round(cap, 3)
+        new["z_min"] = min(ws["z_min"], round(cap / 2, 3))
+    if robot_type == "mobile_manipulator" and surfaces and not floor:
+        low = min(z for _, z in surfaces) - 0.1
+        if new["z_min"] < low < new["z_max"]:
+            new["z_min"] = round(low, 3)
+    if new != ws:
+        notes.append(f"workspace z {ws['z_min']:g} to {ws['z_max']:g} m became z {new['z_min']:g} to {new['z_max']:g} m: "
+                     f"the task names {named} (design conventions, unverified), and no high shelf, wall or other "
+                     "height")
+    return new
 
 
 def _uninvent(d: dict, task: str, notes: list[str]) -> None:
@@ -452,6 +489,9 @@ def _uninvent(d: dict, task: str, notes: list[str]) -> None:
         why = {"outdoor": f"the task drives outdoors ({quoted})",
                "carpet": f"the task names carpet ({quoted})",
                "flat": "the task names an indoor place and nowhere outside"}[terrain]
+        if terrain == "flat" and scene.court_only(words):
+            why = (f"the task's place is a sports court ({quoted}), a hard, level surface like a concrete floor "
+                   "(grass or clay would be named)")
         notes.append(f"terrain {d.get('terrain')!r} read as {terrain!r}: {why}")
         d["terrain"] = terrain
     cap = OUTDOOR_MAX_INCLINE_DEG if scene.outdoors(text) else INDOOR_MAX_INCLINE_DEG

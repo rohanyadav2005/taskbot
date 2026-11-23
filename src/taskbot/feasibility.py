@@ -163,7 +163,21 @@ _WHEELS = re.compile(r"each of (\d) driven wheels needs ([\d.]+) Nm to accelerat
 _SIZED = re.compile(r"(\w+) needs ([\d.]+) Nm to hold the sized arm out straight with ([\d.]+) kg")
 
 
-def in_short(req: Requirements, catalog: dict[str, Motor], problems: list[str], options: list[str]) -> str:
+def in_short(req: Requirements, catalog: dict[str, Motor], problems: list[str], options: list[str],
+             task: str = "") -> str:
+    """One line a user understands (_in_short), plus, for a vague task (scene.vague), what TaskBot
+    would need to know to design something."""
+    from taskbot import scene
+
+    line = _in_short(req, catalog, problems, options)
+    if task and scene.vague(task):
+        line += (" The task doesn't say what to handle: to design something, TaskBot needs to know which object, "
+                 "about how heavy it is, and how high and how far from the robot it is (e.g. \"bring my 300 g "
+                 "mug from the kitchen counter\").")
+    return line
+
+
+def _in_short(req: Requirements, catalog: dict[str, Motor], problems: list[str], options: list[str]) -> str:
     """One line a user understands for an INFEASIBLE run: what it needs, what the catalog gives, and
     what would work. Arm torque cases get numbers (the gate's weightless-arm floor, or the sized
     arm's shoulder torque); anything else, the first problem's first sentence and the first option."""

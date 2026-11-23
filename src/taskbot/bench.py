@@ -52,6 +52,12 @@ FAKE_WARNING = ("FAKE BACKEND — scripted responses. Tests the benchmark itself
 
 # Record statuses. FINAL ones are never re-run on resume; the others are.
 DONE, NO_FAKE, ERROR, RATE_LIMITED = "done", "no_fake_response", "error", "rate_limited"
+# Past --prompt-timeout, or an LLM call that timed out: not a design failure; re-run on resume.
+TIMED_OUT = "timed_out"
+DEFAULT_PROMPT_TIMEOUT_S = 1800.0
+# A prompt whose wall-clock time exceeds its own measured steps by this much (and by this factor)
+# most likely spent the gap asleep (a laptop) or waiting on a stuck backend: warned about.
+SLEEP_GAP_S, SLEEP_FACTOR = 300.0, 2.0
 FINAL = {DONE, NO_FAKE}
 
 
@@ -215,6 +221,7 @@ class Record:
     strict_pass: bool = False
     rejected: bool | None = None
     infeasible: bool = False   # stopped: no design from the catalog can meet the requirements
+    internal_error: bool = False  # TaskBot itself crashed (a bug): never "invalid spec"
     rejection_correct: bool | None = None
     requirements_valid: bool | None = None
     valid_spec: bool | None = None
@@ -239,6 +246,9 @@ class Record:
     provider: str = ""
     design_mode: str = "hybrid"
     approximate: str | None = None  # --nearest relaxed this requirement: never a pass
+    wall_s: float = 0.0        # wall-clock time of the prompt (time_s is the monotonic clock)
+    steps_s: float = 0.0       # the run's own measured steps (LLM, sizing, autofix, checks, sims, report)
+    warning: str | None = None  # e.g. wall-clock time far above the measured steps (likely sleep)
     expected_outcome: str = "pass"   # pass, infeasible or out_of_scope (prompts.yaml expect.outcome)
     outcome_correct: bool | None = None  # PASS where a pass is expected, INFEASIBLE where that is, rejections
 
@@ -262,7 +272,9 @@ class RunMeta:
 
 
 def run_one(p: BenchPrompt, client: LLMClient, run_dir: Path, catalog, meta: RunMeta, *, nearest: bool = False,
-            max_rounds: int, simulate: bool, record: bool) -> Record:
+            max_rounds: int, simulate: bool, record: bool,
+            prompt_timeout_s: float | None = DEFAULT_PROMPT_TIMEOUT_S) -> Record:
+    from taskbot import timing
     from taskbot.fake import NoFakeResponse
     from taskbot.pipeline import run_pipeline
 
@@ -273,10 +285,16 @@ def run_one(p: BenchPrompt, client: LLMClient, run_dir: Path, catalog, meta: Run
     rec = Record(p.id, p.category, p.split, p.prompt, DONE, p.expect.should_reject,
                  backend=meta.backend, model=meta.model, provider=meta.provider, design_mode=meta.design_mode,
                  expected_outcome=p.expect.expected_outcome)
-    start = time.monotonic()
+    start, wall0 = time.monotonic(), time.time()
+    if prompt_timeout_s and getattr(client, "timeout_s", None):
+        client.timeout_s = min(client.timeout_s, prompt_timeout_s)  # no single call outlives the prompt
+    token = timing.set_deadline(prompt_timeout_s)
+    result = None
     try:
         result = run_pipeline(client, p.prompt, catalog, out_root, max_rounds=max_rounds,
                               simulate=simulate, record=record, design_mode=meta.design_mode, nearest=nearest)
+    except timing.PromptTimeout as exc:
+        rec.status, rec.error = TIMED_OUT, f"timed out: {exc}"
     except NoFakeResponse as exc:
         rec.status, rec.error = NO_FAKE, str(exc)
     except LLMRateLimitError as exc:
@@ -290,25 +308,40 @@ def run_one(p: BenchPrompt, client: LLMClient, run_dir: Path, catalog, meta: Run
         rec.unfixed = [{"check": f"invalid_{exc.schema_name.lower()}", "cause": "invalid_json",
                         "message": exc.last_error}]
     except LLMError as exc:  # network, auth, timeout: not the model's fault; re-run on resume
-        rec.status, rec.error = ERROR, str(exc)
+        rec.status, rec.error = (TIMED_OUT if "timed out" in str(exc) else ERROR), str(exc)
     except Exception as exc:  # a bug in TaskBot: record it and carry on with the others
         rec.status = ERROR
         rec.error = f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=4)}"
     else:
         failure = result.llm_unusable_kind or getattr(result.outcome, "llm_failure", "")
         if failure:  # the backend stopped answering: not the model's design; re-run on resume
-            rec.status = RATE_LIMITED if failure == "rate_limited" else ERROR
             rec.error = result.llm_unusable or getattr(result.outcome, "stop_reason", "") or "LLM backend failed"
+            rec.status = (RATE_LIMITED if failure == "rate_limited" else
+                          TIMED_OUT if "timed out" in rec.error else ERROR)
         else:
             _score_result(rec, p, result, run_dir)
     u = client.usage
     rec.tokens_in, rec.tokens_out = u.input_tokens, u.output_tokens
     rec.json_retries, rec.rate_limit_waits = u.json_retries, u.rate_limit_waits
+    timing.clear_deadline(token)
     rec.time_s = round(time.monotonic() - start, 2)
+    rec.wall_s = round(time.time() - wall0, 2)
+    times = (result.usage or {}).get("time_by_kind", {}) if result is not None else {}
+    rec.steps_s = round(sum(v for k, v in times.items() if k != "other"), 2)
+    rec.warning = sleep_warning(rec.wall_s, rec.steps_s) if times else None
     rec.strict_pass = bool(rec.passed and rec.expectations_met)
     if rec.scored:
         rec.outcome_correct = outcome_correct(rec)
     return rec
+
+
+def sleep_warning(wall_s: float, steps_s: float) -> str | None:
+    """A warning when the prompt's wall-clock time is far above its own measured steps."""
+    gap = wall_s - steps_s
+    if gap > SLEEP_GAP_S and wall_s > SLEEP_FACTOR * steps_s:
+        return (f"wall-clock {wall_s:.0f} s but the run's own steps took {steps_s:.0f} s: {gap:.0f} s unaccounted "
+                "for (the computer probably slept, or the backend stalled); its time is not representative")
+    return None
 
 
 def outcome_correct(r: Record) -> bool:
@@ -356,6 +389,11 @@ def _score_result(rec: Record, p: BenchPrompt, result, run_dir: Path) -> None:
     rec.robot_type_correct = type_ok
     rec.expectation_failures = misses
     rec.expectations_met = not misses
+    if result.error is not None and result.error.startswith("internal error"):
+        # A TaskBot bug, not the model's spec: scored as not passing, labelled as what it is.
+        rec.internal_error, rec.error = True, result.error
+        rec.unfixed = [{"check": "internal_error", "cause": "bug", "message": result.error.splitlines()[0]}]
+        return
     if result.error is not None:
         rec.valid_spec = False
         rec.error = result.error
@@ -399,7 +437,8 @@ def _load_state(path: Path) -> dict[str, Record]:
 def run_bench(prompts: list[BenchPrompt], run_dir: Path, client_factory: Callable[[], LLMClient],
               meta: RunMeta, catalog=None, *, concurrency: int = 2, max_rounds: int = 5,
               simulate: bool = True, record: bool = False, nearest: bool = False,
-              progress: Callable[[str], None] | None = None) -> list[Record]:
+              progress: Callable[[str], None] | None = None,
+              prompt_timeout_s: float | None = DEFAULT_PROMPT_TIMEOUT_S) -> list[Record]:
     """Run every prompt not already finished in `run_dir`, `concurrency` at a time.
     Returns the records for `prompts`, in order (missing ones are left out)."""
     from taskbot.schema import load_motor_catalog
@@ -429,7 +468,7 @@ def run_bench(prompts: list[BenchPrompt], run_dir: Path, client_factory: Callabl
     def work(p: BenchPrompt) -> Record:
         client = client_factory(p) if getattr(client_factory, "per_prompt", False) else client_factory()
         return run_one(p, client, run_dir, catalog, meta, max_rounds=max_rounds,
-                       simulate=simulate, record=record, nearest=nearest)
+                       simulate=simulate, record=record, nearest=nearest, prompt_timeout_s=prompt_timeout_s)
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
         futures = {pool.submit(work, p): p for p in todo}
@@ -440,19 +479,24 @@ def run_bench(prompts: list[BenchPrompt], run_dir: Path, client_factory: Callabl
                     f.write(json.dumps(asdict(rec)) + "\n")
                 state[rec.id] = rec
             say(f"[{n}/{len(todo)}] {rec.id}: {_outcome(rec)} ({rec.time_s:g} s)")
+            if rec.warning:
+                say(f"  WARNING {rec.id}: {rec.warning}")
     return [state[p.id] for p in prompts if p.id in state]
 
 
 def _outcome(r: Record) -> str:
     if r.status != DONE:
         return {NO_FAKE: "no fake response", RATE_LIMITED: "rate-limited (rerun to resume)",
-                ERROR: "error (rerun to retry)"}[r.status] + (f": {r.error.splitlines()[0]}" if r.error and r.status == ERROR else "")
+                ERROR: "error (rerun to retry)",
+                TIMED_OUT: "timed out (not a design failure; rerun with the same --name)"}[r.status] + (f": {r.error.splitlines()[0]}" if r.error and r.status == ERROR else "")
     if r.should_reject:
         return "rejected (correct)" if r.rejected else "NOT rejected"
     if r.rejected:
         return "wrongly rejected"
     if r.infeasible:
         return "infeasible (stopped)"
+    if r.internal_error:
+        return "internal error (TaskBot bug)"
     if r.valid_spec is False:
         return "invalid spec"
     if r.approximate:
@@ -462,8 +506,8 @@ def _outcome(r: Record) -> str:
 
 # --------------------------------------------------------------------------- reports
 
-CSV_FIELDS = ["id", "split", "category", "status", "passed", "strict_pass", "rejected", "infeasible", "should_reject",
-              "rejection_correct", "requirements_valid", "valid_spec", "robot_type",
+CSV_FIELDS = ["id", "split", "category", "status", "passed", "strict_pass", "rejected", "infeasible", "internal_error",
+              "should_reject", "rejection_correct", "requirements_valid", "valid_spec", "robot_type",
               "robot_type_correct", "expectations_met", "expectation_failures", "rounds",
               "final_failures", "unfixed_count", "tokens_in", "tokens_out", "json_retries",
               "rate_limit_waits", "time_s", "report", "backend", "model", "provider", "design_mode",
@@ -480,7 +524,7 @@ def write_csv(records: list[Record], path: Path, run_name: str) -> None:
         w.writeheader()
         for r in records:
             row = {k: getattr(r, k) for k in CSV_FIELDS if hasattr(r, k)}
-            row |= {k: _yn(getattr(r, k)) for k in ("passed", "strict_pass", "rejected", "infeasible", "should_reject",
+            row |= {k: _yn(getattr(r, k)) for k in ("passed", "strict_pass", "rejected", "infeasible", "internal_error", "should_reject",
                                                      "rejection_correct",
                                                      "requirements_valid", "valid_spec", "robot_type_correct",
                                                      "expectations_met", "outcome_correct")}
@@ -525,7 +569,8 @@ def render_markdown(records: list[Record], meta: RunMeta, run_name: str) -> str:
     out += [f"Run `{run_name}`, started {meta.started or 'unknown'}; provider {meta.provider}.",
             f"Prompts: {len(records)} recorded — {status.get(DONE, 0)} scored, "
             f"{status.get(NO_FAKE, 0)} with no fake response (not counted), "
-            f"{status.get(ERROR, 0)} errors and {status.get(RATE_LIMITED, 0)} rate-limited "
+            f"{status.get(ERROR, 0)} errors, {status.get(RATE_LIMITED, 0)} rate-limited and "
+            f"{status.get(TIMED_OUT, 0)} timed out "
             "(not counted; rerun the same command to retry them).", "",
             "A prompt passes when an in-scope task ends with a design passing every check and "
             "simulation test, or an out-of-scope task is rejected without a design. A strict pass also "
@@ -550,8 +595,11 @@ def render_markdown(records: list[Record], meta: RunMeta, run_name: str) -> str:
     out += [f"- Out-of-scope rejection accuracy: {_pct(sum(bool(r.rejection_correct) for r in oos), len(oos))} "
             f"rejected; {len(wrong)} in-scope prompt(s) wrongly rejected"
             + (f" ({', '.join(r.id for r in wrong)})" if wrong else ""),
-            f"- Valid spec: {_pct(sum(bool(r.valid_spec) for r in scored if not r.should_reject and not r.rejected), sum(1 for r in scored if not r.should_reject and not r.rejected))} "
-            "of in-scope prompts that weren't rejected",
+            f"- Valid spec: {_pct(sum(bool(r.valid_spec) for r in scored if not r.should_reject and not r.rejected and not r.internal_error), sum(1 for r in scored if not r.should_reject and not r.rejected and not r.internal_error))} "
+            "of in-scope prompts that weren't rejected (internal errors aside)",
+            f"- Internal errors (TaskBot bugs, not the model's spec): {sum(r.internal_error for r in scored)}"
+            + (f" ({', '.join(r.id for r in scored if r.internal_error)})" if any(r.internal_error for r in scored)
+               else ""),
             f"- Tokens: {sum(r.tokens_in for r in records)} in + {sum(r.tokens_out for r in records)} out; "
             f"JSON validation retries: {sum(r.json_retries for r in records)}; rate-limit waits: "
             f"{sum(r.rate_limit_waits for r in records)}; total time {sum(r.time_s for r in records):.0f} s", ""]
@@ -605,7 +653,10 @@ def render_markdown(records: list[Record], meta: RunMeta, run_name: str) -> str:
                                                            (" ✓" if r.outcome_correct else " ✗"))
         out.append(f"| {r.id} | {r.split} | {r.category} | {_outcome(r)} | {expected} | {rtype} | {exp.replace('|', '/')} | "
                    f"{r.rounds or ''} | {r.tokens_in + r.tokens_out} | {r.json_retries} | {r.time_s:g} | {link} |")
-    errs = [r for r in records if r.status in (ERROR, RATE_LIMITED)]
+    slow = [r for r in records if r.warning]
+    if slow:
+        out += ["", "## Timing warnings", ""] + [f"- **{r.id}**: {r.warning}" for r in slow]
+    errs = [r for r in records if r.status in (ERROR, RATE_LIMITED, TIMED_OUT)]
     if errs:
         out += ["", "## Not scored: errors", ""] + [f"- **{r.id}** ({r.status}): {(r.error or '').splitlines()[0]}"
                                                    for r in errs]
@@ -669,7 +720,8 @@ def _slug(text: str) -> str:
 
 
 def make_client_factory(backend: str, model: str | None, rate_limit_retries: int,
-                        backoff_s: float, transcripts: Path | None = None) -> Callable[..., LLMClient]:
+                        backoff_s: float, transcripts: Path | None = None,
+                        call_timeout_s: float | None = None) -> Callable[..., LLMClient]:
     """A client per prompt. --backend replay reads <transcripts>/<prompt id>.jsonl."""
     if backend == "replay":
         from taskbot.llm import LLMError, ReplayClient
@@ -692,6 +744,8 @@ def make_client_factory(backend: str, model: str | None, rate_limit_retries: int
         client = (fake_client(supported_motors(load_motor_catalog()), strict=True) if backend == "fake"
                   else make_client(backend, model))
         client.rate_limit_retries, client.backoff_s = rate_limit_retries, backoff_s
+        if call_timeout_s and hasattr(client, "timeout_s"):
+            client.timeout_s = call_timeout_s
         return client
 
     return factory
@@ -712,6 +766,11 @@ def main(argv: list[str] | None = None, bench_dir: Path = Path("bench")) -> int:
     ap.add_argument("--retries", type=int, default=4, help="waits after a rate-limit error, per call")
     ap.add_argument("--backoff", type=float, default=5.0, help="first rate-limit wait in s; doubles")
     ap.add_argument("--no-sim", action="store_true")
+    ap.add_argument("--prompt-timeout", type=float, default=DEFAULT_PROMPT_TIMEOUT_S,
+                    help=f"seconds of wall-clock time per prompt (default {DEFAULT_PROMPT_TIMEOUT_S:g}; 0: none); a "
+                         "prompt past it is recorded as timed out and re-run on resume")
+    ap.add_argument("--call-timeout", type=float,
+                    help="seconds per LLM call (default TASKBOT_TIMEOUT_S, or 600 s local / 120 s remote)")
     ap.add_argument("--transcripts", type=Path, help="--backend replay: a folder of <prompt id>.jsonl transcripts")
     ap.add_argument("--design-mode", choices=("hybrid", "llm"), default="hybrid",
                     help="hybrid (default): LLM chooses, code sizes; llm: the LLM writes the whole spec")
@@ -734,7 +793,8 @@ def main(argv: list[str] | None = None, bench_dir: Path = Path("bench")) -> int:
         return 0
     try:
         prompts = select(load_suite(args.prompts_dir, args.split), args.category, args.limit)
-        factory = make_client_factory(args.backend, args.model, args.retries, args.backoff, args.transcripts)
+        factory = make_client_factory(args.backend, args.model, args.retries, args.backoff, args.transcripts,
+                                      call_timeout_s=args.call_timeout)
         probe = factory()  # fails fast on missing configuration
     except (PromptFileError, ValueError, LLMError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -750,7 +810,8 @@ def main(argv: list[str] | None = None, bench_dir: Path = Path("bench")) -> int:
         records = run_bench(prompts, args.results_dir / name, factory, meta, concurrency=args.concurrency,
                             nearest=args.nearest,
                             max_rounds=args.max_rounds, simulate=not args.no_sim, record=args.record,
-                            progress=lambda line: print(line, file=sys.stderr))
+                            progress=lambda line: print(line, file=sys.stderr),
+                            prompt_timeout_s=args.prompt_timeout or None)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

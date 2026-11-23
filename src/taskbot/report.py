@@ -81,7 +81,7 @@ def render_report(outcome: RepairOutcome, recordings: dict[str, str | None] | No
     lines = [f"# Design report: {final.spec.name}", "", f"**{verdict(outcome)}**", ""]
     if outcome.infeasible:
         lines += _infeasible_lines(outcome.infeasible, req, getattr(outcome, "infeasible_options", None) or None,
-                                   bound=False) + [""]
+                                   bound=False, task=getattr(outcome, "prompt", "") or "") + [""]
     elif not outcome.passed and not getattr(outcome, "approximate", None):
         lines += blocked_lines(outcome) + [""]
 
@@ -353,7 +353,8 @@ def blocked_lines(outcome: RepairOutcome) -> list[str]:
     return lines
 
 
-def _infeasible_lines(problems: list[str], req, options: list[str] | None = None, bound: bool = True) -> list[str]:
+def _infeasible_lines(problems: list[str], req, options: list[str] | None = None, bound: bool = True,
+                      task: str = "") -> list[str]:
     from taskbot.feasibility import check_feasibility
     from taskbot.schema import load_motor_catalog
 
@@ -361,7 +362,7 @@ def _infeasible_lines(problems: list[str], req, options: list[str] | None = None
         options = check_feasibility(req, load_motor_catalog()).options
     from taskbot.feasibility import in_short
 
-    lines = ["## Why no design can pass", "", f"**{_cell(in_short(req, load_motor_catalog(), problems, options))}**",
+    lines = ["## Why no design can pass", "", f"**{_cell(in_short(req, load_motor_catalog(), problems, options, task))}**",
              "", *[f"- {_cell(p)}" for p in problems]]
     if req.short_of_task:
         lines += ["", "Code had already cut these requirements short of the task:",
@@ -375,13 +376,13 @@ def _infeasible_lines(problems: list[str], req, options: list[str] | None = None
     return lines
 
 
-def write_infeasible(req, out_root: Path, feasibility, first=None, bound: bool = True) -> Path:
+def write_infeasible(req, out_root: Path, feasibility, first=None, bound: bool = True, task: str = "") -> Path:
     """out/<task>/{requirements.json, report.md} when the feasibility gate stops the run.
     `first`: the gate's findings on the requirements' first version, sent back once."""
     import re
 
     slug = re.sub(r"[^A-Za-z0-9]+", "_", req.task_summary.lower()).strip("_")[:40] or "infeasible"
-    extra = _infeasible_lines(feasibility.problems, req, feasibility.options, bound=bound)
+    extra = _infeasible_lines(feasibility.problems, req, feasibility.options, bound=bound, task=task)
     if first is not None:
         extra += ["", "The first requirements were sent back to the model once with these numbers, and its "
                   "second version is still infeasible. First version:", "",

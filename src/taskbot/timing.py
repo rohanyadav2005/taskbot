@@ -8,6 +8,11 @@ test), report (writing outputs and GIFs). Steps nest (autofix re-runs the checks
 entry has its total time_s and its self_s without the steps inside it, and time_by_kind sums
 self_s, so nothing is counted twice; "other" is the rest of the run (feasibility gate,
 normalising, file writes). Outside a run (start() not called) timed() does nothing.
+
+A deadline (set_deadline, used by the benchmark's --prompt-timeout) is checked by wall clock at
+the start of every timed step, so it also catches a laptop that slept mid-run: past it, the step
+raises PromptTimeout. That is a BaseException, so no `except Exception` in the pipeline turns it
+into an internal error; the benchmark catches it and records the prompt as timed out.
 """
 
 from __future__ import annotations
@@ -20,6 +25,27 @@ from contextvars import ContextVar
 KINDS = ("llm", "sizing", "autofix", "static_checks", "sim", "report")
 _LOG: ContextVar[list | None] = ContextVar("taskbot_timeline", default=None)
 _STACK: ContextVar[list | None] = ContextVar("taskbot_timeline_stack", default=None)
+_DEADLINE: ContextVar[tuple[float, float] | None] = ContextVar("taskbot_deadline", default=None)
+
+
+class PromptTimeout(BaseException):
+    """The run passed its deadline (wall clock)."""
+
+
+def set_deadline(limit_s: float | None):
+    """Deadline limit_s seconds of wall-clock time from now (None: none). Returns a token for
+    clear_deadline."""
+    return _DEADLINE.set(None if limit_s is None else (time.time() + limit_s, limit_s))
+
+
+def clear_deadline(token) -> None:
+    _DEADLINE.reset(token)
+
+
+def check_deadline(step: str = "") -> None:
+    d = _DEADLINE.get()
+    if d is not None and time.time() > d[0]:
+        raise PromptTimeout(f"the prompt passed its {d[1]:g} s limit" + (f" (at {step})" if step else ""))
 
 
 def start() -> list[dict]:
@@ -31,6 +57,7 @@ def start() -> list[dict]:
 
 @contextmanager
 def timed(kind: str, step: str) -> Iterator[dict | None]:
+    check_deadline(f"{kind}: {step}")
     log, stack = _LOG.get(), _STACK.get()
     if log is None or stack is None:
         yield None

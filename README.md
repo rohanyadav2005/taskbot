@@ -260,6 +260,16 @@ report gives a **correct outcome rate** next to the pass rate: PASS where a pass
 INFEASIBLE where no robot from the catalog can do the task (a 1.5 kg pan, a full 1 litre jug), and
 rejections of out-of-scope tasks.
 
+**Time limits.** `--prompt-timeout` (default 1800 s of wall-clock time per prompt; 0 for none) is
+checked at the start of every step (each LLM call, sizing step, check and sim), so it also catches
+a laptop that slept; `--call-timeout` limits each LLM call (default `TASKBOT_TIMEOUT_S`, else
+600 s for a local model, 120 s for a remote API), and no call outlives its prompt's limit. A prompt
+that hits either is recorded as **timed out**: not a design failure, not counted, and run again
+when you rerun with the same `--name`. A prompt whose wall-clock time exceeds its own measured
+steps by more than 300 s and 2× gets a warning in the log and a **Timing warnings** section in the
+report (the computer probably slept, or the backend stalled). A crash inside TaskBot is reported
+as an **internal error (TaskBot bug)**, never as an invalid spec from the model.
+
 The run's state is in `bench/results/<name>/results.jsonl`. If it stops (rate limit, crash,
 Ctrl-C), run the same command again to continue; on a later day add `--name <name>`.
 Rate-limited and errored prompts are retried on resume; finished ones are not.
@@ -424,21 +434,32 @@ the base, never a box centred on it. The normaliser runs first and fixes both:
     stand, counter, next to it) make it an arm. Neither: the model's choice stands, except that a
     task that handles objects is never a plain `mobile` robot (it gets an arm, a parallel gripper
     and targets up to just above the surfaces it names).
-  - **Terrain**: any outdoor place (garden, yard, outside, street, lawn, park, court, path) makes it
-    outdoor; otherwise an indoor place (office, house, room, kitchen, warehouse, shop) makes it
-    flat, or carpet when the task says carpet.
+  - **Terrain**: any outdoor place (garden, yard, outside, street, lawn, park, path) makes it
+    outdoor; a sports court alone is hard and level, so flat (grass or clay would be named);
+    otherwise an indoor place (office, house, room, kitchen, warehouse, shop) makes it flat, or
+    carpet when the task says carpet.
   - **Slope**: capped when the task names no ramp, slope, hill or step: 5° indoors, 8° outdoors.
   - **Base load**: none unless the task says the robot carries something (carry, bring, deliver,
     transport, "a full ..."). A stated mass it carries is the load ("a full 5 kg laundry basket");
     with one kind of object and no mass, its typical mass (up to 10 of a plural).
   - **Payload**: the requirements name the object held (`held_object`) and how many at once
     (`held_count`); code takes the payload from a table of about 100 everyday household, kitchen,
-    office, workshop, garden and toy objects (typical masses, unverified) when it knows the object.
+    office, workshop, garden and toy objects (typical masses, unverified) when it knows the object:
+    the head noun of the name ("a plastic cookbook page" is a page), plus any stated liquid in it
+    ("with 250 ml of water": 0.25 kg).
     Without that, a payload more than twice the heaviest object the task names is lowered to it.
     A mass the task states always stands.
-  - **Heights**: a fixed arm on a desk, table or counter whose targets all start 0.5 m or more up
-    has them measured from the floor, so they are lowered to start at the surface; "the bottom
-    shelf" (and no higher one) caps the targets at 0.4 m.
+  - **Heights**: a fixed arm on (or working from) a desk, table or counter whose targets all start
+    0.5 m or more up has them measured from the floor, so they are lowered to start at the
+    surface. When the task names no height (no shelf, top, cupboard, wall, "1.6 m up", ...),
+    targets above 0.5 m over a fixed arm's base are invented and capped; a mobile manipulator's
+    are capped 0.2 m above the highest surface the task names (table ~0.75 m, counter ~0.9 m,
+    coffee table ~0.45 m), or at 1.0 m when it names none, and start just below the lowest
+    raised surface when the task never mentions the floor. "The bottom shelf" (and no higher one)
+    caps the targets at 0.4 m. Design conventions, unverified.
+  - **Vague tasks** (no object, mass, number, surface, place or height: "make my mornings
+    easier"): an INFEASIBLE verdict's "In short" line adds what TaskBot would need to know to
+    design something: which object, about how heavy, and how high and how far from the robot.
   - **Budget**: none unless the task names a price, cost or budget.
 - Targets beyond 1.5 m are cut to 1.5 m, and the requirements get a `CUT SHORT:` assumption; so do
   requirements code guessed (`REQUIREMENTS FALLBACK:`). A design for them is APPROXIMATE at best,

@@ -59,6 +59,12 @@ class SimMeasurementError(RuntimeError):
     """A sim test produced a value that means it measured nothing."""
 
 
+# Below this the gripper holds nothing to speak of (pressing a button, turning a page): the
+# controller's payload belief error is then a fraction of nothing, gravity feedforward is exact,
+# and a hold with exactly zero deviation is a real result, judged on the arm alone.
+NEGLIGIBLE_PAYLOAD_KG = 0.001
+
+
 @dataclass
 class SimRun:
     name: str
@@ -466,7 +472,8 @@ def _hold(spec, req, catalog, payload_mass_error) -> tuple[CheckResult, SimRobot
     deviation = np.linalg.norm(path - commanded, axis=1)
     peak, final = float(deviation.max()), float(deviation[-1])
     sim.achieved = max(final, peak / PEAK_FACTOR)
-    if peak == 0.0:
+    no_payload = req.payload_kg < NEGLIGIBLE_PAYLOAD_KG
+    if peak == 0.0 and not no_payload:  # a payload that should make the arm sag, and nothing moved
         raise SimMeasurementError(
             f"hold_still measured exactly zero deviation holding {label}: the tool didn't move "
             "at all, so the test isn't measuring anything (is the arm or payload missing?)")
@@ -479,6 +486,9 @@ def _hold(spec, req, catalog, payload_mass_error) -> tuple[CheckResult, SimRobot
            f"({_belief(req, payload_mass_error)}) for {HOLD_S:.0f} s: peak deviation {peak * 1e6:.0f} µm "
            f"(limit {PEAK_FACTOR * tol * 1e6:.0f} µm), final error {final * 1e6:.0f} µm "
            f"(limit {tol * 1e6:.0f} µm, the task tolerance).")
+    if no_payload:
+        msg += (f" No payload to speak of (under {NEGLIGIBLE_PAYLOAD_KG * 1000:g} g), so this judges the arm "
+                "alone; with exact gravity feedforward it may not move at all.")
     if saturated:
         msg += f" {sat_text}."
     elif not ok:

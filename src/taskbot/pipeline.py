@@ -135,8 +135,8 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
             return _out_of_scope(client, req, out_root, usage_for, emit, design_mode, fallbacks)
         feasible = check_feasibility(req, catalog)
         if not feasible.ok:
-            out = write_infeasible(req, out_root, feasible, first)
-            short = in_short(req, catalog, feasible.problems, feasible.options)
+            out = write_infeasible(req, out_root, feasible, first, task=prompt)
+            short = in_short(req, catalog, feasible.problems, feasible.options, prompt)
             emit("Stopped: the requirements are still infeasible, so no design was made. "
                  + " ".join(feasible.problems))
             return PipelineResult(req, None, out, usage_for(out, "INFEASIBLE",
@@ -177,8 +177,9 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
 
             out = write_infeasible(req, out_root, Feasibility(list(outcome.infeasible),
                                                               list(getattr(outcome, "infeasible_options", []))),
-                                   bound=False)  # from the sizer's designs, not the gate's bounds
-            short = in_short(req, catalog, outcome.infeasible, list(getattr(outcome, "infeasible_options", [])))
+                                   bound=False, task=prompt)  # from the sizer's designs, not the gate's bounds
+            short = in_short(req, catalog, outcome.infeasible, list(getattr(outcome, "infeasible_options", [])),
+                             prompt)
             emit(f"Stopped: {' '.join(outcome.infeasible)}")
             return PipelineResult(req, None, out, usage_for(out, "INFEASIBLE",
                                                             short + " " + _with_short(req, outcome.infeasible)),
@@ -205,7 +206,8 @@ def run_pipeline(client: LLMClient, prompt: str, catalog: dict[str, Motor], out_
     reason = outcome.stop_reason or ""
     short_line = ""
     if state == "INFEASIBLE":
-        short_line = in_short(req, catalog, outcome.infeasible, list(getattr(outcome, "infeasible_options", [])))
+        short_line = in_short(req, catalog, outcome.infeasible, list(getattr(outcome, "infeasible_options", [])),
+                              prompt)
         reason = short_line + " " + " ".join(outcome.infeasible)  # each intent tried and what blocks it
     if state == "APPROXIMATE":
         reason = getattr(outcome, "approximate", "") or reason

@@ -19,6 +19,9 @@ ARM = {"task_summary": "water plants", "robot_type": "arm", "payload_kg": 0.3, "
        "workspace": {"x_min": 0.15, "x_max": 0.3, "y_min": -0.1, "y_max": 0.1, "z_min": 0.05, "z_max": 0.25}}
 
 
+HIGH = "water the plants on a high shelf"  # names a height: no target height is capped as invented
+
+
 def norm(d, task="water plants"):
     out, notes = normalize_requirements(d, task)
     return Requirements(**out), notes
@@ -72,7 +75,8 @@ def test_workspace_around_the_base_is_turned_and_trimmed():
     req, notes = norm(ARM | {"workspace": tiny})  # nothing outside the base to keep: moved forward
     assert (req.workspace.x_min, req.workspace.x_max) == (0.1, 0.2) and any("same size" in n for n in notes)
     above = {"x_min": -0.1, "x_max": 0.1, "y_min": -0.1, "y_max": 0.1, "z_min": 0.6, "z_max": 0.8}
-    req, notes = norm(ARM | {"workspace": above})  # over the shoulder (0.38 m at most): left as is
+    # Task 13: a task that names a height (unnamed heights above 0.5 m are capped first).
+    req, notes = norm(ARM | {"workspace": above}, HIGH)  # over the shoulder (0.38 m at most): left as is
     assert req.workspace.x_min == -0.1 and not any("surrounds" in n for n in notes)
 
 
@@ -98,19 +102,19 @@ def test_targets_above_the_limit_mark_the_requirements_cut_short():
     """Smoke run 5 (high shelf, z 1.5-2.5 m): clipping to 1.5 m cuts the task short, so the
     requirements say so; a design for them is APPROXIMATE at best (taskbot.pipeline)."""
     ws = {"x_min": 0.2, "x_max": 0.4, "y_min": -0.1, "y_max": 0.1, "z_min": 1.2, "z_max": 2.5}
-    req, _ = norm(ARM | {"workspace": ws})
+    req, _ = norm(ARM | {"workspace": ws}, HIGH)  # Task 13: the task names a height, so none is capped
     assert req.workspace.z_max == 1.5
     (short,) = req.short_of_task
     assert short.startswith("CUT SHORT: targets up to z_max = 2.5 m were cut to 1.5 m")
-    again, _ = norm(ARM | {"workspace": ws, "assumptions": [short]})  # the model copying it back changes nothing
+    again, _ = norm(ARM | {"workspace": ws, "assumptions": [short]}, HIGH)  # the model copying it back changes nothing
     assert again.short_of_task == [short]
-    below, _ = norm(ARM | {"workspace": ws | {"z_min": -0.1, "z_max": 0.3}})  # below the floor is no target
+    below, _ = norm(ARM | {"workspace": ws | {"z_min": -0.1, "z_max": 0.3}}, HIGH)  # below the floor is no target
     assert below.short_of_task == []
 
 
 def test_reversed_and_absurd_values_are_fixed():
     ws = {"x_min": 0.3, "x_max": 0.15, "y_min": -0.1, "y_max": 0.1, "z_min": 0.0, "z_max": 9.0}
-    req, notes = norm(ARM | {"workspace": ws})
+    req, notes = norm(ARM | {"workspace": ws}, HIGH)
     assert (req.workspace.x_min, req.workspace.x_max, req.workspace.z_max) == (0.15, 0.3, 1.5)
     assert "workspace x_min and x_max were reversed: swapped" in notes
     assert "workspace z_max 9 m is outside 0 to 1.5 m: clipped to 1.5 m" in notes

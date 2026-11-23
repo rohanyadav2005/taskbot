@@ -48,14 +48,14 @@ def test_the_crash_now_designs_and_passes_the_sims(tmp_path):
     corrections_listed(report, transcript, run)
 
 
-def test_reach_08_z15_is_stopped_by_the_gate_with_a_reason(tmp_path):
+def test_reach_08_z15_targets_the_task_never_raised_are_capped_and_it_designs(tmp_path):
+    """The model put the windowsill plants up to z 1.5 m (reach 1.27 m: stopped by the gate until
+    Task 13). The task names no height: the arm stands on the sill, so targets above 0.5 m are an
+    invention and are capped, with a note; the plants are then watered from 0.38 m."""
     code, out, run, report, transcript = replay("windowsill_reach_08_z15", tmp_path, "--no-sim")
-    assert code == 4 and run["status"] == "INFEASIBLE" and "needs at least" in run["reason"]
-    assert "**INFEASIBLE: no design was made." in report and "## What would make it possible" in report
-    # The +-0.2 m box around the base is trimmed to the same targets in front (it used to be moved
-    # 0.3 m forward, which made the reach 1.52 m); its top corner is 1.16 m from the shoulder.
-    assert "reach_m 1.271 m derived from the workspace" in report and "the model said 0.8 m" in report
-    assert "feasibility_retry: the model gave no usable second version" in report
+    assert code == 0 and run["status"] == "PASSED"
+    assert "workspace z 0.1 to 1.5 m became z 0.1 to 0.5 m: the task names no height" in report
+    assert "reach_m 0.382 m derived from the workspace" in report and "the model said 0.8 m" in report
     corrections_listed(report, transcript, run)
 
 

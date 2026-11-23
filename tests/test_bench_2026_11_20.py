@@ -137,7 +137,8 @@ def test_chess_is_an_arm_with_a_chess_piece_in_its_gripper(tmp_path):
 def test_cast_iron_pan_stays_infeasible_and_says_what_would_work(tmp_path):
     code, run, report = replay("hard_arm_cast_iron_pan", tmp_path, "--no-sim")
     assert code == 4 and run["status"] == "INFEASIBLE"
-    assert run["reason"].startswith("In short: holding 1.88 kg at 0.62 m needs about 12 Nm at the shoulder; "
+    # Task 13: "from the counter" counts as standing on it, so the floor-measured z 0.7-1.0 m is lowered.
+    assert run["reason"].startswith("In short: holding 1.88 kg at 0.29 m needs about 5.5 Nm at the shoulder; "
                                     "the strongest motor here (xm540_w270) gives 2.83 Nm. That needs an industrial arm")
     assert "**In short: holding 1.88 kg" in report
 

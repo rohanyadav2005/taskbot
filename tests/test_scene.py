@@ -80,12 +80,15 @@ def test_terrain_comes_from_the_places_the_task_names():
     d, _ = norm(mobile, "carry a 2 kg box across the carpeted living room")
     assert d["terrain"] == "carpet"
     for task in ("Carry 10 kg of potting soil along the paved path from my garage to the vegetable beds",
-                 "Collect tennis balls from the court", "carry a 2 kg bag of leaves across the lawn"):
+                 "collect tennis balls from the grass court", "carry a 2 kg bag of leaves across the lawn"):
         d, notes = norm(mobile | {"terrain": "flat"}, task)
         assert d["terrain"] == "outdoor" and d["max_incline_deg"] == 8.0, task
         assert any(n.startswith("terrain 'flat' read as 'outdoor': the task drives outdoors") for n in notes)
     d, _ = norm(mobile, "carry a 2 kg box")
     assert d["terrain"] == "outdoor"  # no place named: the model's terrain stands
+    # Task 13: a sports court alone is hard and level (build_urdf TERRAIN "flat": concrete), not rough ground.
+    d, notes = norm(mobile, "Collect tennis balls from the court after practice")
+    assert d["terrain"] == "flat" and any("is a sports court" in n for n in notes)
 
 
 def test_robot_type_from_the_tasks_words():
@@ -112,7 +115,8 @@ def test_a_task_that_handles_objects_is_never_a_plain_mobile_robot():
               "position_tolerance_m": 0.05, "tolerance_reason": "r"}
     d, notes = norm(mobile, "Fetch the TV remote from wherever it was left on the coffee table and bring it to me")
     assert d["robot_type"] == "mobile_manipulator" and d["gripper_needed"] and d["gripper_kind"] == "parallel"
-    assert (d["workspace"]["z_min"], d["workspace"]["z_max"]) == (0.0, 0.5)  # coffee table ~0.45 m + 0.05
+    # Task 13: up to 0.2 m above the coffee table (~0.45 m), and from just below it (no floor named)
+    assert (d["workspace"]["z_min"], d["workspace"]["z_max"]) == (0.35, 0.65)
     assert any(n.startswith("robot_type 'mobile' read as 'mobile_manipulator'") for n in notes)
     # Ambiguous words, but it picks things up: an arm is added all the same.
     d, _ = norm(mobile, "pick up anything I point at")
@@ -164,7 +168,8 @@ def test_heights_from_the_floor_are_measured_from_the_counter():
     ws = {"x_min": -0.15, "x_max": 0.15, "y_min": -0.15, "y_max": 0.15, "z_min": 0.6, "z_max": 1.2}
     d, notes = norm(ARM | {"payload_bare_kg": 0.1, "workspace": ws},
                     "Scoop dry cat food from a bin on the counter into my cat's bowl twice a day")
-    assert (d["workspace"]["z_min"], d["workspace"]["z_max"]) == (0.0, 0.6)
+    # Task 13: the task names no height, so the lowered 0.6 m is also capped at 0.5 m above the counter
+    assert (d["workspace"]["z_min"], d["workspace"]["z_max"]) == (0.0, 0.5)
     assert any(n.startswith("workspace z 0.6 to 1.2 m read as measured from the floor") for n in notes)
     assert d["workspace"]["x_min"] > 0  # then turned and trimmed off the base, as before
     # Low targets on a desk, and an arm with no surface named, are left alone.
