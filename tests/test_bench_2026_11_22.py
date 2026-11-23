@@ -156,3 +156,38 @@ def test_a_vague_task_says_what_taskbot_would_need_to_know():
         assert scene.vague(task), task
     for task in ("keep my desk tidy", "water the three plants on my windowsill", "fetch the TV remote"):
         assert not scene.vague(task), task
+
+
+# --------------------------------------------------------------------------- replays of the infeasible runs
+
+
+PROMPTS = {p.id: p.prompt for p in bench.load_suite(Path(__file__).resolve().parent.parent / "bench", "main")}
+
+
+def replay(pid: str, tmp_path, *extra):
+    code = main(["design", PROMPTS[pid], "--backend", "replay", "--transcript", str(RUNS / f"{pid}.jsonl"),
+                 "--out", str(tmp_path), "--no-record", *extra])
+    (out,) = [p for p in tmp_path.iterdir() if p.is_dir()]
+    run = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    return code, run, (out / "report.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pid, why", [
+    ("mm_tennis_balls", "a hard, level surface like a concrete floor"),  # was outdoor: 0.08 m wheels, slip
+    ("mm_cafe_cups", "the gripper holds 1 x 'a plastic cup'"),        # was a 0.3 kg mug at z 0.3-1.0 m
+    ("vague_kitchen", "the gripper holds 1 x 'a light plastic cup'"),  # was a 0.3 kg mug: 2.96 Nm
+])
+def test_wrongly_infeasible_runs_now_pass(pid, why, tmp_path):
+    code, run, report = replay(pid, tmp_path)
+    assert code == 0 and run["status"] == "PASSED", run["reason"]
+    assert why in report
+
+
+@pytest.mark.slow
+def test_a_vague_task_beyond_the_catalog_says_what_to_tell_taskbot(tmp_path):
+    """vague_mornings: qwen chose fetching a 0.3 kg coffee mug 0.5 m out (3.2 Nm against 2.83)."""
+    code, run, _ = replay("vague_mornings", tmp_path, "--no-sim")
+    assert code == 4 and run["status"] == "INFEASIBLE"
+    assert run["reason"].startswith("In short: holding 0.375 kg at 0.52 m needs about 3.2 Nm at the shoulder")
+    assert "TaskBot needs to know which object, about how heavy it is, and how high" in run["reason"]

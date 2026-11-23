@@ -170,18 +170,23 @@ def test_fetching_the_remote_gets_an_arm(tmp_path):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("pid, words", [
-    ("mm_tennis_balls", "no wheel motor, wheel size and chassis from this catalog passes the drive tests on outdoor"),
-    ("mobile_garden_cart", "on outdoor ground needs about 3.2 Nm at each of 2 driven wheels"),
-])
-def test_outdoor_places_are_outdoor_and_say_why_they_are_infeasible(pid, words, tmp_path):
-    """A court and a garden path are outdoor ground (Task 12 E): 0.08 m wheels for clearance,
-    rolling resistance 0.05. No catalog base passes the drive tests there; the verdict says so in one line."""
-    code, run, report = replay(pid, tmp_path)
+def test_a_garden_path_is_outdoor_and_says_why_it_is_infeasible(tmp_path):
+    """A garden path to the vegetable beds is outdoor ground (Task 12 E): 0.08 m wheels for clearance,
+    rolling resistance 0.05. No catalog base carries 10 kg there; the verdict says so in one line."""
+    code, run, report = replay("mobile_garden_cart", tmp_path)
     assert code == 4 and run["status"] == "INFEASIBLE"
-    assert run["reason"].startswith("In short:") and words in run["reason"]
-    if pid == "mobile_garden_cart":  # qwen wrote "paved" (read as flat); for the court it wrote outdoor itself
-        assert "terrain 'flat' read as 'outdoor': the task drives outdoors" in report
+    assert run["reason"].startswith("In short:")
+    assert "on outdoor ground needs about 3.2 Nm at each of 2 driven wheels" in run["reason"]
+    assert "terrain 'flat' read as 'outdoor': the task drives outdoors" in report  # qwen wrote "paved"
+
+
+@pytest.mark.slow
+def test_the_tennis_court_is_hard_and_level_and_passes(tmp_path):
+    """Task 12 read the court as outdoor ground (INFEASIBLE: 0.08 m wheels, slip). Task 13: a sports
+    court is a hard, level surface like a concrete floor, so flat; with a 0.06 kg ball it passes."""
+    code, run, report = replay("mm_tennis_balls", tmp_path)
+    assert code == 0 and run["status"] == "PASSED", run["reason"]
+    assert "a hard, level surface like a concrete floor" in report
 
 
 @pytest.mark.slow
