@@ -73,7 +73,7 @@ def test_every_main_prompt_has_an_expected_outcome():
     outcomes = {p.id: p.expect.expected_outcome for p in main_prompts}
     assert all(p.expect.outcome is not None for p in main_prompts)
     assert {k for k, v in outcomes.items() if v == "infeasible"} == {
-        "hard_arm_grandma_shelf", "hard_arm_cast_iron_pan", "hard_arm_jug_pour", "mm_cafe_cups"}
+        "hard_arm_grandma_shelf", "hard_arm_cast_iron_pan", "hard_arm_jug_pour", "mobile_garden_cart"}
     assert all((v == "out_of_scope") == p.expect.should_reject for p, v in zip(main_prompts, outcomes.values()))
 
 

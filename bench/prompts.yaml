@@ -200,7 +200,9 @@
   category: mobile
   prompt: Carry 10 kg of potting soil along the paved path from my garage to the vegetable beds
   expect:
-    outcome: pass
+    # infeasible: 10 kg (12.5 kg with margin) on outdoor ground up the 8° outdoor convention needs ~3 Nm per
+    # wheel; the catalog's best wheel motor gives ~0.7 Nm (estimates, unverified; Task 13; was pass)
+    outcome: infeasible
     robot_type: mobile
     base_payload_kg: [10.0, 15.0]
     terrain: outdoor
@@ -248,8 +250,7 @@
   category: mobile_manipulator
   prompt: Clear empty cups from the tables in our cafe and bring them to the counter
   expect:
-    # infeasible: a cup (~0.3 kg) at table height (~0.75 m) about 0.6 m out needs ~3 Nm with the gripper (estimates, unverified)
-    outcome: infeasible
+    outcome: pass  # empty cups on cafe tables: light, at table height (Task 13; was infeasible)
     robot_type: mobile_manipulator
     min_reach_m: 0.3
     payload_kg: [0.1, 0.8]
