@@ -1,20 +1,13 @@
-"""Evaluation benchmark: run many prompts through the full pipeline and score them.
+"""Benchmark: run many prompts through the full pipeline and score them.
 
     python bench/run.py --backend fake --limit 5
     python bench/run.py --backend openai_compat --split all
     python bench/run.py --compare bench/results/a.csv bench/results/b.csv
 
-Prompts live in bench/prompts.yaml (main) and bench/holdout.yaml (reported separately).
-Each run keeps its state in bench/results/<name>/results.jsonl, one line per finished
-prompt, so an interrupted run (rate limits, crash, Ctrl-C) continues where it stopped
-when the same command (same --name) is run again. The report is
-bench/results/<name>.md and .csv, where <name> defaults to <date>_<backend>_<model>.
-
-A prompt "passes" when an in-scope task ends with a design that passes every check and
-sim test, or an out-of-scope task is rejected without a design. A "strict pass" also
-needs every expectation about the extracted requirements (robot type, reach, payload,
-tolerance, terrain) met: a design that passes checks for the wrong requirements is a
-pass but not a strict pass.
+Prompts: bench/prompts.yaml (main) and bench/holdout.yaml (reported separately). State lives in
+bench/results/<name>/results.jsonl, one line per finished prompt, so rerunning the same command
+(same --name) resumes. Reports: bench/results/<name>.md and .csv. Pass, strict pass and correct
+outcome are defined in the README ("Running the benchmark").
 """
 
 from __future__ import annotations

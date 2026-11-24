@@ -1,25 +1,15 @@
-"""Normalisers: the LLM supplies facts about the scene and choices; code corrects and derives.
+"""Normalisers: the LLM supplies facts and choices; code corrects and derives.
 
-Each takes the parsed JSON dict of one LLM reply and returns (fixed dict, notes). They run
-inside LLMClient.complete_json before validation, on every attempt, so the validators (which
-are unchanged) only reject what code can't fix. Every note is shown in report.md under
-"Corrections made by code".
+Each takes one parsed LLM reply and returns (fixed dict, notes). They run inside
+LLMClient.complete_json before validation, so the (unchanged) validators only reject what code
+can't fix; every note appears in report.md under "Corrections made by code".
 
-Requirements (normalize_requirements):
-    unknown fields dropped; numbers given as strings ("0.3 m") parsed; min/max swapped back;
-    an out-of-scope verdict in robot_type or an "OUT_OF_SCOPE:"-like assumption kept as the
-    "OUT OF SCOPE:" assumption; a workspace clipped to WORKSPACE_LIMIT_M (a "CUT SHORT:"
-    assumption when that cuts targets off); an arm workspace around the base or turret turned and
-    trimmed to the same targets in front (_turn_and_trim); a mobile manipulator's workspace cut to
-    what its arm covers once the base stops (MM_ARM_DEPTH_M, MM_ARM_HALF_WIDTH_M); reach_m derived
-    from the workspace (the farthest corner from TaskBot's own shoulder, requirements.reach_corner,
-    x REACH_MARGIN, rounded up to 1 mm); fields that don't apply to the robot_type set to null;
-    missing mobile fields filled with MOBILE_DEFAULTS; gripper_needed
-    and gripper_kind made consistent; payload_kg = payload_bare_kg x PAYLOAD_MARGIN (and the
-    same for the base payload) when the bare value is given; a missing or out-of-range
-    position_tolerance_m set to DEFAULT_TOLERANCE_M.
-Intent (normalize_intent): robot_type and gripper copied from the requirements; fields that
-    don't apply set to null; missing choices given defaults (default_intent needs no LLM).
+normalize_requirements: parses numbers given as strings, swaps reversed min/max, keeps an
+out-of-scope verdict, clips the workspace (marking CUT SHORT), turns and trims a workspace around
+the base, cuts a mobile manipulator's workspace to what its arm covers, derives reach_m from the
+workspace, applies the payload margin once, fills mobile defaults, and applies what the task's own
+words say (taskbot.scene: robot type, terrain, slope, base load, payload, heights, budget).
+normalize_intent: copies robot_type and gripper from the requirements and fills defaults.
 """
 
 from __future__ import annotations

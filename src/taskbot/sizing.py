@@ -1,35 +1,20 @@
 """Deterministic sizing: DesignIntent + Requirements + motor catalog -> RobotSpec.
 
-The LLM chooses (taskbot.intent); code sizes every number:
+The LLM chooses the layout (taskbot.intent); this module computes every number:
+    arm     riser at mid-workspace height (raised until self_collision passes), upper arm and
+            forearm reaching the farthest target exactly (reach_m already holds the margin),
+            IK joint limits widened by 15°, tube links.
+    motors  tip inward (outer motors load inner joints): the cheapest whose usable torque is
+            >= 1.25 x the holding and peak-speed loads (checks.holding_loads/speed_loads),
+            repeated until the choice stops changing.
+    mobile  the cheapest wheel motor and smallest radius that pass the mobile checks and the
+            drive_straight/incline sims (the static estimate misses saturation near top speed),
+            on the smallest chassis that passes tip_over and traction.
 
-    arm       a fixed base (or the chassis), a riser link, then the layout's joints
-              (ARM_LAYOUTS). Upper arm and forearm lengths reach the farthest target (workspace
-              corners, centre and the reach_m point) from the shoulder exactly (the reach margin is
-              already in reach_m, x1.10 in requirements; the sizer adds none), split
-              evenly so the nearest target is inside the inner radius |L1 - L2|. The riser
-              puts the shoulder at mid-workspace height, raised until self_collision passes
-              (checks._search, the same search as the verified collision fixes). Joint limits
-              are the IK angles over the targets widened by 15°, kept at least
-              min_joint_range_rad, with the shoulder clipped so the upper arm can't swing
-              down into the base. Links are tubes (radius from length and payload, 2 mm wall).
-    motors    picked from the tip inward, because outer motors load the inner joints: for each
-              joint the cheapest supported position motor whose usable torque (80% of rated)
-              is at least 1.25 x the holding torque (checks.holding_loads) and whose torque at
-              the planned peak speed is at least 1.25 x the gravity torque there
-              (checks.speed_loads), repeated until the selection stops changing.
-    mobile    the cheapest wheel motor and smallest wheel radius passing wheel_torque with
-              1.25 x margin and top_speed (the mobile checks' own functions) and verified with
-              the drive_straight and incline sims, which the static estimate alone doesn't
-              guarantee near the motor's top speed; the smallest chassis passing tip_over and
-              traction.
-
-Every design is checked with every static check before it is returned: the result is a
-SizedDesign that passes them, or a SizingFailure that says why ("infeasible": no catalog
-choice can carry the load, with what would work; "checks": a design that still fails, for
-autofix or a new intent). With nearest=True an infeasible design is relaxed (payload, then
-reach) to the nearest feasible one, labelled APPROXIMATE.
-
-To add an arm layout, add its joints to ARM_LAYOUTS (and its name to intent.ArmLayout).
+Returns a SizedDesign that passes every static check, or a SizingFailure saying why
+("infeasible", with what would work; "checks", for autofix or a new intent). nearest=True
+relaxes payload, then reach, to the nearest feasible design (APPROXIMATE). README "What the
+sizer computes" has the details. New arm layouts go in ARM_LAYOUTS and intent.ArmLayout.
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
 # TaskBot results
 
-Final benchmark of the hybrid pipeline (`full_hybrid_v3`, 2026-11-24): qwen2.5:7b-instruct through
-Ollama on a laptop CPU (Windows), 40 main prompts from `bench/prompts.yaml`, then the 10 holdout
-prompts from `bench/holdout.yaml`, which were never used to change code or prompts. These are
+My final benchmark of the hybrid pipeline (`full_hybrid_v3`, 2026-11-24): qwen2.5:7b-instruct
+through Ollama on my laptop's CPU (Windows), the 40 main prompts from `bench/prompts.yaml`, then the
+10 holdout prompts from `bench/holdout.yaml`, which I never used to change code or prompts. These are
 real-model runs; the replay tests in `tests/fixtures/real_runs/` re-run some of the same transcripts
 offline.
 
@@ -68,8 +68,8 @@ hard, level surface).
 - **easy_arm_phone_timelapse** (INFEASIBLE, expected pass): the model asked to pan the phone across
   a box 0.8 m wide around the arm (±0.4 m), so the phone (0.2 kg, 0.25 kg with the 25% margin) is
   held 0.6 m out: about 3.1 Nm at the shoulder against 2.83 Nm usable from the strongest catalog
-  servo. The same prompt passed in v2, where the model asked for ±0.3 m. The code did not change the
-  outcome: both transcripts replay to their own result on today's code
+  servo. The same prompt passed in v2, where the model asked for ±0.3 m. The code didn't cause the
+  flip: both transcripts replay to their own result on today's code
   (`tests/test_bench_2026_11_24.py`); the model samples at temperature 0.2.
 - **vague_shop** (INFEASIBLE, expected pass): for "a helper robot for my small shop" the model chose
   moving "a small box" of 4 kg (3 kg on its retry): about 29 Nm needed. In v2 it chose a screw and
@@ -78,15 +78,15 @@ hard, level surface).
   coffee mug 0.49 m out: 2.96 Nm against 2.83 Nm, just over. In v2's replay with "a light plastic
   cup" it passed.
 
-All three are the model choosing a heavier or farther version of a vague or loosely worded task;
-none is a crash or a check that misjudged a design.
+All three come from the model choosing a heavier or farther version of a vague or loosely worded
+task; none is a crash or a check that misjudged a design.
 
 ## Holdout (10 prompts, unseen)
 
-Pass 7/10 (70%), strict 6/10 (60%), 2/2 out-of-scope rejected, 0 crashes. The holdout prompts were
-written with the main set and kept aside: no code or prompt was changed after seeing these results,
-so this is the honest score on tasks TaskBot was not tuned on. The holdout file predates expected
-outcomes, so every in-scope prompt there counts as "expected pass".
+Pass 7/10 (70%), strict 6/10 (60%), 2/2 out-of-scope rejected, 0 crashes. I wrote the holdout
+prompts with the main set and kept them aside, and changed no code or prompt after seeing these
+results, so this is the honest score on tasks TaskBot wasn't tuned on. The holdout file predates
+expected outcomes, so every in-scope prompt there counts as "expected pass".
 
 | Prompt | Task | Result |
 |---|---|---|
@@ -101,15 +101,15 @@ outcomes, so every in-scope prompt there counts as "expected pass".
 | holdout_oos_pool_walls | A robot that swims along the walls of my swimming pool scrubbing off algae | rejected (correct) |
 | holdout_oos_biped_greeter | A robot that walks on two legs to the front door to greet my guests | rejected (correct) |
 
-### The three holdout misses (left as they are)
+### The three holdout misses (I left them as they are)
 
 - **holdout_hard_arm_dumbbells**: 2 kg dumbbells (2.5 kg with the margin) at 0.79 m need about 20 Nm
   at the shoulder; the strongest catalog servo gives 2.83 Nm. By the main set's standard this is a
-  correct INFEASIBLE (like the cast iron pan), but the holdout labels say pass and were not changed
-  after the fact.
+  correct INFEASIBLE (like the cast iron pan), but the holdout labels say pass and I didn't change
+  them after the fact.
 - **holdout_mm_shoes**: the model's shoe (0.35 kg, 0.44 kg with the margin) held 0.57 m out needs
   2.9 Nm against 2.83 Nm: INFEASIBLE by a narrow margin. A lighter shoe estimate or a shorter reach
-  would pass; nothing was tuned for it.
+  would pass; I tuned nothing for it.
 - **holdout_mm_dog_toys**: on outdoor lawn the base and arm grow; the sized arm needs 3.8 Nm at the
   shoulder at full extension with a 0.25 kg toy (2.83 Nm usable), and none of the 3 intents tried
   could be built.
@@ -124,6 +124,6 @@ outcomes, so every in-scope prompt there counts as "expected pass".
 | v3 (2026-11-24) | hybrid | 33/40 | 27/40 | 37/40 | mean 135 s |
 | holdout v3 | hybrid | 7/10 | 6/10 | – | mean 180 s |
 
-The llm mode was run on 10 prompts only (12,634 s in all). "Correct outcome" was added to the
+I ran the llm mode on 10 prompts only (12,634 s in all). "Correct outcome" was added to the
 benchmark after v1. \* v2's own report, before two expected outcomes were relabelled (cafe cups:
 pass; garden cart: infeasible).

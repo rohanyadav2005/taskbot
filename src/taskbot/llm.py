@@ -325,24 +325,14 @@ class OllamaClient(LLMClient):
 
 
 class OpenAICompatClient(LLMClient):
-    """Any OpenAI-compatible /chat/completions endpoint: Ollama (/v1), Groq, Gemini,
+    """Any OpenAI-compatible /chat/completions endpoint: OpenAI, Ollama (/v1), Groq, Gemini,
     OpenRouter, vLLM, ...
 
-    Configured from the environment (arguments override):
-        TASKBOT_BASE_URL   e.g. http://localhost:11434/v1
-        TASKBOT_MODEL      e.g. qwen2.5:7b-instruct
-        TASKBOT_API_KEY    optional (local Ollama needs none); sent as a Bearer token only
-        TASKBOT_JSON_MODE  "0" to never ask for JSON mode
-        TASKBOT_TIMEOUT_S  per request; default 600 s for a local URL, 120 s otherwise
-
-    JSON mode (response_format json_object) is requested by default; if the provider
-    rejects that parameter, it is dropped for the rest of the run and the reply is left
-    to Pydantic validation and the usual retries.
-
-    A reply cut off at the token limit (finish_reason "length") raises LLMTruncatedError.
-    The prompt's own context window is the server's business: for Ollama's /v1 endpoint
-    set OLLAMA_CONTEXT_LENGTH before `ollama serve`, or use the native ollama backend,
-    which sets num_ctx itself.
+    Configured by TASKBOT_BASE_URL, TASKBOT_MODEL, TASKBOT_API_KEY (optional; sent only as a Bearer
+    header), TASKBOT_JSON_MODE ("0" never asks for JSON mode) and TASKBOT_TIMEOUT_S; arguments
+    override them. If the provider rejects JSON mode it is dropped for the rest of the run. A reply
+    cut off at the token limit raises LLMTruncatedError. For Ollama's /v1 endpoint the context window
+    is the server's setting (OLLAMA_CONTEXT_LENGTH); the native ollama backend sets num_ctx itself.
     """
 
     provider = "openai_compat"

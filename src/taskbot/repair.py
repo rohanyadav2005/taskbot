@@ -1,21 +1,13 @@
-"""design -> build -> check -> simulate -> repair, until everything passes or rounds run out.
+"""llm design mode: design -> build -> check -> simulate -> repair, until everything passes or
+rounds run out.
 
-Each round runs the static checks first; the (slower) simulation tests run only
-once every static check passes.
+Static checks run first; the slower sims only once they all pass. Repair requests carry the
+failures, whether each repeated failure got better or worse, a compact round history, and notes
+for known traps (motors can't fix reach, a design identical to an earlier round, a description
+claiming changes the spec doesn't have, reach and torque fixes pulling against each other).
 
-Repair requests carry, besides the failures: for each check that also failed last
-round, whether the last change made it better or worse; a compact history of every
-round (what failed, what changed); and, when only reach-type checks fail, a note that
-motors can't fix them. They also point out a design identical to an earlier round, a
-description claiming changes the spec doesn't have, and reach and torque fixes that pull
-against each other.
-
-The loop stops early when a check says no design can pass (cause "infeasible"), or when
-the model sends back an earlier design for the second time.
-
-The final design is the best round (fewest failing checks, then the smallest total
-normalised shortfall), not necessarily the last. When a round is worse than the best one,
-the next repair starts again from the best design.
+Stops early on an "infeasible" cause or a second repeated design. The result is the best round
+(fewest failures, then smallest normalised shortfall); a worse round restarts from the best.
 """
 
 from __future__ import annotations

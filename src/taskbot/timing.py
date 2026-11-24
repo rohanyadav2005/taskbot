@@ -3,20 +3,17 @@
     timeline = start()                       # once per run (taskbot.pipeline)
     with timed("sizing", "intent 1"): ...    # anywhere in the run
 
-Kinds: llm (each call, as the backend took it), sizing, autofix, static_checks, sim (each sim
-test), report (writing outputs and GIFs). Steps nest (autofix re-runs the checks and sims): each
-entry has its total time_s and its self_s without the steps inside it, and time_by_kind sums
-self_s, so nothing is counted twice; "other" is the rest of the run (feasibility gate,
-normalising, file writes). Outside a run (start() not called) timed() does nothing.
+Kinds: llm, sizing, autofix, static_checks, sim, report. Steps nest, so each entry has time_s and
+self_s (without inner steps) and time_by_kind sums self_s; "other" is the rest. Outside a run
+timed() does nothing.
 
-A deadline (set_deadline, used by the benchmark's --prompt-timeout) is checked by wall clock at
-the start of every timed step, so it also catches a laptop that slept mid-run: past it, the step
-raises PromptTimeout. That is a BaseException, so no `except Exception` in the pipeline turns it
-into an internal error; the benchmark catches it and records the prompt as timed out.
-
-Two hooks for a live UI (taskbot/ui): set_listener(fn) calls fn(event, kind, step, seconds) when a
-timed step starts ("start", seconds None) and ends ("end"); set_stop(event) makes the next step
-raise PromptTimeout once the threading.Event is set (a Stop button). Both are per run (ContextVars).
+Every timed step first checks two things, so the pipeline needs no other hooks:
+- a wall-clock deadline (set_deadline; the benchmark's --prompt-timeout), which also catches a
+  laptop that slept;
+- a stop event (set_stop; the web app's Stop button).
+Either raises PromptTimeout, a BaseException so `except Exception` in the pipeline never turns it
+into an internal error. set_listener(fn) reports each step's start and end to a live UI. All of
+these are per run (ContextVars).
 """
 
 from __future__ import annotations
