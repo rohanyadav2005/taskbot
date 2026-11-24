@@ -43,7 +43,7 @@ def test_intent_must_match_the_requirements():
 
 
 def test_request_intent_corrects_a_mismatch_instead_of_retrying():
-    """Task 8: robot_type and gripper are copied from the requirements by code, with a note."""
+    """robot_type and gripper are copied from the requirements by code, with a note."""
     req = Requirements(**_load("mobile_requirements"))
     fake = FakeClient({"DesignIntent": [ARM, MOBILE]})
     intent = request_intent(fake, req)

@@ -84,7 +84,7 @@ def test_property_pass_count(capsys):
         print(f"\nsizer property test: {sized}/40 sized and pass every static check; "
               f"{sum(v == 'infeasible' for v in RESULTS.values())} infeasible with a reason; "
               f"{sum(v == 'checks' for v in RESULTS.values())} returned as failing checks")
-    # 29 since Task 11: three random differential bases (11.5 kg, outdoor or carpet) drove straight
+    # 29 since the ground-clearance check: three random differential bases (11.5 kg, outdoor or carpet) drove straight
     # only with 4.9-5.6% error against the test's 5% limit; the sizer now asks for 70% of each sim
     # limit, so it rejects them with the closest candidate in the reason instead of a borderline pass.
     assert sized >= 29

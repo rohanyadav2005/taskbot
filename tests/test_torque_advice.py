@@ -93,7 +93,7 @@ def test_self_collision_with_the_base_explains_why():
 
 
 def test_joint_range_typed_as_rounded_90_degrees_passes():
-    """-0.785 to 0.785 rad is 89.95°: short only by rounding, within the 0.5° allowance (Task 6.4)."""
+    """-0.785 to 0.785 rad is 89.95°: short only by rounding, within the 0.5° allowance."""
     d = json.loads(json.dumps(HEAVY))
     d["modules"][1]["segments"][2]["joint"] |= {"lower": -0.785, "upper": 0.785}
     (r,) = run(checks.joint_limits, d=d)

@@ -50,7 +50,7 @@ def test_the_crash_now_designs_and_passes_the_sims(tmp_path):
 
 def test_reach_08_z15_targets_the_task_never_raised_are_capped_and_it_designs(tmp_path):
     """The model put the windowsill plants up to z 1.5 m (reach 1.27 m: stopped by the gate until
-    Task 13). The task names no height: the arm stands on the sill, so targets above 0.5 m are an
+    unnamed heights were capped). The task names no height: the arm stands on the sill, so targets above 0.5 m are an
     invention and are capped, with a note; the plants are then watered from 0.38 m."""
     code, out, run, report, transcript = replay("windowsill_reach_08_z15", tmp_path, "--no-sim")
     assert code == 0 and run["status"] == "PASSED"
@@ -65,7 +65,7 @@ def test_base_centred_workspace_is_trimmed_to_the_same_targets_in_front_and_desi
     req = json.loads((out / "requirements.json").read_text(encoding="utf-8"))
     # +-0.15 m around the base: the base yaw reaches every side, so the same targets lie in
     # x 0.1-0.15 m in front (farthest point 0.21 m out, as before); moving the box 0.25 m forward,
-    # as Task 8 did, doubled that distance.
+    # as an earlier normaliser did, doubled that distance.
     assert (req["workspace"]["x_min"], req["workspace"]["x_max"]) == (0.1, 0.15)
     assert "surrounds the robot's own base and turret" in report and "near edge was moved out to 0.1 m" in report
     corrections_listed(report, transcript, run)
@@ -75,7 +75,7 @@ def test_double_margin_finishes_with_what_would_work(tmp_path):
     code, out, run, report, transcript = replay("windowsill_double_margin", tmp_path, "--no-sim")
     assert code == 4 and run["status"] == "INFEASIBLE"
     # The fixture records no intent: code's default and its next untried intents are each sized, and
-    # none can be carried (Task 10: an infeasible intent no longer ends the run).
+    # none can be carried (an infeasible intent no longer ends the run).
     assert "**INFEASIBLE: none of the 3 intents TaskBot tried can be built from the catalog" in report
     assert report.count("strongest catalog motor gives") >= 3
     assert "a payload under" in report and "an arm reaching under" in report

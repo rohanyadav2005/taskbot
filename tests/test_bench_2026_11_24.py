@@ -1,8 +1,8 @@
-"""Task 14: the two main-set prompts that passed in benchmark v2 (2026-11-22) and were INFEASIBLE in
+"""The two main-set prompts that passed in benchmark v2 (2026-11-22) and were INFEASIBLE in
 v3 (2026-11-24). Replaying both runs' transcripts through today's code shows the code did not
 regress: the v2 replies still pass, and the v3 replies (same prompt, same system prompt, sampled at
 temperature 0.2) ask for requirements no catalog robot meets, and the verdict says why. They also
-fail on Task 12's code (checked by hand: commit dd43d95)."""
+fail on the code before the second round of fixes (checked by hand)."""
 
 import json
 from pathlib import Path

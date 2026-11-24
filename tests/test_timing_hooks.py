@@ -1,4 +1,4 @@
-"""Task 15: the two run hooks the web app uses (taskbot.timing): a step listener for live progress
+"""The two run hooks the web app uses (taskbot.timing): a step listener for live progress
 and a stop event for the Stop button. Nothing else in the pipeline changed."""
 
 import threading

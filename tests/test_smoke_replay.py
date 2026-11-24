@@ -1,4 +1,4 @@
-"""Task 9: the six real smoke-test transcripts (qwen2.5:7b-instruct via Ollama on a laptop CPU,
+"""The six real smoke-test transcripts (qwen2.5:7b-instruct via Ollama on a laptop CPU,
 2026-11-06, tests/fixtures/real_runs/smoke_2026-11-06) replayed through today's code. Each test
 says what went wrong in the run and what happens now. A replay answers only the steps the run
 recorded; where today's code asks something the run never did, the replay has no reply and code's

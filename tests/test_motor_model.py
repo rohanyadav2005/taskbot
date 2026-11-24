@@ -1,4 +1,4 @@
-"""Task 4.2: motor torque-speed model, fixed per-motor gains, hold criteria, failure causes,
+"""Motor torque-speed model, fixed per-motor gains, hold criteria, failure causes,
 and the torque_at_speed check."""
 
 import math
@@ -192,7 +192,7 @@ def test_nema17_shoulder_passes_torque_at_speed_after_stepper_fix(desk_req):
     assert re.search(r"shoulder_pitch holds 1\.04 Nm .* motor nema17_pg27 gives 1\.2 Nm", r.message)
 
 
-# --------------------------------------------------------------------------- Task 4.3: tolerance, pid, options
+# --------------------------------------------------------------------------- tolerance, pid, options
 
 
 def test_requirements_need_a_tolerance_and_its_reason(desk_req):
@@ -272,7 +272,7 @@ def test_report_shows_pid_mode(two_round_outcome):
     assert "I=100 (pid preset, conversion unverified)" in report
 
 
-# --------------------------------------------------------------------------- Task 4.4: no double counting, geometric path rule
+# --------------------------------------------------------------------------- no double counting, geometric path rule
 
 
 def test_unloaded_joint_reaches_exactly_its_no_load_speed():

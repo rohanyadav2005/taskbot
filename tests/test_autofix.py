@@ -104,7 +104,7 @@ def test_loop_fixes_and_logs(bad):
     assert json.loads(out.spec.model_dump_json())  # a valid spec
 
 
-# --------------------------------------------------------------------------- Task 12: compliance
+# --------------------------------------------------------------------------- a stiffer motor for compliance
 
 
 def test_compliance_gets_the_first_stiffer_motor_the_sim_names_that_carries_the_joint():

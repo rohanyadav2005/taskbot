@@ -1,4 +1,4 @@
-"""Task 13: the second full benchmark (qwen2.5:7b-instruct via Ollama on a laptop CPU, 2026-11-22;
+"""The second full benchmark (qwen2.5:7b-instruct via Ollama on a laptop CPU, 2026-11-22;
 transcripts in tests/fixtures/real_runs/bench_2026-11-22): hold_still with no payload, internal
 errors labelled as such, per-prompt time limits, and the scene rules the infeasible runs needed."""
 

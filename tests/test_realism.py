@@ -1,4 +1,4 @@
-"""Task 4.1: torque-speed limits, speed-planned moves, payload-mass error, stricter tracking."""
+"""Torque-speed limits, speed-planned moves, payload-mass error, stricter tracking."""
 
 import re
 

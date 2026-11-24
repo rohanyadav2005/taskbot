@@ -120,9 +120,10 @@ outcomes, so every in-scope prompt there counts as "expected pass".
 |---|---|---|---|---|---|
 | sample_llm (10 prompts) | llm: the model writes every number | 0/10 | 0/10 | – | ~21 min |
 | v1 (2026-11-20) | hybrid | 22/40 | 17/40 | – | mean 154 s |
-| v2 (2026-11-22) | hybrid | 29/40 | 24/40 | – | mean 155 s (one prompt slept 50,351 s; left out) |
+| v2 (2026-11-22) | hybrid | 29/40 | 24/40 | 33/40* | mean 155 s (one prompt slept 50,351 s; left out) |
 | v3 (2026-11-24) | hybrid | 33/40 | 27/40 | 37/40 | mean 135 s |
 | holdout v3 | hybrid | 7/10 | 6/10 | – | mean 180 s |
 
-The llm mode was run on 10 prompts only (12,634 s in all); "correct outcome" was added to the
-benchmark in Task 12, so v1 and v2 have no such column.
+The llm mode was run on 10 prompts only (12,634 s in all). "Correct outcome" was added to the
+benchmark after v1. \* v2's own report, before two expected outcomes were relabelled (cafe cups:
+pass; garden cart: infeasible).

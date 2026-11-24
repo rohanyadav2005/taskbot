@@ -15,11 +15,11 @@
 #                     2.83 Nm usable), not from any run. The report's "correct outcome rate" counts
 #                     PASS where pass is expected, INFEASIBLE where infeasible is, and rejections.
 # Ranges are deliberately wide: they catch physically wrong numbers, not style.
-# Prompts marked "from Task 5.1" are the five original hand-run prompts.
+# Prompts with the note "one of the first hand-run prompts" are the five prompts I first tested by hand.
 
 - id: easy_arm_water_plants
   category: easy_arm
-  note: from Task 5.1
+  note: one of the first hand-run prompts
   prompt: Water the three potted plants on my windowsill
   expect:
     outcome: pass
@@ -100,7 +100,7 @@
 
 - id: hard_arm_m3_screws
   category: hard_arm
-  note: from Task 5.1
+  note: one of the first hand-run prompts
   prompt: Pick M3 screws out of a parts tray and drop them into the holes of a 3D-printed jig
   expect:
     outcome: pass
@@ -111,7 +111,7 @@
 
 - id: hard_arm_grandma_shelf
   category: hard_arm
-  note: from Task 5.1
+  note: one of the first hand-run prompts
   prompt: Help my grandmother get jars of jam down from the top shelf of her kitchen cupboard, about 1.6 m up
   expect:
     # infeasible: a jar of jam (~0.4 kg) 1.6 m up is far beyond 2.83 Nm at any desk-arm reach (estimates, unverified)
@@ -165,7 +165,7 @@
 
 - id: mobile_office_box
   category: mobile
-  note: from Task 5.1
+  note: one of the first hand-run prompts
   prompt: a robot that carries a 2 kg box across my office
   expect:
     outcome: pass
@@ -201,7 +201,7 @@
   prompt: Carry 10 kg of potting soil along the paved path from my garage to the vegetable beds
   expect:
     # infeasible: 10 kg (12.5 kg with margin) on outdoor ground up the 8° outdoor convention needs ~3 Nm per
-    # wheel; the catalog's best wheel motor gives ~0.7 Nm (estimates, unverified; Task 13; was pass)
+    # wheel; the catalog's best wheel motor gives ~0.7 Nm (estimates, unverified; relabelled after benchmark v2, was pass)
     outcome: infeasible
     robot_type: mobile
     base_payload_kg: [10.0, 15.0]
@@ -250,7 +250,7 @@
   category: mobile_manipulator
   prompt: Clear empty cups from the tables in our cafe and bring them to the counter
   expect:
-    outcome: pass  # empty cups on cafe tables: light, at table height (Task 13; was infeasible)
+    outcome: pass  # empty cups on cafe tables: light, at table height (relabelled after benchmark v2, was infeasible)
     robot_type: mobile_manipulator
     min_reach_m: 0.3
     payload_kg: [0.1, 0.8]
@@ -321,7 +321,7 @@
 
 - id: oos_coffee_drone
   category: out_of_scope
-  note: from Task 5.1
+  note: one of the first hand-run prompts
   prompt: a drone that flies a cup of coffee from the kitchen to my desk
   expect:
     outcome: out_of_scope

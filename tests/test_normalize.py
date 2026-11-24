@@ -75,7 +75,7 @@ def test_workspace_around_the_base_is_turned_and_trimmed():
     req, notes = norm(ARM | {"workspace": tiny})  # nothing outside the base to keep: moved forward
     assert (req.workspace.x_min, req.workspace.x_max) == (0.1, 0.2) and any("same size" in n for n in notes)
     above = {"x_min": -0.1, "x_max": 0.1, "y_min": -0.1, "y_max": 0.1, "z_min": 0.6, "z_max": 0.8}
-    # Task 13: a task that names a height (unnamed heights above 0.5 m are capped first).
+    # A task that names a height (unnamed heights above 0.5 m are capped first).
     req, notes = norm(ARM | {"workspace": above}, HIGH)  # over the shoulder (0.38 m at most): left as is
     assert req.workspace.x_min == -0.1 and not any("surrounds" in n for n in notes)
 
@@ -102,7 +102,7 @@ def test_targets_above_the_limit_mark_the_requirements_cut_short():
     """Smoke run 5 (high shelf, z 1.5-2.5 m): clipping to 1.5 m cuts the task short, so the
     requirements say so; a design for them is APPROXIMATE at best (taskbot.pipeline)."""
     ws = {"x_min": 0.2, "x_max": 0.4, "y_min": -0.1, "y_max": 0.1, "z_min": 1.2, "z_max": 2.5}
-    req, _ = norm(ARM | {"workspace": ws}, HIGH)  # Task 13: the task names a height, so none is capped
+    req, _ = norm(ARM | {"workspace": ws}, HIGH)  # the task names a height, so none is capped
     assert req.workspace.z_max == 1.5
     (short,) = req.short_of_task
     assert short.startswith("CUT SHORT: targets up to z_max = 2.5 m were cut to 1.5 m")

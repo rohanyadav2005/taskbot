@@ -1,4 +1,4 @@
-"""Task 15: the Streamlit web app (streamlit_app.py), driven headless with streamlit.testing.
+"""The Streamlit web app (streamlit_app.py), driven headless with streamlit.testing.
 The app only calls existing functions; these tests check what a user sees."""
 
 import os

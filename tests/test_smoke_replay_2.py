@@ -1,4 +1,4 @@
-"""Task 10: the second real smoke test (qwen2.5:7b-instruct via Ollama on a laptop CPU, 2026-11-07,
+"""The second real smoke test (qwen2.5:7b-instruct via Ollama on a laptop CPU, 2026-11-07,
 tests/fixtures/real_runs/smoke_2026-11-07) replayed through today's code. A replay answers only
 the steps the run recorded; where today's code asks something the run never did, code's
 documented fallback stands in (said in the test)."""
@@ -43,7 +43,7 @@ def test_3_box_passes(tmp_path):
 
 def test_4_toys_passes_once_the_invented_ramp_and_base_load_are_removed(tmp_path):
     """qwen wrote a 15° ramp and 4 kg (x1.25) on the base; the task names no slope and drops the toys
-    into a basket, so the normaliser makes them 5° and 0 kg (Task 11). qwen's own first intent then
+    into a basket, so the normaliser makes them 5° and 0 kg. qwen's own first intent then
     passes on the cheapest wheel motor, with every sizer sim inside 70% of its test's limit, so the
     outcome doesn't depend on the platform (on Windows the old sizer passed a different, borderline
     four-wheel design on code's fourth intent; here it failed turn_in_place)."""

@@ -1,4 +1,4 @@
-"""Task 6.4: joint ranges typed with rounded numbers, hollow tube links, the payload margin
+"""Joint ranges typed with rounded numbers, hollow tube links, the payload margin
 applied once, and the feasibility gate on the third run's numbers."""
 
 import math
@@ -135,7 +135,7 @@ def test_tube_arm_gets_no_tube_suggestion():
 
 def test_prompts_ask_for_tubes_and_a_single_margin():
     assert 'Desk-scale arms use hollow tubes, not solid rods or bars: shape "tube"' in load_prompt("design")
-    req = load_prompt("requirements")  # Task 8: the model gives bare values; code adds the margins once
+    req = load_prompt("requirements")  # the model gives bare values; code adds the margins once
     assert "Give bare values; code adds the margins" in req and '"0.25 kg water + 0.05 kg cup = 0.30 kg"' in req
     assert "Code computes payload_kg = bare x 1.25" in req
 

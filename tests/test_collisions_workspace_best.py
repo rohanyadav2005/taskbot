@@ -1,4 +1,4 @@
-"""Task 6.5: verified self-collision fixes, workspaces that contain the base, and keeping the
+"""Verified self-collision fixes, workspaces that contain the base, and keeping the
 best design. Built around the fourth real-model run: the shoulder 0.03 m above a 0.15 m base,
 a workspace "a 0.3 m cube around the base", and a worse final round."""
 

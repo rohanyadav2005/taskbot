@@ -54,9 +54,11 @@ in [docs/RESULTS.md](docs/RESULTS.md)):
 |---|---|---|---|---|---|
 | llm mode (10 prompts) | the model writes every number and repairs it | 0/10 | 0/10 | – | ~21 min |
 | hybrid v1 | first real benchmark | 22/40 | 17/40 | – | ~2.6 min |
-| hybrid v2 | after Task 12 | 29/40 | 24/40 | – | ~2.6 min |
+| hybrid v2 | after the scene-word fixes | 29/40 | 24/40 | 33/40* | ~2.6 min |
 | hybrid v3 | final | **33/40** | **27/40** | **37/40** | ~2.3 min |
 | holdout v3 | 10 unseen prompts | **7/10** | 6/10 | – | ~3 min |
+
+\* v2's own report, before two expected outcomes were relabelled (cafe cups: pass; garden cart: infeasible).
 
 - **Pass**: an in-scope task ends with a design that passes every check and simulation, or an
   out-of-scope task (flying, swimming, legs, weapons) is rejected without a design (8/8 in v3).
@@ -74,9 +76,9 @@ in [docs/RESULTS.md](docs/RESULTS.md)):
   temperature 0.2, so a borderline prompt can flip between runs (the phone time-lapse passed in v2
   and was infeasible in v3, on the same code).
 
-## Project rules
+## Development notes
 
-These apply to every change (`CLAUDE.md` repeats them for coding agents):
+Rules every change follows:
 
 - Python 3.11+, package `taskbot` under `src/`, tests with pytest under `tests/`.
 - The LLM chooses the layout; code sizes every number. The LLM only writes JSON matching a
@@ -86,11 +88,29 @@ These apply to every change (`CLAUDE.md` repeats them for coding agents):
 - Every check returns `CheckResult{check, passed, value, limit, cause, message}`, with a message
   specific enough for an LLM to fix: name the part, give the numbers, say what to change.
 - Controllers come from motor datasheets and fixed documented presets. Never tune gains,
-  tolerances or test settings, or loosen a check, to make a design pass.
+  tolerances or test settings, or loosen a check, to make a design pass. When a model fails,
+  fix the messages and prompts, not the checks.
 - Values from memory rather than a source are marked unverified.
-- Small tested steps; don't build beyond the current task.
-- Read and write text files as UTF-8 explicitly, and write paths into reports and CSVs with
-  forward slashes, so everything works on Windows too.
+- Small tested steps; don't build beyond the current task. When a change alters an existing
+  test, the commit says which test and why.
+- Everything must also run on Windows: pass `encoding="utf-8"` to every `read_text`,
+  `write_text` and text `open`, and write paths into reports and CSVs with `.as_posix()`.
+- No API keys in code, logs, reports or commits. Offline runs use `--backend fake`; tests use the
+  fake backend, recorded transcripts (`--backend replay`) or the mocked HTTP server in
+  `tests/openai_mock.py`, never a real provider, and real-model results are never claimed from
+  fake or mocked runs.
+- Don't look at or tune on `bench/holdout.yaml` results while improving prompts.
+
+Working in the repo:
+
+- Tests: `pytest -q` (about 12 minutes on a fast Linux machine, about twice that on a laptop:
+  MuJoCo sims, sims inside sizing, the 200-run sloppy-model property test and the replays);
+  `pytest -q -m "not slow"` skips those end-to-end tests (about 3.5 minutes). Lint:
+  `python -m pyflakes src tests bench`.
+- Headless Linux rendering needs `MUJOCO_GL=osmesa` or `egl` (the tests and the app set it
+  themselves when there is no display; on Windows and macOS leave it unset); tests skip
+  rendering if neither works.
+- Benchmark: `bench/run.py` (see "Running the benchmark").
 
 ## Design a robot from a prompt
 

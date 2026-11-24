@@ -41,8 +41,8 @@ def test_main_prompts_have_the_required_categories():
     assert all(p.split == "main" for p in prompts)
 
 
-def test_task_5_1_prompts_are_included():
-    ids = {p.id for p in load_suite(BENCH, "main") if p.note == "from Task 5.1"}
+def test_the_first_hand_run_prompts_are_included():
+    ids = {p.id for p in load_suite(BENCH, "main") if p.note == "one of the first hand-run prompts"}
     assert ids == {"easy_arm_water_plants", "hard_arm_m3_screws", "mobile_office_box",
                    "hard_arm_grandma_shelf", "oos_coffee_drone"}
 
@@ -154,7 +154,7 @@ def test_fake_runner_scores_each_prompt(fake_run):
     assert stuck.status == "done" and not stuck.passed and stuck.rounds == 3
     assert stuck.stop_reason.startswith("repeating designs: round 3 is the same as round 1")
     unfixed = {u["check"]: u for u in stuck.unfixed}
-    # Task 12: the task names no carpet, so the terrain is flat and the wheels run out of speed, not torque.
+    # The task names no carpet, so the terrain is flat and the wheels run out of speed, not torque.
     assert unfixed["wheel_torque"]["cause"] == "speed_limited"
     assert "use a faster wheel motor" in unfixed["wheel_torque"]["message"]
     assert unfixed["stop_reason"]["cause"] == "stopped"  # not "invalid_json at repair_request"

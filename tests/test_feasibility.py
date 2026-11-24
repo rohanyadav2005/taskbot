@@ -1,4 +1,4 @@
-"""Task 6.3: impossible requirements are caught before designing, and repair loops that go in
+"""Impossible requirements are caught before designing, and repair loops that go in
 circles stop. Built around the second real-model run (qwen2.5:7b-instruct, "water the three
 plants on my windowsill"): reach 0.8 m, payload 0.5 kg, workspace z 0.1-1.5 m."""
 
@@ -99,7 +99,7 @@ def test_mobile_gate_catches_loads_no_wheel_motor_can_move():
 
 
 def _seen(d: dict) -> Requirements:
-    """What the pipeline sees: the model's requirements after code's normaliser (Task 8 derives
+    """What the pipeline sees: the model's requirements after code's normaliser (which derives
     reach_m from the workspace: HEAVY's 0.8 m becomes 0.748 m, still infeasible)."""
     from taskbot.normalize import normalize_requirements
 

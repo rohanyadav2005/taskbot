@@ -1,4 +1,4 @@
-"""Task 12: the first full benchmark with a real model (qwen2.5:7b-instruct via Ollama on a laptop
+"""The first full benchmark with a real model (qwen2.5:7b-instruct via Ollama on a laptop
 CPU, 2026-11-20; transcripts in tests/fixtures/real_runs/bench_2026-11-20), replayed through
 today's code; the one-line "In short" for an INFEASIBLE run; and the correct outcome rate."""
 
@@ -118,7 +118,7 @@ def test_report_shows_the_correct_outcome_rate_next_to_the_pass_rate():
 
 
 def test_office_box_regression_passes_without_loosening_ground_clearance(tmp_path):
-    """Benchmark: INFEASIBLE. qwen called an office "outdoor", so Task 11's ground_clearance asked for
+    """Benchmark: INFEASIBLE. qwen called an office "outdoor", so the ground_clearance check asked for
     0.08 m wheels and no four_wheel base could turn in place. The task names only an indoor place:
     terrain is read as flat (the clearance minimums are unchanged)."""
     code, run, report = replay("mobile_office_box", tmp_path, "--no-sim")
@@ -137,7 +137,7 @@ def test_chess_is_an_arm_with_a_chess_piece_in_its_gripper(tmp_path):
 def test_cast_iron_pan_stays_infeasible_and_says_what_would_work(tmp_path):
     code, run, report = replay("hard_arm_cast_iron_pan", tmp_path, "--no-sim")
     assert code == 4 and run["status"] == "INFEASIBLE"
-    # Task 13: "from the counter" counts as standing on it, so the floor-measured z 0.7-1.0 m is lowered.
+    # "From the counter" counts as standing on it, so the floor-measured z 0.7-1.0 m is lowered.
     assert run["reason"].startswith("In short: holding 1.88 kg at 0.29 m needs about 5.5 Nm at the shoulder; "
                                     "the strongest motor here (xm540_w270) gives 2.83 Nm. That needs an industrial arm")
     assert "**In short: holding 1.88 kg" in report
@@ -171,7 +171,7 @@ def test_fetching_the_remote_gets_an_arm(tmp_path):
 
 @pytest.mark.slow
 def test_a_garden_path_is_outdoor_and_says_why_it_is_infeasible(tmp_path):
-    """A garden path to the vegetable beds is outdoor ground (Task 12 E): 0.08 m wheels for clearance,
+    """A garden path to the vegetable beds is outdoor ground: 0.08 m wheels for clearance,
     rolling resistance 0.05. No catalog base carries 10 kg there; the verdict says so in one line."""
     code, run, report = replay("mobile_garden_cart", tmp_path)
     assert code == 4 and run["status"] == "INFEASIBLE"
@@ -182,7 +182,7 @@ def test_a_garden_path_is_outdoor_and_says_why_it_is_infeasible(tmp_path):
 
 @pytest.mark.slow
 def test_the_tennis_court_is_hard_and_level_and_passes(tmp_path):
-    """Task 12 read the court as outdoor ground (INFEASIBLE: 0.08 m wheels, slip). Task 13: a sports
+    """Once read as outdoor ground (INFEASIBLE: 0.08 m wheels, slip). Now a sports
     court is a hard, level surface like a concrete floor, so flat; with a 0.06 kg ball it passes."""
     code, run, report = replay("mm_tennis_balls", tmp_path)
     assert code == 0 and run["status"] == "PASSED", run["reason"]

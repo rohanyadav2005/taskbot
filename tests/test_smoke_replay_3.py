@@ -1,4 +1,4 @@
-"""Task 11: the third real smoke test (qwen2.5:7b-instruct via Ollama on a Windows laptop CPU,
+"""The third real smoke test (qwen2.5:7b-instruct via Ollama on a Windows laptop CPU,
 2026-11-12, tests/fixtures/real_runs/smoke_2026-11-12) replayed through today's code."""
 
 import json
