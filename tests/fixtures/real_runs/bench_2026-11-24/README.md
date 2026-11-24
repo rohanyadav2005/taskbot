@@ -1,8 +1,9 @@
 # Benchmark 2026-11-24 (real transcripts)
 
 The final benchmark (`full_hybrid_v3`, after Task 13): qwen2.5:7b-instruct via Ollama on a laptop
-CPU (Windows), hybrid mode, main prompts. Two of the 40 transcripts, copied unchanged; replayed by
-tests/test_bench_2026_11_24.py next to the same prompts' v2 transcripts (bench_2026-11-22).
+CPU (Windows), hybrid mode, main prompts. Three of the 40 transcripts, copied unchanged. Two are replayed by
+tests/test_bench_2026_11_24.py next to the same prompts' v2 transcripts (bench_2026-11-22);
+mm_sock_collector (PASSED) is in the web app's demo gallery (taskbot/ui/gallery.py).
 
 | File | v2 reply (today's code) | v3 reply (today's code, and Task 12's code) | Why |
 |---|---|---|---|

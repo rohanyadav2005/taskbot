@@ -391,7 +391,52 @@ joint, and in the driving sims the chassis has a free joint.
 Rolling resistance is MuJoCo's rolling friction (c_rr · r, condim 6); the floor has near-zero
 friction so each contact uses the wheel's (MuJoCo takes the larger of the two).
 
-## Web app
+## Web app (Streamlit)
+
+```bash
+pip install -e ".[ui]"
+streamlit run streamlit_app.py      # http://localhost:8501
+```
+
+Three modes in the sidebar:
+
+- **Demo** (default): a gallery of real recorded runs (windowsill arm, M3 screw picker, 2 kg box
+  carrier, toy picker, sock collector, a correctly INFEASIBLE cast iron pan and a correctly OUT OF
+  SCOPE drone), replayed with the replay backend: the design, checks and simulations run again,
+  only the model's answers come from the recording, so no LLM or key is needed.
+- **Local (Ollama)**: base URL and model (default `qwen2.5:7b-instruct`). The app checks that Ollama
+  answers, that the model is pulled and that its context is long enough, and says how to fix it
+  if not. This only works when the app runs on the same computer as Ollama.
+- **Cloud API**: any OpenAI-compatible provider (base URL, model, API key), typed in or read from
+  the app's secrets (`TASKBOT_BASE_URL`, `TASKBOT_MODEL`, `TASKBOT_API_KEY`). The key is sent only
+  to the provider; it is never shown, logged or saved.
+
+Type a task (or click an example) and press **Design**. The run happens in a background thread
+with live progress (each step with its time) and a **Stop** button; one run at a time per session,
+prompts up to 500 characters, a 15-minute limit, and friendly messages instead of tracebacks. The
+result shows the headline (PASSED / APPROXIMATE / INFEASIBLE / OUT OF SCOPE / FAILED) with its
+one-line reason, then tabs: Summary (robot type, motors with prices, estimated cost, mass),
+Requirements (with the corrections made by code), Checks (every round, colour-coded with causes),
+Simulation (results and GIFs: "Record GIFs" is off by default because rendering is slow on a CPU;
+demos show their precomputed GIF), 3D view (interactive, from `taskbot/export3d.py`), Report and
+Downloads (spec.json, robot.urdf, report.md, a zip of everything). A **How it works** page explains
+the method, results and limits; **History** reopens this session's runs (kept in memory; files
+only under `out/ui/`). The app only calls TaskBot's existing functions (`taskbot/ui/`); the one
+hook it needed is a step listener and a stop event in `taskbot/timing.py`.
+
+**Streamlit Community Cloud** (Demo and Cloud API modes): push the repo to GitHub, create an app
+with `streamlit_app.py` as the entry point and Python 3.11 or newer. It installs
+`requirements.txt` (TaskBot with the `[ui]` extra) and `packages.txt` (`libosmesa6`, so MuJoCo can
+render GIFs headless; the app sets `MUJOCO_GL=osmesa` when it finds OSMesa). For Cloud API mode put
+`TASKBOT_BASE_URL`, `TASKBOT_MODEL` and `TASKBOT_API_KEY` in the app's Secrets. Local (Ollama) mode
+can't work there: the cloud machine can't reach Ollama on your computer.
+
+| | | |
+|---|---|---|
+| ![A demo run: PASSED, with the summary](docs/media/app_design.png) | ![The 3D view](docs/media/app_3d_view.png) | ![How it works](docs/media/app_how_it_works.png) |
+| A demo run (windowsill arm): PASSED, motors and cost | The interactive 3D view | The How it works page |
+
+### Older Gradio app
 
 ```bash
 pip install -e ".[app]"

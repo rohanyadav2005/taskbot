@@ -1,0 +1,9 @@
+[client]
+# Never show a Python traceback on the page (the app shows friendly messages itself).
+showErrorDetails = "none"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+maxUploadSize = 1

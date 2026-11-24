@@ -1,0 +1,3 @@
+# For Streamlit Community Cloud (it installs this file): TaskBot itself with the web app extras.
+# Locally, prefer: pip install -e ".[ui]"
+.[ui]
