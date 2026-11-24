@@ -2,6 +2,16 @@
 
 Text-to-robot design with an LLM in the loop. The LLM chooses; code sizes:
 
+| | | | |
+|---|---|---|---|
+| ![Windowsill arm](docs/media/windowsill_arm.gif) | ![M3 screw arm](docs/media/m3_screws_arm.gif) | ![Box carrier](docs/media/box_carrier.gif) | ![Toy picker](docs/media/toy_picker.gif) |
+| "water the three plants on my windowsill" | "a desk arm that picks M3 screws out of a tray..." (2 mm) | "a robot that carries a 2 kg box across my office" | "a robot that picks toys off the floor and drops them in a basket" |
+
+MuJoCo simulation recordings (OSMesa, 320x240) of designs TaskBot produced from these prompts with
+qwen2.5:7b-instruct, replayed from the recorded smoke transcripts in
+`tests/fixtures/real_runs/smoke_2026-11-07/`: the windowsill arm carrying its cup, the M3 arm reaching
+its targets, the box carrier driving straight, and the toy picker driving with its arm extended.
+
 ```
 task (plain English)
   └─ LLM ──► Requirements (measurable; validators + feasibility gate)
@@ -19,6 +29,50 @@ pip install -e ".[dev]"
 pytest
 python -m taskbot.view examples/arm_4dof.json      # opens the MuJoCo viewer
 ```
+
+## How it works, in plain words
+
+You type a task in plain English. A language model reads it and writes down what the job needs
+(how far to reach, how heavy the thing in the gripper is, how precise, where it drives) and then
+picks a layout: an arm on a desk, a wheeled robot, or a wheeled robot with an arm; which joints; which
+gripper. It never writes a number for the robot itself. Ordinary code then sizes every part (link
+lengths, joint ranges, motors from a catalog of real hobby and Dynamixel servos, wheels, chassis,
+masses and inertia) from those requirements, builds a URDF, and checks it: static torque, reach,
+collisions and stability, then MuJoCo simulations that move the arm to every target, carry the
+payload, hold still and drive. Known numeric problems are fixed by code; only when those run out is
+the model asked for a different layout. If no robot from the catalog can do the job, TaskBot says
+so, with the numbers and one line on what would work, instead of returning a design that fails.
+
+In short: **the LLM chooses the layout, code sizes every number, MuJoCo verifies.**
+
+## Results
+
+Real runs with qwen2.5:7b-instruct through Ollama on a laptop CPU (details and per-prompt tables
+in [docs/RESULTS.md](docs/RESULTS.md)):
+
+| Run | What | Pass | Strict pass | Correct outcome | Time per in-scope prompt |
+|---|---|---|---|---|---|
+| llm mode (10 prompts) | the model writes every number and repairs it | 0/10 | 0/10 | – | ~21 min |
+| hybrid v1 | first real benchmark | 22/40 | 17/40 | – | ~2.6 min |
+| hybrid v2 | after Task 12 | 29/40 | 24/40 | – | ~2.6 min |
+| hybrid v3 | final | **33/40** | **27/40** | **37/40** | ~2.3 min |
+| holdout v3 | 10 unseen prompts | **7/10** | 6/10 | – | ~3 min |
+
+- **Pass**: an in-scope task ends with a design that passes every check and simulation, or an
+  out-of-scope task (flying, swimming, legs, weapons) is rejected without a design (8/8 in v3).
+- **Strict pass** also needs the extracted requirements (robot type, reach, payload, tolerance,
+  terrain) to match the prompt's expectations.
+- **Correct outcome** (37/40, 92%) counts PASS where a design is possible, an honest INFEASIBLE
+  where it isn't (a 1.5 kg cast iron pan, a full 1 litre jug, jam jars 1.6 m up, 10 kg of soil
+  on a garden path), and rejections. The three wrong outcomes are the model choosing a heavier or
+  farther version of a loosely worded task (docs/RESULTS.md).
+- **Holdout 7/10** is the honest score on tasks never used to change code or prompts: the 10
+  holdout prompts were written with the main set and kept aside, and nothing was changed after
+  seeing their results. Its three misses are 2 kg dumbbells (truly beyond the catalog: ~20 Nm
+  needed, 2.83 Nm available), shoes held just too far out (2.9 vs 2.83 Nm) and dog toys on a lawn.
+- **0 crashes** in v3 and the holdout (no internal errors, no invalid JSON). The model samples at
+  temperature 0.2, so a borderline prompt can flip between runs (the phone time-lapse passed in v2
+  and was infeasible in v3, on the same code).
 
 ## Project rules
 
@@ -593,6 +647,34 @@ Physics runs at 1 ms.
 
 ## Known limits / future work
 
+**What TaskBot is, honestly:**
+
+- **Desk-to-room scale.** Fixed arms on a desk or counter, wheeled robots indoors and on paths,
+  and wheeled robots with an arm on a mast up to 0.9 m; targets within 1.5 m. Anything bigger is cut
+  short (and said so) or reported INFEASIBLE.
+- **Hobby servos.** The catalog is hobby and Dynamixel-class motors: the strongest gives 2.83 Nm
+  usable. That is a few hundred grams at half a metre; a 1.5 kg pan or 2 kg dumbbells are
+  INFEASIBLE by design, with a line saying an industrial arm would be needed.
+- **Simulation, not reality.** Every design is verified in MuJoCo with motor models from
+  datasheets (torque-speed limits, back-EMF damping, position-loop stiffness); gearbox friction and
+  reflected rotor inertia are not modelled. No robot was built; friction, backlash, cable drag,
+  battery sag and real servo firmware will differ. Terrain is three classes
+  (flat, carpet, outdoor) with estimated friction and rolling resistance.
+- **The payload is welded to the tool.** Grasping is not simulated: the object is rigidly attached
+  at the gripper (and the controller is told a mass 20% too light). Gripper force and slip are
+  not checked.
+- **No strength check.** Links are thin tubes sized by a rule of thumb; torque, reach, collisions,
+  tipping and the sims are checked, but not stress, deflection or fatigue of the parts.
+- **Masses of everyday objects and scene heights are design conventions** (a table of about 100
+  objects, typical table and counter heights), marked unverified in the code.
+- **The model's reading of the task varies between runs** (temperature 0.2), and a vague task is
+  only as good as the version the model picks; for those the report says what to specify.
+- **Out of scope**: anything that flies, swims, walks or climbs stairs, humanoids, and anything
+  meant to hurt people or animals. The scope gate stops these from the task's own words before
+  any LLM call.
+
+**Technical limits:**
+
 - **The sizer's rules are simple.** Link radius is a rule of thumb from length and payload, with
   no stiffness or deflection check; the fixed base and gripper sizes are fixed defaults; the
   upper arm and forearm are split evenly, which suits the workspace corners but isn't optimised
@@ -603,8 +685,9 @@ Physics runs at 1 ms.
 - **Wheel sizing is verified by simulation,** because the static `wheel_torque` estimate passed
   designs that saturated in the driving sims near the motor's top speed; that makes sizing a
   mobile base take seconds rather than milliseconds.
-- **Autofix covers known numeric fixes only.** Compliance (soft position loops) and tipping are
-  left to a revised intent; the hybrid loop has not been run on a real model yet.
+- **Autofix covers known numeric fixes only** (a stronger or stiffer motor, a longer link, a
+  verified collision fix, a wider joint range); tipping and anything else is left to a revised
+  intent.
 
 - **No velocity feedforward.** Joints track moves with the motors' factory position loops plus
   gravity feedforward only, so they run behind the planned timing (back-EMF drag ÷ Kp). That lag
