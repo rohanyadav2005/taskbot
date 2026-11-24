@@ -1,6 +1,6 @@
 """Command line entry point.
 
-    taskbot design "a desk arm that waters my plants" [--backend anthropic|openai_compat|ollama|fake]
+    taskbot design "a desk arm that waters my plants" [--backend ollama|openai|openai_compat|fake|replay]
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from taskbot.report import verdict
 from taskbot.requirements import OUT_OF_SCOPE_PREFIX
 from taskbot.schema import ArmChain, Gripper, Motor, WheeledBase, load_motor_catalog, supported_motors
 
-BACKENDS = ("anthropic", "openai_compat", "ollama", "fake", "replay")
+BACKENDS = ("ollama", "openai", "openai_compat", "fake", "replay")
 
 def get_client(backend: str, model: str | None, catalog: dict[str, Motor], transcript=None) -> LLMClient:
     if backend == "fake":
@@ -135,8 +135,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     d = sub.add_parser("design", help="prompt -> requirements -> design/check/repair -> report")
     d.add_argument("prompt", help="what the robot must do, in plain English")
-    d.add_argument("--backend", choices=BACKENDS,
-                   default=os.environ.get("TASKBOT_BACKEND", "anthropic"))
+    d.add_argument("--backend", choices=BACKENDS, default=os.environ.get("TASKBOT_BACKEND", "ollama"),
+                   help="ollama (local, default), openai (OPENAI_API_KEY), openai_compat (TASKBOT_BASE_URL, "
+                        "TASKBOT_MODEL, TASKBOT_API_KEY: Groq, OpenRouter, Gemini, Ollama /v1, ...), fake or "
+                        "replay (testing); default $TASKBOT_BACKEND or ollama")
     d.add_argument("--model", help="model name (default: TASKBOT_MODEL or the backend's default)")
     d.add_argument("--transcript", type=Path,
                    help="--backend replay: an llm_transcript.jsonl from an earlier run to replay")

@@ -67,6 +67,17 @@ def secret(name: str) -> str:
         return ""
 
 
+def secret_or_env(name: str) -> str:
+    return secret(name) or os.environ.get(name, "") if name else ""
+
+
+def _apply_provider() -> None:
+    """When the Cloud API provider changes, fill in its base URL and example model."""
+    p = backends.PROVIDERS[st.session_state.cloud_provider]
+    st.session_state.cloud_url = p.base_url or secret("TASKBOT_BASE_URL")
+    st.session_state.cloud_model = p.model or secret("TASKBOT_MODEL")
+
+
 def state():
     ss = st.session_state
     ss.setdefault("sid", uuid.uuid4().hex[:8])
@@ -114,15 +125,22 @@ def sidebar() -> dict:
             show_check(backends.check_ollama(cfg["url"], cfg["model"]), st.sidebar)
         st.sidebar.caption("Only works when this app runs on the same computer as Ollama.")
     else:
-        cfg["url"] = st.sidebar.text_input("Base URL", secret("TASKBOT_BASE_URL"), key="cloud_url",
-                                           placeholder="https://api.groq.com/openai/v1")
-        cfg["model"] = st.sidebar.text_input("Model", secret("TASKBOT_MODEL"), key="cloud_model",
-                                             placeholder="llama-3.3-70b-versatile")
+        if "cloud_provider" not in ss:
+            ss.cloud_provider = "OpenAI"
+            _apply_provider()
+        provider = st.sidebar.selectbox("Provider", list(backends.PROVIDERS), key="cloud_provider",
+                                        on_change=_apply_provider,
+                                        help="OpenAI, or any OpenAI-compatible API (Groq, OpenRouter, Gemini, "
+                                             "Ollama's /v1 endpoint, or your own).")
+        preset = backends.PROVIDERS[provider]
+        cfg["url"] = st.sidebar.text_input("Base URL", key="cloud_url", placeholder="https://api.openai.com/v1")
+        cfg["model"] = st.sidebar.text_input("Model", key="cloud_model", placeholder="gpt-4o-mini")
         typed = st.sidebar.text_input("API key", type="password", key="cloud_key",
                                       help="Sent only to the provider; never shown, logged or saved.")
-        cfg["key"] = typed or secret("TASKBOT_API_KEY")
+        cfg["key"] = typed or secret_or_env(preset.key_name)
+        cfg["key_needed"] = bool(preset.key_name)
         if not typed and cfg["key"]:
-            st.sidebar.caption("Using the API key from the app's secrets.")
+            st.sidebar.caption(f"Using {preset.key_name} from the app's secrets or environment.")
     with st.sidebar.expander("Advanced"):
         cfg["design_mode"] = st.selectbox(
             "Design mode", ["hybrid", "llm"], key="design_mode", disabled=mode == "Demo",
@@ -203,7 +221,7 @@ def launch(cfg: dict, prompt: str, record: bool) -> None:
         make = lambda: backends.ollama_client(url, model)  # noqa: E731
         label = f"Local: {model}"
     else:
-        check = backends.cloud_settings_check(cfg["url"], cfg["model"], cfg["key"])
+        check = backends.cloud_settings_check(cfg["url"], cfg["model"], cfg["key"], cfg["key_needed"])
         if not check.ok:
             show_check(check)
             return

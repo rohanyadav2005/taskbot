@@ -15,11 +15,32 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from taskbot.llm import DEFAULT_NUM_CTX, LLMClient, OllamaClient, OpenAICompatClient, ReplayClient
+from taskbot.llm import (DEFAULT_NUM_CTX, DEFAULT_OPENAI_MODEL, OPENAI_BASE_URL, LLMClient, OllamaClient,
+                         OpenAICompatClient, ReplayClient)
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "qwen2.5:7b-instruct"
 CHECK_TIMEOUT_S = 3.0
+
+
+@dataclass(frozen=True)
+class Provider:
+    base_url: str
+    model: str       # an example; the user can change it
+    key_name: str    # the secret / environment variable the key is read from ("" = no key needed)
+
+
+# Cloud API presets (openai_compat). URLs and example models from memory, unverified: check the
+# provider's current model list.
+PROVIDERS: dict[str, Provider] = {
+    "OpenAI": Provider(OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL, "OPENAI_API_KEY"),
+    "Groq": Provider("https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", "TASKBOT_API_KEY"),
+    "OpenRouter": Provider("https://openrouter.ai/api/v1", "meta-llama/llama-3.3-70b-instruct:free", "TASKBOT_API_KEY"),
+    "Gemini": Provider("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.0-flash",
+                       "TASKBOT_API_KEY"),
+    "Ollama (/v1)": Provider("http://localhost:11434/v1", "qwen2.5:7b-instruct", ""),
+    "Custom": Provider("", "", "TASKBOT_API_KEY"),
+}
 
 
 @dataclass
@@ -75,14 +96,15 @@ def check_ollama(base_url: str, model: str) -> Check:
     return Check(True, f"Ollama is running at {url} with {model}{detail}.")
 
 
-def cloud_settings_check(base_url: str, model: str, api_key: str) -> Check:
+def cloud_settings_check(base_url: str, model: str, api_key: str, key_needed: bool = True) -> Check:
     if clean_url(base_url) is None:
         return Check(False, "The base URL must be an http(s) URL.",
                      "e.g. https://api.groq.com/openai/v1 (see README, OpenAI-compatible backends).")
     if not model.strip():
         return Check(False, "Enter the provider's model name.", "e.g. llama-3.3-70b-versatile on Groq.")
-    if not api_key:
-        return Check(False, "Enter an API key (or put TASKBOT_API_KEY in the app's secrets).",
+    if key_needed and not api_key:
+        return Check(False, "Enter an API key (or put it in the app's secrets: OPENAI_API_KEY for OpenAI, "
+                     "TASKBOT_API_KEY for the others).",
                      "The key is only sent to the provider as a Bearer header; it is never shown or saved.")
     return Check(True, f"Ready: {model} at {urllib.parse.urlsplit(base_url).netloc}.")
 
@@ -96,4 +118,4 @@ def ollama_client(base_url: str, model: str) -> LLMClient:
 
 
 def cloud_client(base_url: str, model: str, api_key: str) -> LLMClient:
-    return OpenAICompatClient(model=model.strip(), base_url=clean_url(base_url), api_key=api_key)
+    return OpenAICompatClient(model=model.strip(), base_url=clean_url(base_url), api_key=api_key or None)

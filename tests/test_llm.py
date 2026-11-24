@@ -1,7 +1,6 @@
 import io
 import json
 import urllib.error
-from types import SimpleNamespace
 
 import pytest
 from lxml import etree
@@ -11,7 +10,6 @@ from conftest import EXAMPLES_DIR
 from taskbot import cli
 from taskbot.design import design_robot, design_system_prompt
 from taskbot.llm import (
-    AnthropicClient,
     FakeClient,
     LLMError,
     LLMOutputError,
@@ -181,44 +179,37 @@ def test_design_robot_sends_requirements_and_validates():
 # --------------------------------------------------------------------------- backends
 
 
-class FakeSDK:
-    def __init__(self, text):
-        self.kwargs = None
-        self.messages = SimpleNamespace(create=self._create)
-        self._text = text
+def test_openai_preset_uses_the_openai_endpoint_and_key(monkeypatch):
+    from taskbot.llm import DEFAULT_OPENAI_MODEL, OPENAI_BASE_URL, OpenAICompatClient
 
-    def _create(self, **kwargs):
-        self.kwargs = kwargs
-        return SimpleNamespace(content=[
-            SimpleNamespace(type="thinking", thinking="hmm"),
-            SimpleNamespace(type="text", text=self._text[:5]),
-            SimpleNamespace(type="text", text=self._text[5:]),
-        ])
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret")
+    monkeypatch.delenv("TASKBOT_MODEL", raising=False)
+    client = make_client("openai")
+    assert isinstance(client, OpenAICompatClient)
+    assert (client.base_url, client.model) == (OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL) == (
+        "https://api.openai.com/v1", "gpt-4o-mini")
+    assert make_client("openai", "gpt-4.1").model == "gpt-4.1"
+    assert "sk-test-secret" not in repr(client) and "sk-test-secret" not in str(vars(client.usage))
 
 
-def test_anthropic_backend_calls_messages_api():
-    sdk = FakeSDK(json.dumps(REQ))
-    client = AnthropicClient(model="test-model", sdk_client=sdk)
-    req = client.complete_json("the system", "the task", Requirements)
+def test_openai_preset_needs_its_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(LLMError, match="OPENAI_API_KEY is not set"):
+        make_client("openai")
+
+
+def test_openai_preset_sends_the_key_as_a_bearer_header(monkeypatch):
+    from openai_mock import MockOpenAI
+
+    from taskbot import llm
+
+    with MockOpenAI([{"content": json.dumps(REQ)}]) as m:
+        monkeypatch.setattr(llm, "OPENAI_BASE_URL", m.url)
+        client = llm.openai_client(model="m", api_key="sk-test-secret")
+        req = client.complete_json("the system", "the task", Requirements)
     assert req.dof_min == 4
-    assert sdk.kwargs["model"] == "test-model"
-    assert sdk.kwargs["system"] == "the system"
-    assert sdk.kwargs["messages"] == [{"role": "user", "content": "the task"}]
-
-
-def test_anthropic_backend_needs_api_key(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with pytest.raises(LLMError, match="ANTHROPIC_API_KEY"):
-        AnthropicClient()
-
-
-def test_anthropic_api_errors_become_llm_errors():
-    def boom(**_):
-        raise RuntimeError("overloaded")
-
-    client = AnthropicClient(sdk_client=SimpleNamespace(messages=SimpleNamespace(create=boom)))
-    with pytest.raises(LLMError, match="overloaded"):
-        client.complete_json("s", "u", Requirements)
+    assert m.requests[0]["headers"]["Authorization"] == "Bearer sk-test-secret"
+    assert m.requests[0]["json"]["model"] == "m"
 
 
 def test_ollama_backend_uses_json_mode(monkeypatch):
@@ -274,9 +265,9 @@ def test_cli_design_with_fake_backend_writes_outputs(tmp_path, capsys):
 
 
 def test_cli_reports_llm_errors(monkeypatch, tmp_path, capsys):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    assert cli.main(["design", "x", "--backend", "anthropic", "--out", str(tmp_path)]) == 1
-    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert cli.main(["design", "x", "--backend", "openai", "--out", str(tmp_path)]) == 1
+    assert "OPENAI_API_KEY" in capsys.readouterr().err
     assert not any(tmp_path.iterdir())
 
 

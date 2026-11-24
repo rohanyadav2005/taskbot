@@ -1,6 +1,6 @@
 {
   "name": "fake_arm_4dof",
-  "description": "FAKE BACKEND: canned 4-DOF design, returned for every prompt. Use --backend anthropic or ollama for a real design.",
+  "description": "FAKE BACKEND: canned 4-DOF design, returned for every prompt. Use --backend ollama or openai for a real design.",
   "modules": [
     {
       "kind": "fixed_base",

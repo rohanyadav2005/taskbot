@@ -137,3 +137,17 @@ def test_out_of_scope_headline_from_a_real_result(tmp_path):
     head = results.headline(res)
     assert head.status == "OUT OF SCOPE" and head.reason.startswith("it needs a robot that flies")
     assert results.zip_bytes(res.out_dir)[:2] == b"PK"
+
+
+def test_cloud_api_defaults_to_openai_and_reads_its_key_without_showing_it(app, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", SECRET)
+    at = app.run()
+    at.sidebar.radio(key="mode").set_value("Cloud API").run()
+    assert at.sidebar.selectbox(key="cloud_provider").value == "OpenAI"
+    assert at.sidebar.text_input(key="cloud_url").value == "https://api.openai.com/v1"
+    assert at.sidebar.text_input(key="cloud_model").value == "gpt-4o-mini"
+    assert at.sidebar.text_input(key="cloud_key").value in ("", None)  # the key is not put in the field
+    assert "Using OPENAI_API_KEY from the app's secrets or environment." in texts(at)
+    assert SECRET not in texts(at)
+    at.sidebar.selectbox(key="cloud_provider").set_value("Groq").run()
+    assert at.sidebar.text_input(key="cloud_url").value == "https://api.groq.com/openai/v1"

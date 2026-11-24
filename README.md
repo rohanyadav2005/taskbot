@@ -95,13 +95,14 @@ These apply to every change (`CLAUDE.md` repeats them for coding agents):
 ## Design a robot from a prompt
 
 ```bash
-pip install -e ".[anthropic]"
-export ANTHROPIC_API_KEY=sk-ant-...
-taskbot design "water the three plants on my windowsill"
+pip install -e .
+ollama pull qwen2.5:7b-instruct                                       # local model, needs `ollama serve`
+taskbot design "water the three plants on my windowsill"              # --backend ollama is the default
 # -> out/<name>/report.md, requirements.json, spec.json, robot.urdf, rounds/round_N/
 
+export OPENAI_API_KEY=sk-...                                          # OpenAI
+taskbot design "..." --backend openai                                 # default model gpt-4o-mini; --model to change
 taskbot design "..." --backend openai_compat                          # any OpenAI-compatible API (below)
-taskbot design "..." --backend ollama --model qwen2.5:7b-instruct   # local, needs `ollama serve`
 taskbot design "..." --backend fake                                   # offline, canned output
 ```
 
@@ -247,7 +248,9 @@ pick it before running, e.g. `apt install libosmesa6` and `export MUJOCO_GL=osme
 (or `libegl1` and `MUJOCO_GL=egl` with a GPU). Without one, the GIFs are skipped
 and the report says why.
 
-`--backend` defaults to `$TASKBOT_BACKEND` (else `anthropic`); `--model` defaults to
+Backends: `ollama` (local), `openai` (OpenAI's API with `OPENAI_API_KEY`), `openai_compat` (any
+OpenAI-compatible API), and `fake` and `replay` for testing. `--backend` defaults to
+`$TASKBOT_BACKEND` (else `ollama`); `--model` defaults to
 `$TASKBOT_MODEL` (else the backend's default). If a reply fails validation, the errors
 are sent back to the model and it retries, up to 3 times. Rate-limit errors (HTTP 429/503)
 are retried with exponential backoff, honouring `Retry-After`. Every run writes `run.json`
@@ -278,6 +281,7 @@ Set the key without putting it in your shell history: `read -rs TASKBOT_API_KEY 
 
 | Preset | `TASKBOT_BASE_URL` | Example `TASKBOT_MODEL` | Key |
 |---|---|---|---|
+| OpenAI (`--backend openai` sets these) | `https://api.openai.com/v1` | `gpt-4o-mini` | `OPENAI_API_KEY` |
 | Ollama (local) | `http://localhost:11434/v1` | `qwen2.5:7b-instruct` | none |
 | Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | console.groq.com |
 | Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.0-flash` | aistudio.google.com |
@@ -407,9 +411,11 @@ Three modes in the sidebar:
 - **Local (Ollama)**: base URL and model (default `qwen2.5:7b-instruct`). The app checks that Ollama
   answers, that the model is pulled and that its context is long enough, and says how to fix it
   if not. This only works when the app runs on the same computer as Ollama.
-- **Cloud API**: any OpenAI-compatible provider (base URL, model, API key), typed in or read from
-  the app's secrets (`TASKBOT_BASE_URL`, `TASKBOT_MODEL`, `TASKBOT_API_KEY`). The key is sent only
-  to the provider; it is never shown, logged or saved.
+- **Cloud API**: OpenAI by default (`https://api.openai.com/v1`, `gpt-4o-mini`), or Groq, OpenRouter,
+  Gemini, Ollama's `/v1` endpoint or a custom OpenAI-compatible URL. The key is typed in or read
+  from the app's secrets or environment: `OPENAI_API_KEY` for OpenAI, `TASKBOT_API_KEY` for the
+  others (`TASKBOT_BASE_URL` and `TASKBOT_MODEL` prefill Custom). The key is sent only to the
+  provider; it is never shown, logged or saved.
 
 Type a task (or click an example) and press **Design**. The run happens in a background thread
 with live progress (each step with its time) and a **Stop** button; one run at a time per session,
@@ -428,7 +434,7 @@ hook it needed is a step listener and a stop event in `taskbot/timing.py`.
 with `streamlit_app.py` as the entry point and Python 3.11 or newer. It installs
 `requirements.txt` (TaskBot with the `[ui]` extra) and `packages.txt` (`libosmesa6`, so MuJoCo can
 render GIFs headless; on Linux without a display the app sets `MUJOCO_GL` to osmesa when it finds OSMesa, else egl, and on Windows and macOS it leaves it unset). For Cloud API mode put
-`TASKBOT_BASE_URL`, `TASKBOT_MODEL` and `TASKBOT_API_KEY` in the app's Secrets. Local (Ollama) mode
+`OPENAI_API_KEY` (or `TASKBOT_API_KEY` for another provider) in the app's Secrets. Local (Ollama) mode
 can't work there: the cloud machine can't reach Ollama on your computer.
 
 | | | |
@@ -459,7 +465,7 @@ requirements with assumptions; the controller table; and downloads of `spec.json
 | `src/taskbot/data/motors.json` | Motor catalog with a source for every value |
 | `src/taskbot/build_urdf.py` | `RobotSpec` → URDF; all mass and inertia computed here |
 | `src/taskbot/view.py` | Spec JSON → URDF → MuJoCo viewer |
-| `src/taskbot/llm.py` | `LLMClient.complete_json` + Anthropic, OpenAI-compatible, Ollama and fake backends |
+| `src/taskbot/llm.py` | `LLMClient.complete_json` + Ollama, OpenAI (preset), OpenAI-compatible, fake and replay backends |
 | `src/taskbot/requirements.py` | `Requirements` model and the prompt → requirements step |
 | `src/taskbot/design.py` | Requirements → `RobotSpec` step |
 | `src/taskbot/prompts/` | System prompts |

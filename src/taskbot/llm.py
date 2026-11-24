@@ -1,6 +1,6 @@
 """One interface for every LLM backend.
 
-    client = AnthropicClient()   # or OpenAICompatClient(), OllamaClient(), FakeClient(...)
+    client = OllamaClient()   # or OpenAICompatClient(), openai_client(), FakeClient(...)
     spec = client.complete_json(system, user, RobotSpec)
 
 `complete_json` asks for JSON, validates it against the Pydantic model, and on
@@ -44,7 +44,6 @@ DEFAULT_TIMEOUT_S = 120.0        # remote APIs
 DEFAULT_LOCAL_TIMEOUT_S = 600.0  # a model on this machine (CPU inference can be slow)
 DEFAULT_NUM_CTX = 16384          # native Ollama context window (Ollama's own default is small)
 CHARS_PER_TOKEN_MIN = 3.0        # conservative: real prompts average more characters per token
-DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
 DEFAULT_OLLAMA_MODEL = "qwen2.5:7b-instruct"
 
 
@@ -131,7 +130,7 @@ class LLMClient(ABC):
 
     @abstractmethod
     def _chat(self, system: str, messages: list[Message], schema: type[BaseModel]) -> str:
-        """Return the assistant's reply to `messages`."""
+        """Return the model's reply to `messages`."""
 
     def _record(self, step: str, attempt: int, system: str, user: str, reply: str | None,
                 error: str | None, start: float, schema: type[BaseModel], notes: list[str] | None = None) -> None:
@@ -254,50 +253,6 @@ def retry_message(schema: type[BaseModel], error: str) -> str:
 
 
 # --------------------------------------------------------------------------- backends
-
-
-class AnthropicClient(LLMClient):
-    """Anthropic Messages API. Reads ANTHROPIC_API_KEY from the environment."""
-
-    provider = "anthropic"
-
-    def __init__(
-        self,
-        model: str | None = None,
-        max_tokens: int = 8000,
-        max_retries: int = DEFAULT_MAX_RETRIES,
-        sdk_client: Any = None,
-    ):
-        super().__init__(max_retries)
-        self.model = model or os.environ.get("TASKBOT_MODEL", DEFAULT_ANTHROPIC_MODEL)
-        self.usage.model = self.model
-        self.max_tokens = max_tokens
-        if sdk_client is None:
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                raise LLMError("ANTHROPIC_API_KEY is not set")
-            try:
-                import anthropic
-            except ImportError as exc:
-                raise LLMError('install the SDK: pip install -e ".[anthropic]"') from exc
-            sdk_client = anthropic.Anthropic()
-        self._sdk = sdk_client
-
-    def _chat(self, system: str, messages: list[Message], schema: type[BaseModel]) -> str:
-        try:
-            resp = self._sdk.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                system=system,
-                messages=messages,
-            )
-        except Exception as exc:  # SDK raises many types; surface them uniformly
-            if getattr(exc, "status_code", None) in (429, 529) or type(exc).__name__ == "RateLimitError":
-                raise LLMRateLimitError(f"Anthropic rate limit: {exc}") from exc
-            raise LLMError(f"Anthropic API call failed: {exc}") from exc
-        u = getattr(resp, "usage", None)
-        self.usage.input_tokens += int(getattr(u, "input_tokens", 0) or 0)
-        self.usage.output_tokens += int(getattr(u, "output_tokens", 0) or 0)
-        return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 
 
 class OllamaClient(LLMClient):
@@ -538,12 +493,25 @@ class ReplayClient(LLMClient):
         return queue.popleft()
 
 
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"  # any chat model with JSON mode; change with --model or TASKBOT_MODEL
+
+
+def openai_client(model: str | None = None, api_key: str | None = None) -> OpenAICompatClient:
+    """The "openai" preset: openai_compat at api.openai.com with OPENAI_API_KEY."""
+    key = api_key if api_key is not None else os.environ.get("OPENAI_API_KEY")
+    if not key:
+        raise LLMError("OPENAI_API_KEY is not set")
+    return OpenAICompatClient(model=model or os.environ.get("TASKBOT_MODEL") or DEFAULT_OPENAI_MODEL,
+                              base_url=OPENAI_BASE_URL, api_key=key)
+
+
 def make_client(backend: str, model: str | None = None) -> LLMClient:
-    """Build a real backend by name. The fake backend is built by the CLI."""
-    if backend == "anthropic":
-        return AnthropicClient(model=model)
+    """Build a real backend by name. The fake and replay backends are built by the CLI."""
     if backend == "ollama":
         return OllamaClient(model=model)
     if backend == "openai_compat":
         return OpenAICompatClient(model=model)
-    raise ValueError(f"unknown backend '{backend}' (use anthropic, openai_compat or ollama)")
+    if backend == "openai":
+        return openai_client(model)
+    raise ValueError(f"unknown backend '{backend}' (use ollama, openai or openai_compat)")
