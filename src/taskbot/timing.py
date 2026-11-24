@@ -13,6 +13,10 @@ A deadline (set_deadline, used by the benchmark's --prompt-timeout) is checked b
 the start of every timed step, so it also catches a laptop that slept mid-run: past it, the step
 raises PromptTimeout. That is a BaseException, so no `except Exception` in the pipeline turns it
 into an internal error; the benchmark catches it and records the prompt as timed out.
+
+Two hooks for a live UI (taskbot/ui): set_listener(fn) calls fn(event, kind, step, seconds) when a
+timed step starts ("start", seconds None) and ends ("end"); set_stop(event) makes the next step
+raise PromptTimeout once the threading.Event is set (a Stop button). Both are per run (ContextVars).
 """
 
 from __future__ import annotations
@@ -26,6 +30,8 @@ KINDS = ("llm", "sizing", "autofix", "static_checks", "sim", "report")
 _LOG: ContextVar[list | None] = ContextVar("taskbot_timeline", default=None)
 _STACK: ContextVar[list | None] = ContextVar("taskbot_timeline_stack", default=None)
 _DEADLINE: ContextVar[tuple[float, float] | None] = ContextVar("taskbot_deadline", default=None)
+_LISTENER: ContextVar = ContextVar("taskbot_step_listener", default=None)
+_STOP: ContextVar = ContextVar("taskbot_stop", default=None)
 
 
 class PromptTimeout(BaseException):
@@ -42,7 +48,38 @@ def clear_deadline(token) -> None:
     _DEADLINE.reset(token)
 
 
+def set_listener(fn):
+    """fn(event, kind, step, seconds) for every timed step: event "start" (seconds None) or "end".
+    Returns a token for reset_listener."""
+    return _LISTENER.set(fn)
+
+
+def reset_listener(token) -> None:
+    _LISTENER.reset(token)
+
+
+def set_stop(event):
+    """A threading.Event: once set, the next timed step raises PromptTimeout. Returns a token."""
+    return _STOP.set(event)
+
+
+def reset_stop(token) -> None:
+    _STOP.reset(token)
+
+
+def _notify(*args) -> None:
+    fn = _LISTENER.get()
+    if fn is not None:
+        try:
+            fn(*args)
+        except Exception:  # a broken listener must never stop a design run
+            pass
+
+
 def check_deadline(step: str = "") -> None:
+    stop = _STOP.get()
+    if stop is not None and stop.is_set():
+        raise PromptTimeout("stopped by the user" + (f" (at {step})" if step else ""))
     d = _DEADLINE.get()
     if d is not None and time.time() > d[0]:
         raise PromptTimeout(f"the prompt passed its {d[1]:g} s limit" + (f" (at {step})" if step else ""))
@@ -58,9 +95,14 @@ def start() -> list[dict]:
 @contextmanager
 def timed(kind: str, step: str) -> Iterator[dict | None]:
     check_deadline(f"{kind}: {step}")
+    _notify("start", kind, step, None)
     log, stack = _LOG.get(), _STACK.get()
     if log is None or stack is None:
-        yield None
+        t0 = time.perf_counter()
+        try:
+            yield None
+        finally:
+            _notify("end", kind, step, time.perf_counter() - t0)
         return
     entry = {"kind": kind, "step": step, "time_s": 0.0, "self_s": 0.0}
     frame = [entry, 0.0]  # [entry, time spent in steps inside it]
@@ -75,6 +117,7 @@ def timed(kind: str, step: str) -> Iterator[dict | None]:
         if stack:
             stack[-1][1] += dt
         log.append(entry)
+        _notify("end", kind, step, dt)
 
 
 def by_kind(log: list[dict], total_s: float) -> dict[str, float]:
