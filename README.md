@@ -427,7 +427,7 @@ hook it needed is a step listener and a stop event in `taskbot/timing.py`.
 **Streamlit Community Cloud** (Demo and Cloud API modes): push the repo to GitHub, create an app
 with `streamlit_app.py` as the entry point and Python 3.11 or newer. It installs
 `requirements.txt` (TaskBot with the `[ui]` extra) and `packages.txt` (`libosmesa6`, so MuJoCo can
-render GIFs headless; the app sets `MUJOCO_GL=osmesa` when it finds OSMesa). For Cloud API mode put
+render GIFs headless; on Linux without a display the app sets `MUJOCO_GL` to osmesa when it finds OSMesa, else egl, and on Windows and macOS it leaves it unset). For Cloud API mode put
 `TASKBOT_BASE_URL`, `TASKBOT_MODEL` and `TASKBOT_API_KEY` in the app's Secrets. Local (Ollama) mode
 can't work there: the cloud machine can't reach Ollama on your computer.
 

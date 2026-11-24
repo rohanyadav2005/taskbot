@@ -1,15 +1,13 @@
-import ctypes.util
 import json
-import os
-import sys
 from pathlib import Path
 
 import pytest
 
 # Headless Linux: pick an offscreen GL backend for the recording tests before
-# mujoco is imported. Tests that need rendering skip if none works.
-if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
-    os.environ.setdefault("MUJOCO_GL", "osmesa" if ctypes.util.find_library("OSMesa") else "egl")
+# mujoco is imported (never on Windows/macOS). Tests that need rendering skip if none works.
+from taskbot.platform_setup import configure_mujoco_gl  # noqa: E402
+
+configure_mujoco_gl()
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 EXAMPLES = sorted(EXAMPLES_DIR.glob("*.json"))

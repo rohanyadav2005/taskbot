@@ -11,19 +11,38 @@ calls taskbot's existing functions (see taskbot/ui); runs are written under out/
 
 from __future__ import annotations
 
-import ctypes.util
 import os
 import re
 import time
 import uuid
 from pathlib import Path
 
-os.environ.setdefault("MUJOCO_GL", "osmesa" if ctypes.util.find_library("OSMesa") else "egl")
+from taskbot.platform_setup import configure_mujoco_gl, quiet_windows_connection_reset
+
+configure_mujoco_gl()  # headless Linux only; never on Windows or macOS
+quiet_windows_connection_reset()
 
 import streamlit as st  # noqa: E402
 
-from taskbot.ui import backends, gallery, results  # noqa: E402
-from taskbot.ui.runner import MAX_PROMPT_CHARS, Run, check_prompt, start_run  # noqa: E402
+
+def startup_error(exc: BaseException) -> str:
+    """One friendly paragraph for an import failure at startup."""
+    text = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+    if "MUJOCO_GL" in text:
+        fix = ("Remove the MUJOCO_GL environment variable (on Windows and macOS it must not be set; on Linux "
+               "use osmesa or egl only without a display), then restart the app.")
+    else:
+        fix = 'Install the app\'s dependencies with `pip install -e ".[ui]"`, then restart the app.'
+    return f"TaskBot couldn't start: {text}\n\n**Fix:** {fix}"
+
+
+try:
+    from taskbot.ui import backends, gallery, results
+    from taskbot.ui.runner import MAX_PROMPT_CHARS, Run, check_prompt, start_run
+except Exception as _exc:  # e.g. a bad MUJOCO_GL makes `import mujoco` fail
+    st.set_page_config(page_title="TaskBot", page_icon="🤖")
+    st.error(startup_error(_exc))
+    st.stop()
 
 ROOT = Path(__file__).resolve().parent
 OUT_ROOT = Path(os.environ.get("TASKBOT_OUT", "out")) / "ui"
