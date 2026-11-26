@@ -8,10 +8,8 @@ checked and simulated. An LLM chooses the layout; my code sizes every number; Mu
 | ![Windowsill arm](docs/media/windowsill_arm.gif) | ![M3 screw arm](docs/media/m3_screws_arm.gif) | ![Box carrier](docs/media/box_carrier.gif) | ![Toy picker](docs/media/toy_picker.gif) |
 | "water the three plants on my windowsill" | "a desk arm that picks M3 screws out of a tray..." (2 mm) | "a robot that carries a 2 kg box across my office" | "a robot that picks toys off the floor and drops them in a basket" |
 
-MuJoCo recordings (OSMesa, 320x240) of designs TaskBot made from these prompts with
-qwen2.5:7b-instruct, replayed from the smoke-test transcripts in
-`tests/fixtures/real_runs/smoke_2026-11-07/`: the windowsill arm carrying its cup, the M3 arm
-reaching its targets, the box carrier driving straight, and the toy picker driving with its arm out.
+MuJoCo recordings of designs made with qwen2.5:7b-instruct, replayed from the transcripts in
+`tests/fixtures/real_runs/smoke_2026-11-07/`.
 
 ```
 task (plain English)
@@ -22,744 +20,230 @@ task (plain English)
                                       └─ still failing? ──► LLM revises the intent (≤ 3 times)
 ```
 
+## Install
+
+Python 3.11+ and **MuJoCo 3.7 to 3.16**:
+
 ```bash
-pip install -e ".[dev]"
-pytest
+pip install -e ".[dev]" "mujoco>=3.7,<3.17"
+pytest -m "not slow"                               # ~3 min; plain `pytest` runs everything (~12 min)
 python -m taskbot.view examples/arm_4dof.json      # opens the MuJoCo viewer
 ```
 
+> **MuJoCo version.** `pyproject.toml` asks only for `mujoco>=3.3`, so a plain install picks
+> MuJoCo 4.x, where every simulation fails with a `TypeError`. MuJoCo 3.17+ wants 12 values in a
+> weld's `data` (`sim/model.py` gives 11), and versions before 3.7 want a single number for joint
+> `damping` (the code gives a list). Until the code handles both, install a version from 3.7 to 3.16.
+> Every test passes on 3.16.0.
+
+> **Headless Linux.** The Streamlit app and the tests set `MUJOCO_GL` themselves when there is no
+> display, but the `taskbot` CLI, `bench/run.py` and the smoke test don't yet. Without it, recording
+> GIFs crashes the process (exit 134) before `report.md` is written. Set it yourself:
+> `export MUJOCO_GL=egl` (or `osmesa` with `libosmesa6` installed), or pass `--no-record`. Leave it
+> unset on Windows and macOS.
+
 ## How it works
 
-You describe a task. A language model writes down what the job needs (how far to reach, how heavy
-the thing in the gripper is, how precise, where it drives) and picks a layout: an arm on a desk, a
-wheeled robot, or a wheeled robot with an arm, with its joints and gripper. It never writes a number
-for the robot itself. Plain code then sizes every part (link lengths, joint ranges, motors from a
-catalog of real hobby and Dynamixel servos, wheels, chassis, masses and inertia), builds a URDF and
-checks it: static torque, reach, collisions and stability, then MuJoCo simulations that move the arm
-to every target, carry the payload, hold still and drive. Code fixes the problems it knows how to
-fix; only when those run out does the model get asked for a different layout. If no robot from the
-catalog can do the job, TaskBot says so, with the numbers and one line on what would work, instead
-of returning a design that fails.
+You describe a task. A language model writes down what the job needs (reach, payload, precision,
+terrain) and picks a layout: an arm on a desk, a wheeled robot, or a wheeled robot with an arm. It
+never writes a number for the robot itself. Plain code sizes every part (link lengths, joint ranges,
+motors from a catalog of real hobby and Dynamixel servos, wheels, chassis, masses and inertia),
+builds a URDF and checks it: static torque, reach, collisions and stability, then MuJoCo sims that
+move to every target, carry the payload, hold still and drive. Code fixes what it knows how to fix;
+only then is the model asked for a different layout. If no catalog robot can do the job, TaskBot
+says so, with the numbers and one line on what would work, instead of returning a design that fails.
 
-I started with a mode where the LLM writes the whole design (`--design-mode llm`). In my sample run
-it passed 0 of 10 prompts, at about 21 minutes each, which is why the default hybrid mode keeps every
-number in code. The llm mode is still there for comparison.
+I started with a mode where the LLM writes the whole design (`--design-mode llm`). It passed 0 of 10
+prompts at about 21 minutes each, which is why the default hybrid mode keeps every number in code.
+
+The full engineering reference (how the sizer picks each number, where each safety margin is
+applied, the feasibility gate, every check and simulation, robot types and terrain) is in
+[docs/DETAILS.md](docs/DETAILS.md).
 
 ## Results
 
 Real runs with qwen2.5:7b-instruct through Ollama on my laptop's CPU (per-prompt tables in
 [docs/RESULTS.md](docs/RESULTS.md)):
 
-| Run | What | Pass | Strict pass | Correct outcome | Time per in-scope prompt |
-|---|---|---|---|---|---|
-| llm mode (10 prompts) | the model writes every number and repairs it | 0/10 | 0/10 | – | ~21 min |
-| hybrid v1 | first real benchmark | 22/40 | 17/40 | – | ~2.6 min |
-| hybrid v2 | after the scene-word fixes | 29/40 | 24/40 | 33/40* | ~2.6 min |
-| hybrid v3 | final | **33/40** | **27/40** | **37/40** | ~2.3 min |
-| holdout v3 | 10 unseen prompts | **7/10** | 6/10 | – | ~3 min |
+| Run | Pass | Strict pass | Correct outcome | Time per in-scope prompt |
+|---|---|---|---|---|
+| llm mode (10 prompts) | 0/10 | 0/10 | – | ~21 min |
+| hybrid v1 | 22/40 | 17/40 | – | ~2.6 min |
+| hybrid v2 (scene-word fixes) | 29/40 | 24/40 | 33/40* | ~2.6 min |
+| hybrid v3 (final) | **33/40** | **27/40** | **37/40** | ~2.3 min |
+| holdout v3 (10 unseen prompts) | **7/10** | 6/10 | – | ~3 min |
 
-\* v2's own report, before two expected outcomes were relabelled (cafe cups: pass; garden cart: infeasible).
+\* v2's own report, before two expected outcomes were relabelled.
 
-- **Pass**: an in-scope task ends with a design that passes every check and simulation, or an
-  out-of-scope task (flying, swimming, legs, weapons) is rejected without a design (8/8 in v3).
-- **Strict pass** also needs the extracted requirements (robot type, reach, payload, tolerance,
-  terrain) to match the prompt's expectations.
-- **Correct outcome** (37/40, 92%) counts PASS where a design is possible, an honest INFEASIBLE
-  where it isn't (a 1.5 kg cast iron pan, a full 1 litre jug, jam jars 1.6 m up, 10 kg of soil on
-  a garden path), and rejections. The three wrong outcomes are the model choosing a heavier or
-  farther version of a loosely worded task.
-- **Holdout 7/10** is the honest score on unseen tasks: I wrote the 10 holdout prompts with the main
-  set, kept them aside, and changed nothing after seeing their results. The three misses are 2 kg
-  dumbbells (truly beyond the catalog: ~20 Nm needed, 2.83 Nm available), shoes held just too far
-  out (2.9 vs 2.83 Nm) and dog toys on a lawn.
-- **0 crashes** in v3 and the holdout (no internal errors, no invalid JSON). The model samples at
-  temperature 0.2, so a borderline prompt can flip between runs: the phone time-lapse passed in v2
-  and was infeasible in v3, on the same code.
-
-## Development notes
-
-Rules every change follows:
-
-- Python 3.11+, package `taskbot` under `src/`, tests with pytest under `tests/`.
-- The LLM chooses the layout; code sizes every number. The LLM only writes JSON matching a
-  Pydantic schema; in hybrid mode that is a DesignIntent with no numbers in it, and all lengths,
-  heights, joint limits, motors, geometry, mass and inertia come from deterministic code.
-- SI units everywhere.
-- Every check returns `CheckResult{check, passed, value, limit, cause, message}`, with a message
-  specific enough for an LLM to act on: the part, the numbers, what to change.
-- Controllers come from motor datasheets and fixed documented presets. I never tune gains,
-  tolerances or test settings, or loosen a check, to make a design pass; when a model fails, I fix
-  the messages and prompts, not the checks.
-- Values from memory rather than a source are marked unverified.
-- Small tested steps. When a change alters an existing test, the commit says which and why.
-- Everything runs on Windows too: `encoding="utf-8"` on every `read_text`, `write_text` and text
-  `open`, and paths in reports and CSVs written with `.as_posix()`.
-- No API keys in code, logs, reports or commits. Tests use the fake backend, recorded transcripts
-  (`--backend replay`) or the mocked HTTP server in `tests/openai_mock.py`, never a real provider,
-  and I never claim real-model results from fake or mocked runs.
-- I don't look at or tune on `bench/holdout.yaml` results while improving prompts.
-
-Working in the repo:
-
-- `pytest -q` takes about 12 minutes on a fast Linux machine and twice that on a laptop (MuJoCo
-  sims, sims inside sizing, the 200-run sloppy-model test and the replays); `pytest -q -m "not slow"`
-  skips those (about 3.5 minutes). Lint: `python -m pyflakes src tests bench`.
-- Headless Linux rendering needs `MUJOCO_GL=osmesa` or `egl`. The tests and the app set it
-  themselves when there is no display; on Windows and macOS leave it unset. Tests skip rendering
-  if neither works.
+- **Pass**: an in-scope task gets a design that passes every check and sim, or an out-of-scope task
+  (flying, swimming, legs, weapons) is rejected (8/8 in v3).
+- **Strict pass** also needs the extracted requirements to match the prompt's expectations.
+- **Correct outcome** (92%) counts PASS where a design is possible, an honest INFEASIBLE where it
+  isn't (a 1.5 kg cast iron pan, a full 1 litre jug), and rejections.
+- **Holdout 7/10** is the honest score on unseen tasks: written with the main set, kept aside, and
+  nothing changed after seeing the results. The misses: 2 kg dumbbells (~20 Nm needed, 2.83 Nm
+  available), shoes held just too far out (2.9 vs 2.83 Nm) and dog toys on a lawn.
+- **0 crashes** in v3 and the holdout. The model samples at temperature 0.2, so a borderline prompt
+  can flip between runs.
 
 ## Design a robot from a prompt
 
 ```bash
-pip install -e .
-ollama pull qwen2.5:7b-instruct                                       # local model, needs `ollama serve`
-taskbot design "water the three plants on my windowsill"              # --backend ollama is the default
-# -> out/<name>/report.md, requirements.json, spec.json, robot.urdf, rounds/round_N/
+ollama pull qwen2.5:7b-instruct                                 # needs `ollama serve`
+taskbot design "water the three plants on my windowsill"        # --backend ollama is the default
+# -> out/<name>/report.md, run.json, requirements.json, spec.json, robot.urdf, rounds/, sim/
 
-export OPENAI_API_KEY=sk-...                                          # OpenAI
-taskbot design "..." --backend openai                                 # default model gpt-4o-mini; --model to change
-taskbot design "..." --backend openai_compat                          # any OpenAI-compatible API (below)
-taskbot design "..." --backend fake                                   # offline, canned output
+export OPENAI_API_KEY=sk-...
+taskbot design "..." --backend openai                           # gpt-4o-mini by default; --model to change
+taskbot design "..." --backend openai_compat                    # any OpenAI-compatible API (below)
+taskbot design "..." --backend fake                             # offline, canned output
 ```
 
-Backends: `ollama` (local), `openai` (OpenAI's API with `OPENAI_API_KEY`), `openai_compat` (any
-OpenAI-compatible API), and `fake` and `replay` for testing. `--backend` defaults to
-`$TASKBOT_BACKEND`, else `ollama`; `--model` to `$TASKBOT_MODEL`, else the backend's default. A
-reply that fails validation goes back to the model with the errors, up to 3 times. Rate-limit errors
-(HTTP 429/503) are retried with exponential backoff, honouring `Retry-After`. `run.json` and the
-report's "LLM usage" section record provider, model, calls, tokens, JSON retries, rate-limit waits
-and time. API keys are never printed, logged or written.
+Useful flags: `--no-sim` skips the simulations, `--no-record` skips the GIFs, `--nearest` builds the
+nearest feasible design (labelled APPROXIMATE, never a pass) when none fits, `--design-mode llm`
+uses the old all-LLM mode. `--backend` defaults to `$TASKBOT_BACKEND`, `--model` to `$TASKBOT_MODEL`.
 
-**Design modes.** In `--design-mode hybrid` (the default) the LLM writes a `DesignIntent`
-(`taskbot/intent.py`, prompt `prompts/intent.md`): robot type, arm layout (`yaw_pitch_pitch`,
-`yaw_pitch_pitch_pitch`, `yaw_pitch_pitch_wristroll`), gripper, link material policy, drive, caster
-and arm mount. `taskbot/sizing.py` computes every number, the static checks run, then the sims.
-`taskbot/autofix.py` applies fixes with known numbers (a stronger motor; a stiffer motor on the
-joint a sim names when the tool misses its tolerance through compliance; the missing length; a
-verified collision fix; a wider joint range) for up to 5 rounds. Only then is the LLM asked for a
-different intent (at most 3 times; when its reply can't be used, code tries its next untried layout,
-drive or mount). `--nearest` builds the nearest feasible design when none fits (relaxed payload,
-then reach), labelled APPROXIMATE and never a pass. In `--design-mode llm` the LLM writes the whole
-spec and repairs it from the check messages, up to `--max-rounds` (default 5). The mode is recorded
-in `run.json`, `report.md` and the benchmark CSV.
-
-### What the sizer computes
-
-- **Arm**: a riser at mid-workspace height (0.04–0.35 m on a fixed base; on a mobile manipulator a
-  mast up to 0.9 m, so the shoulder sits near table, counter and shelf heights, with tip_over and the
-  drive sims checking the base; a design convention, unverified), raised until `self_collision`
-  passes (the same verified search as the collision fixes). Upper arm and forearm reach the
-  farthest target exactly (`reach_m` already holds the reach margin), split so the nearest target
-  lies inside the inner radius. Hollow tube links: radius from length and payload, 2 mm wall, PLA
-  under 0.25 m and aluminium above unless the intent says otherwise. Joint limits come from IK over
-  the workspace targets, widened by 15°, at least the required range, with the shoulder clipped so
-  the upper arm can't swing into the base; base yaw and wrist roll are continuous. Before declaring
-  that no motor can carry the arm, the sizer tries an upper arm up to 0.75 × the nearest target's
-  distance shorter than the even split (the heavy elbow motor nearer the shoulder).
-- **Motors**, from the tip inward (outer motors load inner joints), with the checks' own
-  `checks.holding_loads` and `checks.speed_loads`: the cheapest supported motor whose usable torque
-  (80% of rated) is ≥ 1.25 × the holding torque and has enough torque at the planned peak speed,
-  else the cheapest that passes without the margin, repeated until the choice stops changing. At a
-  position tolerance of 3 mm or less it takes the stiffest motor that passes instead, with control
-  left at "pd" (on the smoke test's M3-screw arm the fixed "pid" preset overshot by about 3.5 mm
-  during moves, where the stiffest motors with pd held about 0.5 mm). When even they miss the
-  tolerance in the sims through compliance alone, the run is INFEASIBLE with the best precision
-  any design reached ("holds about X mm").
-- **Mobile bases**: the cheapest wheel motor (on the smallest chassis it works on) and the smallest
-  radius that meets the terrain's `ground_clearance` minimum, with `wheel_torque` margin and
-  `top_speed`, passing `tip_over` and `traction`, verified with the `drive_straight` and `incline`
-  sims (and `turn_in_place` for skid-steered four_wheel bases: at most 3 wheel sizes per motor, and
-  no larger chassis once only turning fails, since a scaled-up chassis is heavier in the same
-  proportions). A mobile manipulator's base yaw is made stiffer until `drive_with_arm_extended`
-  holds the tool. Its targets start 0.05 m ahead of the robot as sized; when big wheels reach
-  further, the targets move forward and the arm is sized again. Failed wheel sims are remembered by
-  robot mass (a heavier robot on the same wheels fails too), and the incline sim stops once the base
-  has slid back past its limit, so each new intent's search is quick.
-
-The sizer's own sim checks only accept results within 70% of each test's limit (the incline climbed
-20% further), so it never picks a design that only just passes. Before this, floating-point
-differences let the same replies pass on Windows and fail on Linux.
-
-When no catalog part can carry or drive an intent, the loop asks for a different intent (or tries
-code's next untried one) instead of stopping. The run is INFEASIBLE only when every intent fails,
-and the report lists each one with what blocks it.
-
-**Where each margin lives (each applied exactly once):**
-
-| Margin | Value | Applied in |
-|---|---|---|
-| Payload | ×1.25 on the bare mass (`payload_bare_kg`, `base_payload_bare_kg`) | `taskbot/normalize.py` (requirements) |
-| Reach | ×1.10 on the farthest workspace corner from the shoulder → `reach_m` | `taskbot/normalize.py` (requirements) |
-| Motor | usable torque ≥ 1.25 × the holding torque (else the cheapest that passes without it) | `taskbot/sizing.py` |
-| Usable torque | 80% of a motor's rated torque | `taskbot/checks.py` (every torque check) |
-
-The sizer sizes the arm to exactly the points the requirements ask for (the workspace corners and
-the reach check's point at `reach_m`), with no reach margin of its own. It returns a design that
-passes every static check; or a reason (no catalog motor carries the arm, with the largest payload
-at this reach and the longest reach with this payload; or no catalog wheel motor, wheel size and
-chassis drives it, with what would; exit code 4); or a design that still fails a check, which goes
-to autofix. The report lists who chose each number (LLM intent, sizer, or sizer then autofix), every
-sizing and autofix step, and what the prompt asked for that TaskBot didn't use.
-
-### Checks, reports and exit codes
-
-Each design gets the static checks (static torque, reach, workspace corners, self-collision, joint
-ranges, budget, mass); once those pass it is simulated in MuJoCo (`reach_targets`, `carry_payload`,
-`hold_still`). `report.md` shows each round's results, a diff of what changed, the final verdict and
-GIFs of the final round's sims (`sim/*.gif`). `--no-sim` skips simulation; `--no-record` skips the
-GIFs.
-
-**Scope gate.** Before any LLM call, `taskbot/scope.py` checks the task's own words against fixed
-lists: flying (fly, flying, drone, quadcopter, aerial, airborne), water (swim, underwater, boat,
-submarine), legs (walk, walking, legged, biped, quadruped, humanoid, stairs) and harm (weapon, gun,
-shoot, attack, turret), with simple inflections. A match stops the run as OUT OF SCOPE (exit 3) with
-the matched words in `report.md`; a negation up to three words before it in the same clause ("not a
-drone", "no flying") lets it through. The requirements LLM's own "OUT OF SCOPE:" assumption is a
-second check (spellings like "OUT_OF_SCOPE:" count).
-
-**Every run ends with a report.** The LLM supplies facts about the scene and choices; code
-normalises, derives and corrects them (`taskbot/normalize.py`), and the validators only reject what
-code can't fix. Everything code changed is listed under "Corrections made by code" in `report.md`
-(and counted in `run.json`). When the LLM's replies still can't be used, code stands in and says so:
-the last reply that parsed, filled with documented defaults, or rule-based requirements from the
-task's words (`taskbot/fallback.py`); the default intent; or the first requirements when a
-feasibility retry fails. Every exit path writes `report.md` and `run.json` with its `status` and
-`reason`. A FAILED report says which check blocked the saved design, by how much (value against
-limit) and what would make it pass ("What blocked it").
-
-**Time per step.** `run.json` has `time_by_kind` (seconds of LLM calls, sizing, autofix, static
-checks, sims, report and other, nested steps counted once) and `timings` (each LLM call, sizing,
-autofix, static-check round and sim test). With Ollama, each transcript record's `backend_timing`
-splits a call into model load, prompt reading and reply writing, from Ollama's own counters.
+A reply that fails validation goes back to the model with the errors (up to 3 times); HTTP 429/503
+are retried with backoff. Code normalises and corrects what the model gets wrong, and every change
+is listed under "Corrections made by code" in `report.md`. Every run, including failures, writes
+`report.md` and `run.json` with its status, reason, LLM usage and time per step. API keys are never
+printed, logged or written.
 
 | Exit code | Meaning |
 |---|---|
 | 0 | passed |
-| 2 | failed design, or APPROXIMATE: `--nearest`, or requirements cut short of the task or guessed |
-| 3 | out of scope |
+| 1 | bad arguments or configuration |
+| 2 | failed design, or APPROXIMATE |
+| 3 | out of scope (a fixed word list checked before any LLM call, then the model's own verdict) |
 | 4 | infeasible: no catalog motor can meet the requirements |
-| 5 | LLM unusable: the backend couldn't be reached (the report names a next step, e.g. "is Ollama running? try: ollama ps") |
-| 1 | bad arguments or configuration only |
+| 5 | LLM unusable (the report names a next step, e.g. "is Ollama running? try: ollama ps") |
 
-**Record and replay.** Every run writes `llm_transcript.jsonl`: per LLM call the step
-(requirements, feasibility_retry, intent, intent_revision, design, repair), a hash of the system
-prompt, the user message, the raw reply, any validation error, the corrections, the model and the
-time (never an API key). Replay one offline through today's code:
+**Record and replay.** Every run writes `llm_transcript.jsonl`. Replay it offline through today's
+code with `--backend replay --transcript out/<name>/llm_transcript.jsonl`. `tests/fixtures/real_runs/`
+holds real qwen2.5:7b transcripts that the tests replay.
 
-```bash
-taskbot design "water the three plants on my windowsill" --backend replay --transcript out/<name>/llm_transcript.jsonl
-python bench/run.py --backend replay --transcripts DIR      # DIR/<prompt id>.jsonl
-```
+### OpenAI-compatible backends
 
-`tests/fixtures/real_runs/` holds transcripts from real qwen2.5:7b runs, which the replay tests run
-again. `tests/test_sloppy.py` runs the hybrid pipeline 200 times against a seeded "sloppy model"
-(`taskbot/sloppy.py`: mismatched reach, workspaces around the base, reversed min/max, double
-margins, wrong fields, numbers as strings, prose around the JSON, invalid JSON) and requires 0
-crashes and at least 90% sized designs.
+Set `TASKBOT_BASE_URL`, `TASKBOT_MODEL` and, if needed, `TASKBOT_API_KEY`
+(`read -rs TASKBOT_API_KEY && export TASKBOT_API_KEY` keeps it out of your shell history).
+`TASKBOT_TIMEOUT_S` sets the per-request timeout; `TASKBOT_JSON_MODE=0` turns off JSON mode for
+providers that reject it.
 
-**Smoke test.** Six everyday prompts against a real backend, one line each (status, total time,
-seconds by step, LLM calls, corrections), with transcripts saved under
-`smoke/<date-time>/transcripts/`:
+| Preset | `TASKBOT_BASE_URL` | Example `TASKBOT_MODEL` |
+|---|---|---|
+| Ollama (local) | `http://localhost:11434/v1` | `qwen2.5:7b-instruct` |
+| Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
+| Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.0-flash` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `meta-llama/llama-3.3-70b-instruct:free` |
 
-```bash
-scripts/smoke.sh ollama qwen2.5:7b-instruct                       # Linux / macOS
-.\scripts\smoke.ps1 -Backend ollama -Model qwen2.5:7b-instruct     # Windows PowerShell
-python -m taskbot.smoke --backend fake --no-sim                    # offline check of the script
-```
+URLs and model names are from memory (unverified); check the provider's current model list.
 
-Recording GIFs needs an OpenGL backend. On headless Linux install one and pick it before running,
-e.g. `apt install libosmesa6` and `export MUJOCO_GL=osmesa` (or `libegl1` and `MUJOCO_GL=egl` with a
-GPU). Without one, the GIFs are skipped and the report says why.
+**Ollama context length.** The prompts are several thousand tokens, and Ollama can silently drop
+the start of a prompt that doesn't fit. The native backend (`--backend ollama`) sets `num_ctx`
+itself (`TASKBOT_NUM_CTX`, default 16384). Through `/v1`, start the server with a larger context,
+e.g. `OLLAMA_CONTEXT_LENGTH=16384 ollama serve`.
 
-### OpenAI-compatible backends (`--backend openai_compat`)
+## Benchmark
 
-Set `TASKBOT_BASE_URL`, `TASKBOT_MODEL` and `TASKBOT_API_KEY` (optional; local Ollama needs none).
-JSON mode (`response_format: json_object`) is requested; if a provider rejects it, requests go out
-without it and the reply is left to Pydantic validation and retries (`TASKBOT_JSON_MODE=0` turns it
-off up front). `TASKBOT_TIMEOUT_S` sets the per-request timeout (default 600 s for a local URL such
-as `localhost`, 120 s for a remote API). A reply cut off at the provider's output limit
-(`finish_reason: length`) stops the run with a clear error instead of a JSON retry.
-
-**Context length with Ollama.** The design and repair prompts carry the schema, the motor catalog,
-the spec and the round history: several thousand tokens. Many Ollama versions default to a smaller
-context and silently drop the *start* of a prompt that doesn't fit, which is where the schema and
-catalog are. The native backend (`--backend ollama`) sets `num_ctx` itself (`TASKBOT_NUM_CTX`,
-default 16384), refuses a prompt that may not fit, and stops with an error if Ollama reports a full
-context. Through `/v1` (`openai_compat`) the server's setting applies: start it with a larger
-context, e.g. `OLLAMA_CONTEXT_LENGTH=16384 ollama serve` (recent Ollama versions; from memory,
-unverified).
-
-To keep a key out of your shell history: `read -rs TASKBOT_API_KEY && export TASKBOT_API_KEY`.
-
-| Preset | `TASKBOT_BASE_URL` | Example `TASKBOT_MODEL` | Key |
-|---|---|---|---|
-| OpenAI (`--backend openai` sets these) | `https://api.openai.com/v1` | `gpt-4o-mini` | `OPENAI_API_KEY` |
-| Ollama (local) | `http://localhost:11434/v1` | `qwen2.5:7b-instruct` | none |
-| Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | console.groq.com |
-| Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.0-flash` | aistudio.google.com |
-| OpenRouter | `https://openrouter.ai/api/v1` | `meta-llama/llama-3.3-70b-instruct:free` | openrouter.ai |
-
-The URLs and model names are from memory, not checked against the providers' current docs
-(unverified), and free-tier models and limits change: check the provider's model list.
+`bench/prompts.yaml` has 40 prompts in six categories (easy_arm, hard_arm, mobile,
+mobile_manipulator, vague, out_of_scope), each with an expected outcome and expectations about the
+extracted requirements. `bench/holdout.yaml` has 10 more, scored separately; don't tune on them.
 
 ```bash
-export TASKBOT_BASE_URL=http://localhost:11434/v1 TASKBOT_MODEL=qwen2.5:7b-instruct   # Ollama
-taskbot design "water the three plants on my windowsill" --backend openai_compat
-```
-
-## Running the benchmark
-
-`bench/prompts.yaml` has 40 prompts in six categories (easy_arm 8, hard_arm 6, mobile 6,
-mobile_manipulator 6, vague 6, out_of_scope 8), each with expectations about the extracted
-requirements (robot type, minimum reach, payload, tolerance range, or `should_reject: true`).
-`bench/holdout.yaml` has 10 more, scored separately; don't use them while improving prompts.
-
-`bench/run.py` runs each prompt through the full pipeline (2 at a time by default,
-`--concurrency`), retrying rate-limit errors with backoff (`--retries`, `--backoff`). It writes
-`bench/results/<date>_<backend>_<model>.md` and `.csv`: pass rate overall and per category, the
-holdout score separately, average rounds to pass, out-of-scope rejection accuracy, the most common
-failing checks and causes, links to each prompt's report, and an **Unfixed failures** section with
-the exact messages the model was given and didn't fix, grouped by cause.
-
-- A prompt **passes** when an in-scope task ends with a design passing every check and sim, or an
-  out-of-scope task is rejected.
-- A **strict pass** also meets every expectation about the extracted requirements (robot type,
-  reach, payload, tolerance, terrain): a design that passes its checks for the wrong requirements
-  is a pass, not a strict pass.
-- Each prompt has an expected outcome (`expect.outcome`: `pass`, `infeasible` or `out_of_scope`,
-  judged from the task's own numbers and the catalog, never from a run), and the report gives a
-  **correct outcome rate**: PASS where a pass is expected, INFEASIBLE where no robot from the
-  catalog can do the task (a 1.5 kg pan, a full 1 litre jug), and rejections.
-
-**Time limits.** `--prompt-timeout` (default 1800 s of wall-clock time per prompt; 0 for none) is
-checked at the start of every step (each LLM call, sizing step, check and sim), so it also catches a
-laptop that slept. `--call-timeout` limits each LLM call (default `TASKBOT_TIMEOUT_S`, else 600 s
-local, 120 s remote), and no call outlives its prompt's limit. A prompt that hits either is recorded
-as **timed out**: not a design failure, not counted, and run again when you rerun with the same
-`--name`. A prompt whose wall-clock time exceeds its measured steps by more than 300 s and 2× gets
-a warning and a **Timing warnings** section in the report (the computer probably slept, or the
-backend stalled). A crash inside TaskBot is reported as an **internal error (TaskBot bug)**, never
-as an invalid spec from the model.
-
-The run's state is in `bench/results/<name>/results.jsonl`. If a run stops (rate limit, crash,
-Ctrl-C), run the same command again to continue; on a later day add `--name <name>`. Rate-limited
-and errored prompts are retried on resume; finished ones are not.
-
-Start with a small slice, then the full set, then the holdout:
-
-```bash
-# Ollama (local, no key): the native backend, which sets the context length itself
-ollama pull qwen2.5:7b-instruct
-python bench/run.py --backend ollama --model qwen2.5:7b-instruct --limit 5
-python bench/run.py --backend ollama --model qwen2.5:7b-instruct              # all 40 (resumes)
-python bench/run.py --backend ollama --model qwen2.5:7b-instruct --split all  # + 10 holdout
-
-# A free API tier (Groq shown; see the presets above), one prompt at a time
-export TASKBOT_BASE_URL=https://api.groq.com/openai/v1 TASKBOT_MODEL=llama-3.3-70b-versatile
-read -rs TASKBOT_API_KEY && export TASKBOT_API_KEY
-python bench/run.py --backend openai_compat --limit 5 --concurrency 1
-python bench/run.py --backend openai_compat --category out_of_scope --concurrency 1
-python bench/run.py --backend openai_compat --split all --concurrency 1
-
-# Compare two runs of the same model (e.g. before/after a prompt change)
+python bench/run.py --backend ollama --model qwen2.5:7b-instruct --limit 5   # a small slice
+python bench/run.py --backend ollama --model qwen2.5:7b-instruct             # all 40 (resumes)
+python bench/run.py --backend ollama --model qwen2.5:7b-instruct --split all # + holdout
 python bench/run.py --compare bench/results/OLD.csv bench/results/NEW.csv
 ```
 
-`--compare` lists the prompts that got better (fail → pass) or worse, and refuses runs from
-different models unless `--allow-different-models` is given. `--no-sim` skips the simulations,
-`--record` renders GIFs.
+Reports go to `bench/results/<date>_<backend>_<model>.md` and `.csv`: pass rates overall and per
+category, the most common failing checks, and the exact messages the model didn't fix. A stopped
+run resumes when rerun with the same `--name`. `--prompt-timeout` (default 1800 s) and
+`--call-timeout` mark slow prompts as timed out rather than failed. Use `--concurrency 1` on free
+API tiers. `--backend fake` only tests the benchmark itself and reports no pass rate.
 
-`--backend fake` runs the benchmark offline. It has scripted answers for only a few prompts (the
-rest are recorded as "no fake response" and not counted), and its report starts with **FAKE BACKEND
-— scripted responses. Tests the benchmark itself only. Not a measure of design ability.** with no
-headline pass rate.
-
-## Robot types
-
-The requirements step picks `robot_type` and explains why in its assumptions:
-
-| Type | When | Modules |
-|---|---|---|
-| `arm` | the work happens in one place | `fixed_base`, `arm_chain`s, optional `gripper` |
-| `mobile` | travel and carry things on the body, never pick anything up | `wheeled_base` |
-| `mobile_manipulator` | travel and pick/place/handle objects | `wheeled_base`, `arm_chain` (with `mount_xy_m` on the chassis top), optional `gripper` |
-
-Anything else (flying, swimming, legged walking, humanoids, climbing stairs), and anything meant to
-hurt people or animals, gets an assumption starting `OUT OF SCOPE:`; the pipeline stops before
-designing and `report.md` says why (exit code 3).
-
-**Wheeled base**: `drive` is `differential` (two driven wheels at x = +wheelbase/2, plus a caster at
-−wheelbase/2 when `caster: true`) or `four_wheel` (skid steering, no caster); then `wheel_radius_m`,
-`wheel_width_m`, `track_width_m`, `wheelbase_m`, `chassis_size_m` (a 3 mm-wall shell box) and
-`chassis_material`, `wheel_motor_id`, and `battery_mass_kg` (default: an estimate of 0.25 kg per pair
-of driven wheels, recorded as an assumption in the report). Wheel motors must support `"velocity"`
-mode in the catalog's `modes`; arm and gripper motors must support `"position"`. Wheels are
-continuous joints with velocity-controlled torque actuators, the caster is a ball joint, and in the
-driving sims the chassis has a free joint.
-
-**Terrain** (`build_urdf.TERRAIN`; estimates for rubber wheels, unverified):
-
-| Terrain | Friction μ | Rolling resistance c_rr |
-|---|---|---|
-| `flat` (hard floor) | 0.8 | 0.01 |
-| `carpet` | 0.6 | 0.03 |
-| `outdoor` (paths, short grass) | 0.5 | 0.05 |
-
-Rolling resistance is MuJoCo's rolling friction (c_rr · r, condim 6); the floor has near-zero
-friction so each contact uses the wheel's (MuJoCo takes the larger of the two).
+**Smoke test**: six everyday prompts, one line each: `scripts/smoke.sh ollama qwen2.5:7b-instruct`
+(or `.\scripts\smoke.ps1` on Windows).
 
 ## Web app (Streamlit)
 
 ```bash
-pip install -e ".[ui]"
+pip install -e ".[ui]" "mujoco>=3.7,<3.17"
 streamlit run streamlit_app.py      # http://localhost:8501
 ```
 
-Three modes in the sidebar:
+- **Demo** (default): real recorded runs replayed through the code (sizing, checks and sims run
+  again), so no LLM or key is needed.
+- **Local (Ollama)**: checks that Ollama answers and the model is pulled with enough context.
+- **Cloud API**: OpenAI, Groq, OpenRouter, Gemini or a custom OpenAI-compatible URL. The key is
+  sent only to the provider.
 
-- **Demo** (default): real recorded runs (windowsill arm, M3 screw picker, 2 kg box carrier, toy
-  picker, sock collector, a correctly INFEASIBLE cast iron pan and a correctly OUT OF SCOPE drone),
-  replayed with the replay backend. Sizing, checks and simulations run again; only the model's
-  answers come from the recording, so no LLM or key is needed.
-- **Local (Ollama)**: base URL and model (default `qwen2.5:7b-instruct`). The app checks that Ollama
-  answers, that the model is pulled and that its context is long enough, and says how to fix it if
-  not. It only works when the app runs on the same computer as Ollama.
-- **Cloud API**: OpenAI by default (`https://api.openai.com/v1`, `gpt-4o-mini`), or Groq,
-  OpenRouter, Gemini, Ollama's `/v1` endpoint or a custom OpenAI-compatible URL. The key is typed in
-  or read from the app's secrets or environment: `OPENAI_API_KEY` for OpenAI, `TASKBOT_API_KEY` for
-  the others (`TASKBOT_BASE_URL` and `TASKBOT_MODEL` prefill Custom). It is sent only to the
-  provider and never shown, logged or saved.
+Each run shows live progress with a Stop button, then tabs for the summary (motors, cost, mass),
+requirements, checks, simulation GIFs, an interactive 3D view, the report and downloads.
 
-Type a task (or click an example) and press **Design**. The run happens in a background thread with
-live progress (each step with its time) and a **Stop** button: one run at a time per session,
-prompts up to 500 characters, a 15-minute limit, and friendly messages instead of tracebacks. The
-result shows the headline (PASSED / APPROXIMATE / INFEASIBLE / OUT OF SCOPE / FAILED) with its
-one-line reason, then tabs: Summary (robot type, motors with prices, estimated cost, mass),
-Requirements (with the corrections made by code), Checks (every round, colour-coded with causes),
-Simulation (results and GIFs; "Record GIFs" is off by default because rendering is slow on a CPU,
-and demos show their precomputed GIF), 3D view (interactive, from `taskbot/export3d.py`), Report and
-Downloads (spec.json, robot.urdf, report.md, a zip of everything). **How it works** explains the
-method, results and limits; **History** reopens this session's runs (kept in memory; files only
-under `out/ui/`). The app only calls TaskBot's existing functions (`taskbot/ui/`); the one hook it
-needed is a step listener and a stop event in `taskbot/timing.py`.
-
-**Streamlit Community Cloud** (Demo and Cloud API modes): push the repo to GitHub and create an app
-with `streamlit_app.py` as the entry point and Python 3.11 or newer. It installs `requirements.txt`
-(TaskBot with the `[ui]` extra) and `packages.txt` (`libosmesa6`, so MuJoCo can render GIFs
-headless). On Linux without a display the app sets `MUJOCO_GL` to osmesa when it finds OSMesa, else
-egl; on Windows and macOS it leaves it unset. For Cloud API mode put `OPENAI_API_KEY` (or
-`TASKBOT_API_KEY` for another provider) in the app's Secrets. Local (Ollama) mode can't work there:
-the cloud machine can't reach Ollama on your computer.
+**Streamlit Community Cloud**: use `streamlit_app.py` as the entry point with Python 3.11+. It
+installs `requirements.txt` and `packages.txt` (`libosmesa6` for headless rendering). Pin MuJoCo
+in `requirements.txt` too (see [Install](#install)). Put `OPENAI_API_KEY` or `TASKBOT_API_KEY` in the
+app's Secrets. Local (Ollama) mode can't work there.
 
 | | | |
 |---|---|---|
 | ![A demo run: PASSED, with the summary](docs/media/app_design.png) | ![The 3D view](docs/media/app_3d_view.png) | ![How it works](docs/media/app_how_it_works.png) |
-| A demo run (windowsill arm): PASSED, motors and cost | The interactive 3D view | The How it works page |
+| A demo run (windowsill arm) | The interactive 3D view | The How it works page |
 
-### Older Gradio app
-
-```bash
-pip install -e ".[app]"
-taskbot-app            # http://127.0.0.1:7860 ; TASKBOT_OUT sets the output folder
-```
-
-A prompt box, a backend choice (fake works without any API key) and a Design button; a live log of
-each round's checks with their causes; a 3D view of the final robot (a GLB exported from the MuJoCo
-geometry, `taskbot/export3d.py`); the simulation GIFs (optional, slow without a GPU); the
-requirements with assumptions; the controller table; and downloads of `spec.json`, `robot.urdf`,
-`report.md` and a zip of everything.
-
-![TaskBot app after a fake-backend run](docs/app_screenshot.png)
+An older Gradio app is still there: `pip install -e ".[app]"`, then `taskbot-app`.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `src/taskbot/schema.py` | `RobotSpec` and its modules (`fixed_base`, `wheeled_base`, `arm_chain`, `gripper`) |
-| `src/taskbot/data/motors.json` | Motor catalog with a source for every value |
-| `src/taskbot/build_urdf.py` | `RobotSpec` → URDF; all mass and inertia computed here |
-| `src/taskbot/view.py` | Spec JSON → URDF → MuJoCo viewer |
-| `src/taskbot/llm.py` | `LLMClient.complete_json` + Ollama, OpenAI (preset), OpenAI-compatible, fake and replay backends |
-| `src/taskbot/requirements.py` | `Requirements` model and the prompt → requirements step |
-| `src/taskbot/design.py` | Requirements → `RobotSpec` step (llm mode) |
+| `src/taskbot/pipeline.py` | prompt → requirements → scope stop → design loop → outputs (shared by CLI and apps) |
+| `src/taskbot/requirements.py`, `scene.py`, `normalize.py` | Requirements model, what the task's words say, the normaliser |
+| `src/taskbot/feasibility.py`, `scope.py` | Bounds no design can beat; the out-of-scope gate |
+| `src/taskbot/intent.py`, `sizing.py`, `autofix.py`, `hybrid.py` | The hybrid loop: LLM intent → code sizing → deterministic fixes → revised intent |
+| `src/taskbot/design.py`, `repair.py` | The llm mode's design and repair loop |
+| `src/taskbot/schema.py`, `build_urdf.py` | `RobotSpec` and its modules; spec → URDF with all mass and inertia |
+| `src/taskbot/checks.py`, `mobile_checks.py` | Static engineering checks returning `CheckResult` |
+| `src/taskbot/sim/`, `sim_tests.py`, `mobile_sim.py` | MuJoCo scene, IK, motor models and control, arm and driving sims, GIFs |
+| `src/taskbot/llm.py`, `fake.py` | LLM backends (Ollama, OpenAI, OpenAI-compatible, fake, replay) |
 | `src/taskbot/prompts/` | System prompts |
-| `src/taskbot/sim/` | Scene building, IK, PD + gravity-compensation control, GIF recording |
-| `src/taskbot/sim_tests.py` | Simulation tests generated from the requirements |
-| `src/taskbot/repair.py` | design → check → simulate → repair loop |
-| `src/taskbot/report.py` | Writes `out/<name>/` and `report.md` |
-| `src/taskbot/cli.py` | `taskbot design "<prompt>"` |
-| `src/taskbot/checks.py` | Engineering checks and `CheckResult` |
-| `src/taskbot/feasibility.py` | Gate between requirements and design: bounds no design can beat |
-| `src/taskbot/mobile_checks.py` | `wheel_torque`, `top_speed`, `tip_over`, `traction`, `ground_clearance` |
-| `src/taskbot/mobile_sim.py` | Driving sims: `drive_straight`, `turn_in_place`, `incline`, `drive_with_arm_extended` |
-| `src/taskbot/pipeline.py` | prompt → requirements → (out-of-scope stop) → design loop → outputs, shared by CLI and apps |
-| `src/taskbot/scene.py`, `normalize.py` | What the task's own words say; the requirements normaliser |
-| `src/taskbot/fake.py` | Offline fake backend with canned arm, mobile and mobile-manipulator runs (`data/fake/`) |
-| `src/taskbot/export3d.py` | Final robot → GLB for the apps' 3D view |
-| `src/taskbot/app.py` | Gradio app (`taskbot-app`) |
-| `streamlit_app.py`, `src/taskbot/ui/` | Streamlit app and its helpers |
-| `src/taskbot/platform_setup.py` | `MUJOCO_GL` for headless Linux, before MuJoCo is imported |
-| `src/taskbot/intent.py` | `DesignIntent`: the LLM's choices in hybrid mode (no numbers) |
-| `src/taskbot/sizing.py` | Sizer: intent + requirements + catalog → every number of the `RobotSpec` |
-| `src/taskbot/autofix.py` | Deterministic fixes for failures with a known number |
-| `src/taskbot/hybrid.py` | The hybrid loop: intent → size → check → autofix → revised intent |
-| `src/taskbot/bench.py`, `bench/` | Benchmark: prompts, runner, reports, compare |
+| `src/taskbot/data/motors.json` | Motor catalog with a source for every value |
+| `src/taskbot/report.py`, `cli.py`, `view.py`, `export3d.py` | Report writer, CLI, viewer, GLB export |
+| `streamlit_app.py`, `src/taskbot/ui/`, `src/taskbot/app.py` | Streamlit app and helpers; old Gradio app |
+| `src/taskbot/bench.py`, `bench/` | Benchmark |
 | `examples/` | 2-, 4- and 6-DOF arms |
 
-## Geometry conventions
+## Development rules
 
-* Modules are listed root-first: one base (`fixed_base` or `wheeled_base`), arm chains, then at
-  most one `gripper`.
-* A wheeled base's frame is on the ground under the chassis centre, x forward, z up; an arm's
-  `mount_xy_m` places its first joint on the chassis top.
-* Each link extends along its own +z from the joint that drives it; the next joint is at its tip.
-* Link shapes: `box` (solid), `cylinder` (solid rod) and `tube` (hollow round tube: outer
-  `radius_m`, `wall_thickness_m` default 2 mm, at least 1 mm). Tube mass and inertia use the
-  hollow-cylinder formulas; its collision shape is the outer cylinder.
-* A joint's motor is mounted on the parent link at the joint.
-* URDF effort/velocity limits are the motor's stall torque and no-load speed. Prismatic joints
-  assume a 10 mm rack-and-pinion radius.
+- The LLM chooses the layout; code sizes every number. The LLM only writes JSON matching a Pydantic
+  schema. SI units everywhere.
+- Every check returns `CheckResult{check, passed, value, limit, cause, message}`, with a message
+  specific enough for an LLM to act on.
+- I never tune gains, tolerances or test settings, or loosen a check, to make a design pass. When a
+  model fails, I fix the messages and prompts, not the checks.
+- Values from memory rather than a source are marked unverified.
+- Small tested steps; a commit that changes an existing test says which and why.
+- Windows too: `encoding="utf-8"` on every text read and write, and `.as_posix()` paths in reports.
+- No API keys in code, logs, reports or commits. Tests use the fake backend, recorded transcripts
+  or the mocked server in `tests/openai_mock.py`, and I never claim real-model results from them.
+- Lint: `python -m pyflakes src tests bench`.
 
-## Feasibility gate and loop stops
+## Known limits
 
-Between the requirements and the design, `feasibility.py` checks bounds no design can beat, with the
-same numbers as the checks:
+- **Desk-to-room scale.** Fixed arms, wheeled robots indoors and on paths, and wheeled robots with
+  an arm on a mast up to 0.9 m; targets within 1.5 m.
+- **Hobby servos.** The strongest catalog motor gives 2.83 Nm usable: a few hundred grams at half a
+  metre. Heavier jobs are reported INFEASIBLE, with a line saying an industrial arm would be needed.
+- **Simulation, not reality.** Motor models come from datasheets, but gearbox friction, backlash,
+  cable drag and battery sag are not modelled, and I haven't built any of these robots.
+- **No grasping or strength checks.** The payload is welded to the tool, and links are sized by a
+  rule of thumb with no stress or deflection check.
+- **Three arm layouts** in hybrid mode (`yaw_pitch_pitch`, `yaw_pitch_pitch_pitch`,
+  `yaw_pitch_pitch_wristroll`). No SCARA or 6-DOF yet.
+- **The model's reading of the task varies** between runs, and a vague task is only as good as the
+  version the model picks; the report says what to specify.
+- **Out of scope**: anything that flies, swims, walks or climbs stairs, and anything meant to hurt
+  people or animals.
 
-- **Arm types**: holding torque at the shoulder with weightless links and motors, the payload at the
-  needed reach and the lightest catalog gripper of the required kind just behind it, against the
-  strongest supported motor's usable torque (80% of rated). `static_torque` uses the same floor.
-- **Mobile types**: the slope, rolling resistance and 0.5 m/s² acceleration against the terrain's
-  friction (independent of weight), and the payloads plus four wheel motors (weightless chassis and
-  wheels) against the best wheel motor on four driven wheels at the required speed.
-
-A `Requirements` validator also rejects a workspace whose corners are farther than `reach_m` from the
-nearest plausible shoulder position (on the base axis 0.03–0.38 m up for an arm; over the workspace
-centre 0.05–1.02 m up for a mobile manipulator), and one that reaches into the robot's own base
-(|x| and |y| under 0.08 m below z = 0.1 m): the workspace is where the targets are, relative to the
-base, never a box centred on it. The normaliser runs first and fixes both:
-
-- `reach_m` is derived from the workspace: its farthest corner from TaskBot's own shoulder (on the
-  base axis, or the chassis centre's axis, at mid-workspace height within what the riser allows:
-  0.07–0.38 m for an arm, 0.11–1.02 m for a mobile manipulator, whose riser is a mast up to 0.9 m)
-  × 1.10, rounded up to 1 mm. That shoulder is never nearer than the validator's, so a derived
-  `reach_m` always passes.
-- A box around the base or turret is the same targets in front of it, since the base yaw turns the
-  arm to any side: it is turned a multiple of 90° so its longest reach points forward and its near
-  edge is moved out of the base; its farthest point keeps its distance and height.
-- A mobile manipulator drives to each target, so its workspace is what the arm covers once the base
-  stops: at most 0.25 m deep from 0.2 m ahead of the chassis centre and 0.2 m to each side, at the
-  heights the task gives (a design convention, unverified).
-- What the task's own words say (`taskbot/scene.py`). The first real benchmark showed the 7B model
-  getting these wrong; each change is a note in the report:
-  - **Robot type**, like the scope gate: travel words (deliver, fetch, bring, carry, drive, collect;
-    across/around/through a room, office, house, warehouse; off or on the floor) make it mobile, or
-    a mobile manipulator when the task also picks up, holds or handles something; fixed-place words
-    with no travel word (desk, table, tray, conveyor, workbench, board, jig, stand, counter, next to
-    it) make it an arm. Neither: the model's choice stands, except that a task that handles objects
-    is never a plain `mobile` robot (it gets an arm, a parallel gripper and targets up to just above
-    the surfaces it names).
-  - **Terrain**: any outdoor place (garden, yard, outside, street, lawn, park, path) makes it
-    outdoor; a sports court alone is hard and level, so flat (grass or clay would be named);
-    otherwise an indoor place (office, house, room, kitchen, warehouse, shop) makes it flat, or
-    carpet when the task says carpet.
-  - **Slope**: capped when the task names no ramp, slope, hill or step: 5° indoors, 8° outdoors.
-  - **Base load**: none unless the task says the robot carries something (carry, bring, deliver,
-    transport, "a full ..."). A stated mass it carries is the load ("a full 5 kg laundry basket");
-    with one kind of object and no mass, its typical mass (up to 10 of a plural).
-  - **Payload**: the requirements name the object held (`held_object`) and how many at once
-    (`held_count`); code takes the payload from a table of about 100 everyday household, kitchen,
-    office, workshop, garden and toy objects (typical masses, unverified) when it knows the object:
-    the head noun of the name ("a plastic cookbook page" is a page), plus any stated liquid in it
-    ("with 250 ml of water": 0.25 kg). Without that, a payload more than twice the heaviest object
-    the task names is lowered to it. A mass the task states always stands.
-  - **Heights**: a fixed arm on (or working from) a desk, table or counter whose targets all start
-    0.5 m or more up has them measured from the floor, so they are lowered to start at the surface.
-    When the task names no height (no shelf, top, cupboard, wall, "1.6 m up", ...), targets above
-    0.5 m over a fixed arm's base are invented and capped; a mobile manipulator's are capped 0.2 m
-    above the highest surface the task names (table ~0.75 m, counter ~0.9 m, coffee table ~0.45 m),
-    or at 1.0 m when it names none, and start just below the lowest raised surface when the task
-    never mentions the floor. "The bottom shelf" (and no higher one) caps the targets at 0.4 m.
-    Design conventions, unverified.
-  - **Vague tasks** (no object, mass, number, surface, place or height: "make my mornings
-    easier"): an INFEASIBLE verdict's "In short" line adds what TaskBot would need to know to design
-    something: which object, about how heavy, and how high and how far from the robot.
-  - **Budget**: none unless the task names a price, cost or budget.
-- Targets beyond 1.5 m are cut to 1.5 m and the requirements get a `CUT SHORT:` assumption; so do
-  requirements code guessed (`REQUIREMENTS FALLBACK:`). A design for them is APPROXIMATE at best,
-  never PASSED (exit 2), and an infeasible verdict says what was cut.
-
-If the gate fails, the requirements go back to the requirements step once, with the numbers and
-"keep them realistic for the described scene, don't just shrink them to fit". If they are still
-infeasible, the run stops without a design: `report.md` says why and what would make it possible
-(the largest payload at this reach, the longest reach with this payload), exit code 4. Every
-INFEASIBLE run starts its report, CLI output and `run.json` reason with one plain line: "In short:
-holding 1.88 kg at 0.62 m needs about 12 Nm at the shoulder; the strongest motor here (xm540_w270)
-gives 2.83 Nm. That needs an industrial arm, or a load under 0.38 kg (margin included) at that
-distance, or the work within 0.15 m of the base."
-
-The repair loop also stops early:
-- when a check says no design can pass (cause `infeasible`, from `static_torque`), with the same
-  report and exit code 4;
-- when the model sends back an earlier round's design (every number within 1%) for the second time
-  (stop reason "repeating designs"). After the first repeat it is told which round it repeats and
-  how that round failed.
-
-The final design is the best round, not necessarily the last: fewest failing checks, then the
-smallest total normalised shortfall (|value − limit| / |limit|). When a round is worse than the
-best, the next repair starts again from the best design, and the message says so ("Round 5 was
-worse than round 4 (4 failures vs 2). Starting again from round 4's design.").
-
-`self_collision` failures list verified fixes: the shortest riser (the link before the first pitch
-joint), a narrower range on one side of that joint, or a smaller fixed base, each found by
-re-running the same collision sampling on the changed design and offered only if it passes,
-smallest relative change first. Repair messages also call out a description that claims motor,
-link or material changes the spec doesn't have, and explain the trade-off when reach and torque fail
-together (keep the length, stronger motors near the base, lighter outer links).
-
-## Check details
-
-| Check | Passes when |
-|---|---|
-| `static_torque` | Each arm joint's gravity torque — chain straight and horizontal, payload at the tool point — is at most 80% of the motor's rated torque |
-| `reach` | Tool reaches `reach_m` from the base axis at mid-workspace height, within 1 cm |
-| `workspace_corners` | All 8 workspace corners are reachable within 1 cm |
-| `self_collision` | ≤ 5% of random in-limit poses (tool inside the workspace) have non-adjacent links interpenetrating |
-| `joint_limits` | Every revolute joint spans ≥ `min_joint_range_rad` (default 90°) and stays within ±2π. Ranges typed with rounded numbers count: a 0.5° allowance (0 to 1.57 rad is 89.95°), for rounding only. A range short by under 2° gets the exact value to write |
-| `joint_speed` | Every planned move can finish within 5 s with no joint above 80% of its no-load speed |
-| `torque_at_speed` | At each move's mid-point (peak speed), every joint's gravity torque is below what its motor gives at that speed |
-| `budget` | Motor prices + rough material cost ≤ `max_budget_usd` |
-| `mass` | Always passes; warns if a desk-scale robot (reach ≤ 1 m) is over 5 kg |
-
-Mobile robots get these instead of the arm-only checks (a mobile manipulator gets both). The loads
-are the whole robot, `payload_kg` at the tool point and `base_payload_kg` on the chassis top.
-
-| Check | Passes when |
-|---|---|
-| `wheel_torque` | Torque per driven wheel to accelerate at 0.5 m/s² up `max_incline_deg` (rolling resistance included) ≤ the wheel motor's torque at `speed_m_s` (cause `saturated` if short even at rest, else `speed_limited`) |
-| `top_speed` | 80% of the wheel motor's no-load speed × wheel radius > `speed_m_s` |
-| `tip_over` | Centre of mass inside the support polygon shrunk 15%, for the arm stowed and extended in 8 directions, on flat ground and on the incline facing 8 directions (COM shifts h·tanθ downhill); cause `unstable` |
-| `traction` | Climbing force < μ × normal load on the driven wheels (moment balance; a differential robot climbs forwards); cause `slip` |
-| `ground_clearance` | Chassis bottom (half a wheel radius up) ≥ 15 / 25 / 40 mm and wheel radius ≥ 0.03 / 0.04 / 0.06 m on flat / carpet / outdoor: the terrain's typical obstacle (thresholds, rug edges, kerb gaps), and a wheel rolls over a step of about half its radius (design conventions, unverified); cause `clearance` |
-
-Reach uses 2000 random poses and then refines the nearest ones with IK, because random samples alone
-are too sparse for a 1 cm tolerance. All sampling uses fixed seeds.
-
-## Simulation tests
-
-Generated from the requirements; they run only after every static check passes.
-
-| Test | What happens | Passes when |
-|---|---|---|
-| `reach_targets` | IK to the workspace centre and 8 corners; a minimum-jerk move to each | Every target: error < tol by move end + 1 s and staying there, path deviation < 3 tol, overshoot < 2 tol |
-| `carry_payload` | Same moves with a `payload_kg` cube welded to the tool | As above, and no joint saturates for > 0.2 s |
-| `hold_still` | Hold the target pose with the highest torque load, with payload, for 5 s | Final error < tol, peak deviation < 3 tol (reported in µm) |
-
-`tol` is the requirements' `position_tolerance_m`: the precision the task needs, estimated by the
-LLM with a reason (5 mm when unclear). Path deviation is the distance from the tool to the nearest
-point of the planned path, so running late along the right path isn't a miss; that lag is reported
-but not judged.
-
-**Motors** (`taskbot/sim/motor.py`). Driving torque at speed w: servos and Dynamixels
-`min(rated, stall · max(0, 1 − |w|/w0))`; steppers use their pull-out curve if the catalog has one,
-otherwise rated torque up to 50% of no-load speed and a straight line to 0 (an approximation).
-Braking torque is capped at rated: a motor brakes at least as hard as it holds, and putting braking
-on the driving line would leave a falling arm with no torque. (Only a joint overspun past
-w0·(1 + rated/stall) can see more, from back-EMF alone.)
-
-**Move durations** are planned per move: `max(2 s, time so no joint exceeds 80% of its no-load
-speed)`. The static checks `joint_speed` (every move doable within 5 s at ≤ 80% no-load speed) and
-`torque_at_speed` (gravity at mid-move, where speed peaks, below the motor's torque at that speed)
-run before any simulation.
-
-**Control** is fixed per motor, never tuned per test, and listed in every report. Dynamixels use
-their factory position-loop gains (`Kp = P/128 · stall/885 · 4096/2π`,
-`Kd = D/16 · stall/885 · 4096/2π / 1000`, I = 0); hobby servos and steppers use one conservative
-setting (stall torque at 20° error, no D or I). Every motor has back-EMF damping `b = stall/w0`
-(steppers `rated/w0`), applied with the D term as MuJoCo joint damping. A host-side gravity
-feedforward believes the payload is 20% lighter than it is ("ideal" report rows use the true mass).
-
-**Control mode** is a design choice, `"control": "pd"` (default) or `"pid"`. "pid" adds one fixed
-integral preset on Dynamixels (raw Position I Gain 100, the dynamixel_hardware_interface example
-value; its conversion to N·m/(rad·s) assumes a 1 ms firmware cycle, unverified). Hobby servos and
-steppers have no integral term either way.
-
-**Failure causes.** Every sim failure (and the torque/speed static checks) carries a `cause`:
-`saturated`, `speed_limited`, `compliance` or `unreachable`, explained to the LLM in
-`prompts/repair.md`. Compliance failures include a per-joint stiffness breakdown and the fix options
-ranked by it (a stiffer motor on the joint that sags most, "pid", shorter or lighter outer links, or
-bringing the load closer to the base).
-
-**Driving sims** (mobile types; the chassis is free on a solid floor, slopes by tilting gravity):
-
-| Test | What happens | Passes when |
-|---|---|---|
-| `drive_straight` | Ramp at 0.5 m/s² to `speed_m_s`, drive 1 m by wheel odometry, stop | Heading error < 5°, distance error < 5% (wheel slip reported) |
-| `turn_in_place` | Yaw feedback (rate 2 × error, ≤ 1 rad/s) to 90° | Error < 5° |
-| `incline` | Drive 0.5 m up `max_incline_deg` | Covers the distance and never slides back > 10 mm (slip reported only) |
-| `drive_with_arm_extended` | Mobile manipulators: drive 0.5 m with the arm extended front/left/back/right (within the yaw limits) and the payload | Tilt < 20° and tool within `tol` of its pose relative to the chassis |
-
-For a mobile manipulator the arm tests (`reach_targets`, `carry_payload`, `hold_still`) still run,
-**with the wheeled base held fixed**; the report says so.
-
-**Wheel speed control** is fixed per motor type, with the same torque-speed limit as position mode.
-Dynamixels use their factory Velocity P/I gains (`Kv = P/128 · stall/885 / 0.229 rpm`,
-`Ki = I/65536 · … / 1 ms`; values and conversion unverified); DC gearmotors use one conservative PI
-preset (stall torque at 25% speed error, integral time 0.2 s).
-
-Mobile failure causes: `unstable` (would tip), `slip` (wheels lose traction), `saturated` /
-`speed_limited` for wheel motors, and `wrong_type` when the design is a different robot type than
-the requirements.
-
-Physics runs at 1 ms.
-
-## Known limits / future work
-
-**What TaskBot is, honestly:**
-
-- **Desk-to-room scale.** Fixed arms on a desk or counter, wheeled robots indoors and on paths, and
-  wheeled robots with an arm on a mast up to 0.9 m; targets within 1.5 m. Anything bigger is cut
-  short (and said so) or reported INFEASIBLE.
-- **Hobby servos.** The catalog is hobby and Dynamixel-class motors: the strongest gives 2.83 Nm
-  usable. That is a few hundred grams at half a metre; a 1.5 kg pan or 2 kg dumbbells are
-  INFEASIBLE by design, with a line saying an industrial arm would be needed.
-- **Simulation, not reality.** Every design is verified in MuJoCo with motor models from datasheets
-  (torque-speed limits, back-EMF damping, position-loop stiffness); gearbox friction and reflected
-  rotor inertia are not modelled. I haven't built any of these robots; friction, backlash, cable
-  drag, battery sag and real servo firmware will differ. Terrain is three classes (flat, carpet,
-  outdoor) with estimated friction and rolling resistance.
-- **The payload is welded to the tool.** Grasping is not simulated: the object is rigidly attached at
-  the gripper (and the controller is told a mass 20% too light). Gripper force and slip are not
-  checked.
-- **No strength check.** Links are thin tubes sized by a rule of thumb; torque, reach, collisions,
-  tipping and the sims are checked, but not stress, deflection or fatigue of the parts.
-- **Masses of everyday objects and scene heights are design conventions** (a table of about 100
-  objects, typical table and counter heights), marked unverified in the code.
-- **The model's reading of the task varies between runs** (temperature 0.2), and a vague task is only
-  as good as the version the model picks; for those the report says what to specify.
-- **Out of scope**: anything that flies, swims, walks or climbs stairs, humanoids, and anything meant
-  to hurt people or animals. The scope gate stops these from the task's own words before any LLM
-  call.
-
-**Technical limits:**
-
-- **The sizer's rules are simple.** Link radius is a rule of thumb from length and payload, with no
-  stiffness or deflection check; the fixed base and gripper sizes are fixed defaults; the upper arm
-  and forearm are split evenly, which suits the workspace corners but isn't optimised for torque.
-  The motor search only picks among catalog motors: when none can carry the load the result is
-  "infeasible", not a redesign of the requirements.
-- **Three arm layouts.** No SCARA, prismatic or 6-DOF layouts in hybrid mode yet (the llm mode can
-  still write them); adding one is a list in `ARM_LAYOUTS` and a name in `intent.ArmLayout`.
-- **Wheel sizing is verified by simulation,** because the static `wheel_torque` estimate passed
-  designs that saturated in the driving sims near the motor's top speed; that makes sizing a mobile
-  base take seconds rather than milliseconds.
-- **Autofix covers known numeric fixes only** (a stronger or stiffer motor, a longer link, a verified
-  collision fix, a wider joint range); tipping and anything else is left to a revised intent.
-- **No velocity feedforward.** Joints track moves with the motors' factory position loops plus
-  gravity feedforward only, so they run behind the planned timing (back-EMF drag ÷ Kp). That lag is
-  reported in `reach_targets` / `carry_payload` messages but never fails a test.
-- **The PID integral winds up during moves.** With `"control": "pid"` the integral runs all the time,
-  so tracking error during a move builds it up and leaves a few mm of error after the move. Future:
-  integrate only while holding.
-- **Steppers are not modelled.** The simulator treats a stepper as a PD servo; real steppers hold
-  stiffly and then skip steps under overload. Steppers are marked `"supported": false` in
-  `motors.json`, so the designer is never offered them; existing designs that use one still load.
+More technical limits (PID wind-up, no velocity feedforward, steppers not modelled) are in
+[docs/DETAILS.md](docs/DETAILS.md#known-technical-limits).
