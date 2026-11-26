@@ -11,14 +11,16 @@ checked and simulated. An LLM chooses the layout; my code sizes every number; Mu
 MuJoCo recordings of designs made with qwen2.5:7b-instruct, replayed from the transcripts in
 `tests/fixtures/real_runs/smoke_2026-11-07/`.
 
+```mermaid
+flowchart LR
+    A[Task] --> B[LLM: requirements]
+    B --> C[LLM: layout]
+    C --> D[Code: size every part]
+    D --> E[Checks + MuJoCo sims]
+    E --> F[Report + robot files]
 ```
-task (plain English)
-  └─ LLM ──► Requirements (measurable; validators + feasibility gate)
-              └─ LLM ──► DesignIntent (layout, gripper, drive: no numbers)
-                          └─ sizer (code) ──► RobotSpec (every number) ──► URDF
-                                └─ checks + MuJoCo sims ──► autofix (code, ≤ 5 rounds)
-                                      └─ still failing? ──► LLM revises the intent (≤ 3 times)
-```
+
+The LLM only describes the job and picks a layout; code works out every number.
 
 ## Install
 
@@ -52,6 +54,19 @@ builds a URDF and checks it: static torque, reach, collisions and stability, the
 move to every target, carry the payload, hold still and drive. Code fixes what it knows how to fix;
 only then is the model asked for a different layout. If no catalog robot can do the job, TaskBot
 says so, with the numbers and one line on what would work, instead of returning a design that fails.
+
+### The design loop
+
+```mermaid
+flowchart TD
+    A[Size the design] --> B{Checks and sims pass?}
+    B -- yes --> C[PASSED]
+    B -- no --> D[Code fixes it, up to 5 rounds]
+    D --> B
+    D -- out of fixes --> E[LLM picks a new layout, up to 3 times]
+    E --> A
+    E -- none work --> F[INFEASIBLE or FAILED]
+```
 
 I started with a mode where the LLM writes the whole design (`--design-mode llm`). It passed 0 of 10
 prompts at about 21 minutes each, which is why the default hybrid mode keeps every number in code.
